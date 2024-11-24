@@ -5,7 +5,7 @@
 URDF build helper tools
 
 # library
-pip install numpy
-pip install PySide6
-pip install vtk
-pip install NodeGraphQt
+pip install numpy  
+pip install PySide6  
+pip install vtk  
+pip install NodeGraphQt  
