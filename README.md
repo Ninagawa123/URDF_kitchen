@@ -7,19 +7,19 @@ STLファイルにジョイントポイントを設定し、ノードで接続�
   
 # Tools  
   
-### STEP:1 StlSourcer  
+### STEP 1 -  仕込み -  "StlSourcer"  
 <img width="500" alt="urdf_kitchen_beta" src="docs/StlSourcer.png">  
 Stlの中心点や座標軸の入れ替えを行うツールです。  
 この工程は不要な場合がほとんどです。  
   
-### STEP:2 PartsEditor  
+### STEP 2 - 調理 - "PartsEditor"  
 <img width="500" alt="urdf_kitchen_beta" src="docs/PartsEditor.png">  
 stlファイルに次のパーツを接続するジョイントポイントを設定するツールです。  
 ジョイントポイントは8つまで設定でき、回転軸や色なども設定できます。  
 左右対称のロボットの場合、左側のパーツさえ設定すれば右側は自動で出力できます。  
 設定ファイルはパーツと対になるxmlとして保存します。  
   
-### STEP:3 Assembler  
+### STEP 3 - 盛り付け - "Assembler"  
 <img width="500" alt="urdf_kitchen_beta" src="docs/Assembler.png">  
 urdfをプラモデルのように最後の組み立てられるツールです。  
 設定ファイルをまとめて読み込み、パーツ同士をノードでポチポチと接続していきます。  
