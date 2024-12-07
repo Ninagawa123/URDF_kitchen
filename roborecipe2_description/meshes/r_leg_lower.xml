@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urdf_part>
+    <material name="#2F2F2F">
+        <color rgba="0.188000 0.188000 0.188000 1.0" />
+    </material>
+    <link name="r_leg_lower">
+        <visual>
+            <material name="#2F2F2F" />
+        </visual>
+        <volume value="0.000021569303"/>
+        <mass value="0.000021569303"/>
+        <inertia ixx="0.00000228" ixy="-0.00000001" ixz="-0.00000039" iyy="0.00000214" iyz="0.00000007" izz="0.00000106"/></link>
+    <point name="r_leg_lower_point1" type="fixed">
+        <point_xyz>0.000010 -0.000027 -0.065200</point_xyz>
+    </point>
+    <joint>
+        <axis xyz="0 1 0" />
+    </joint>
+</urdf_part>

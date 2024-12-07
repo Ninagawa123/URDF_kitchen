@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urdf_part>
+    <material name="#EDEDED">
+        <color rgba="0.933000 0.933000 0.933000 1.0" />
+    </material>
+    <link name="r_shoulder">
+        <visual>
+            <material name="#EDEDED" />
+        </visual>
+        <volume value="0.000019737495"/>
+        <mass value="0.000019737495"/>
+        <inertia ixx="0.00000167" ixy="0.00000012" ixz="-0.00000004" iyy="0.00000323" iyz="0.00000001" izz="0.00000405"/></link>
+    <point name="r_shoulder_point1" type="fixed">
+        <point_xyz>0.019760 -0.025600 -0.000020</point_xyz>
+    </point>
+    <joint>
+        <axis xyz="0 1 0" />
+    </joint>
+</urdf_part>

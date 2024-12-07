@@ -1,0 +1,1023 @@
+<?xml version="1.0"?>
+<robot name="roborecipe1">
+
+<!-- material color setting -->
+<material name="#ffffff">
+  <color rgba="1.000 1.000 1.000 1.0"/>
+</material>
+<material name="#2f2f2f">
+  <color rgba="0.188 0.188 0.188 1.0"/>
+</material>
+<material name="#cccccc">
+  <color rgba="0.800 0.800 0.800 1.0"/>
+</material>
+<material name="#ededed">
+  <color rgba="0.933 0.933 0.933 1.0"/>
+</material>
+<material name="#2e2e2e">
+  <color rgba="0.184 0.184 0.184 1.0"/>
+</material>
+<material name="#ffaa00">
+  <color rgba="1.000 0.667 0.000 1.0"/>
+</material>
+
+  <link name="base_link">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.0"/>
+      <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.0" iyz="0.0" izz="0.0"/>
+    </inertial>
+  </link>
+
+  <joint name="base_link_to_c_waist" type="fixed">
+    <origin xyz="0 0 0" rpy="0.0 0.0 0.0"/>
+    <axis xyz="1 0 0"/>
+    <parent link="base_link"/>
+    <child link="c_waist"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="c_waist">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.142800"/>
+      <inertia ixx="0.013013" ixy="0.000011" ixz="-0.000139" iyy="0.010774" iyz="-0.000075" izz="0.018328"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/c_waist.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/c_waist.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="c_waist_to_c_chest" type="revolute">
+    <origin xyz="0.0 0.0 0.02" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 0 1"/>
+    <parent link="c_waist"/>
+    <child link="c_chest"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="c_chest">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.421500"/>
+      <inertia ixx="0.065511" ixy="-0.000635" ixz="-0.009181" iyy="0.127680" iyz="0.001935" izz="0.132527"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/c_chest.stl"/>
+      </geometry>
+      <material name="#ffffff"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/c_chest.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="c_chest_to_c_head" type="revolute">
+    <origin xyz="0.01145 1e-06 0.0624" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 0 1"/>
+    <parent link="c_chest"/>
+    <child link="c_head"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="c_head">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.013000"/>
+      <inertia ixx="0.000844" ixy="-0.000005" ixz="0.000106" iyy="0.001141" iyz="-0.000013" izz="0.000766"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/c_head.stl"/>
+      </geometry>
+      <material name="#ededed"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/c_head.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="c_chest_to_l_shoulder" type="revolute">
+    <origin xyz="0.01147 0.048948 0.0454" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 1 0"/>
+    <parent link="c_chest"/>
+    <child link="l_shoulder"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="l_shoulder">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.014000"/>
+      <inertia ixx="0.001181" ixy="-0.000086" ixz="-0.000026" iyy="0.002294" iyz="-0.000010" izz="0.002875"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_shoulder.stl"/>
+      </geometry>
+      <material name="#ededed"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_shoulder.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_shoulder_to_l_arm_upper" type="revolute">
+    <origin xyz="0.01976 0.0256 -2e-05" rpy="0.0 0.0 0.0"/>
+    <axis xyz="1 0 0"/>
+    <parent link="l_shoulder"/>
+    <child link="l_arm_upper"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="l_arm_upper">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.098000"/>
+      <inertia ixx="0.010929" ixy="0.000024" ixz="-0.002817" iyy="0.013498" iyz="-0.000004" izz="0.004443"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_arm_upper.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_arm_upper.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_arm_upper_to_l_elbow" type="revolute">
+    <origin xyz="-0.02 0.0 -0.074" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 0 1"/>
+    <parent link="l_arm_upper"/>
+    <child link="l_elbow"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="l_elbow">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.044000"/>
+      <inertia ixx="0.001510" ixy="-0.000065" ixz="-0.000266" iyy="0.003127" iyz="0.000037" izz="0.003426"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_elbow.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_elbow.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_elbow_to_l_arm_lower" type="revolute">
+    <origin xyz="0.0047 -0.019502 -0.0135" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 1 0"/>
+    <parent link="l_elbow"/>
+    <child link="l_arm_lower"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="l_arm_lower">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.030000"/>
+      <inertia ixx="0.008520" ixy="0.000043" ixz="0.000172" iyy="0.007705" iyz="0.000107" izz="0.002024"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_arm_lower.stl"/>
+      </geometry>
+      <material name="#ededed"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_arm_lower.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_arm_upper_to_l_arm_upper_dec" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <parent link="l_arm_upper"/>
+    <child link="l_arm_upper_dec"/>
+  </joint>
+
+  <link name="l_arm_upper_dec">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000003"/>
+      <inertia ixx="0.000000" ixy="0.000000" ixz="0.000000" iyy="0.000000" iyz="0.000000" izz="0.000000"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_arm_upper_dec.stl"/>
+      </geometry>
+      <material name="#ededed"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_arm_upper_dec.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_shoulder_to_l_shoulder_dec1" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <parent link="l_shoulder"/>
+    <child link="l_shoulder_dec1"/>
+  </joint>
+
+  <link name="l_shoulder_dec1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000000"/>
+      <inertia ixx="0.000000" ixy="0.000000" ixz="0.000000" iyy="0.000000" iyz="0.000000" izz="0.000000"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_shoulder_dec1.stl"/>
+      </geometry>
+      <material name="#ffaa00"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_shoulder_dec1.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="c_chest_to_r_shoulder" type="revolute">
+    <origin xyz="0.01147 -0.048948 0.0454" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 1 0"/>
+    <parent link="c_chest"/>
+    <child link="r_shoulder"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="r_shoulder">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000020"/>
+      <inertia ixx="0.000002" ixy="0.000000" ixz="-0.000000" iyy="0.000003" iyz="0.000000" izz="0.000004"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_shoulder.stl"/>
+      </geometry>
+      <material name="#ededed"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_shoulder.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_shoulder_to_r_arm_upper" type="revolute">
+    <origin xyz="0.01976 -0.0256 -2e-05" rpy="0.0 0.0 0.0"/>
+    <axis xyz="1 0 0"/>
+    <parent link="r_shoulder"/>
+    <child link="r_arm_upper"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="r_arm_upper">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000072"/>
+      <inertia ixx="0.000008" ixy="-0.000000" ixz="-0.000002" iyy="0.000010" iyz="0.000000" izz="0.000003"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_arm_upper.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_arm_upper.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_arm_upper_to_r_elbow" type="revolute">
+    <origin xyz="-0.02 -0.0 -0.074" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 0 1"/>
+    <parent link="r_arm_upper"/>
+    <child link="r_elbow"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="r_elbow">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000027"/>
+      <inertia ixx="0.000001" ixy="0.000000" ixz="-0.000000" iyy="0.000002" iyz="-0.000000" izz="0.000002"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_elbow.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_elbow.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_elbow_to_r_arm_lower" type="revolute">
+    <origin xyz="0.0047 0.019502 -0.0135" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 1 0"/>
+    <parent link="r_elbow"/>
+    <child link="r_arm_lower"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="r_arm_lower">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000049"/>
+      <inertia ixx="0.000014" ixy="-0.000000" ixz="0.000000" iyy="0.000013" iyz="-0.000000" izz="0.000003"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_arm_lower.stl"/>
+      </geometry>
+      <material name="#ededed"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_arm_lower.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_arm_upper_to_r_arm_upper_dec" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <parent link="r_arm_upper"/>
+    <child link="r_arm_upper_dec"/>
+  </joint>
+
+  <link name="r_arm_upper_dec">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000003"/>
+      <inertia ixx="0.000000" ixy="-0.000000" ixz="0.000000" iyy="0.000000" iyz="-0.000000" izz="0.000000"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_arm_upper_dec.stl"/>
+      </geometry>
+      <material name="#ededed"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_arm_upper_dec.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_shoulder_to_r_shoulder_dec1" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <parent link="r_shoulder"/>
+    <child link="r_shoulder_dec1"/>
+  </joint>
+
+  <link name="r_shoulder_dec1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000000"/>
+      <inertia ixx="0.000000" ixy="0.000000" ixz="0.000000" iyy="0.000000" iyz="0.000000" izz="0.000000"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_shoulder_dec1.stl"/>
+      </geometry>
+      <material name="#ffaa00"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_shoulder_dec1.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="c_chest_to_c_chest_dec1" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <parent link="c_chest"/>
+    <child link="c_chest_dec1"/>
+  </joint>
+
+  <link name="c_chest_dec1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000000"/>
+      <inertia ixx="0.000000" ixy="0.000000" ixz="0.000000" iyy="0.000000" iyz="0.000000" izz="0.000000"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/c_chest_dec1.stl"/>
+      </geometry>
+      <material name="#ffffff"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/c_chest_dec1.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="c_chest_to_c_chest_dec2" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <parent link="c_chest"/>
+    <child link="c_chest_dec2"/>
+  </joint>
+
+  <link name="c_chest_dec2">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000000"/>
+      <inertia ixx="0.000000" ixy="0.000000" ixz="0.000000" iyy="0.000000" iyz="0.000000" izz="0.000000"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/c_chest_dec2.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/c_chest_dec2.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="c_waist_to_l_hipjoint_upper" type="revolute">
+    <origin xyz="0.0 0.02157 -0.02175" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 0 1"/>
+    <parent link="c_waist"/>
+    <child link="l_hipjoint_upper"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="l_hipjoint_upper">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.011500"/>
+      <inertia ixx="0.001825" ixy="0.000053" ixz="0.000045" iyy="0.004217" iyz="-0.000093" izz="0.003722"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_hipjoint_upper.stl"/>
+      </geometry>
+      <material name="#ffffff"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_hipjoint_upper.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_hipjoint_upper_to_l_hipjoint_lower" type="revolute">
+    <origin xyz="0.02391 -0.00457 -0.02325" rpy="0.0 0.0 0.0"/>
+    <axis xyz="1 0 0"/>
+    <parent link="l_hipjoint_upper"/>
+    <child link="l_hipjoint_lower"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="l_hipjoint_lower">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.058000"/>
+      <inertia ixx="0.007689" ixy="0.000043" ixz="-0.000036" iyy="0.005267" iyz="-0.000081" izz="0.005395"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_hipjoint_lower.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_hipjoint_lower.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_hipjoint_lower_to_l_leg_upper" type="revolute">
+    <origin xyz="-0.01977 -0.00825 -0.0385" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 1 0"/>
+    <parent link="l_hipjoint_lower"/>
+    <child link="l_leg_upper"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="l_leg_upper">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.091000"/>
+      <inertia ixx="0.016863" ixy="0.000094" ixz="-0.001532" iyy="0.019971" iyz="-0.000019" izz="0.007465"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_leg_upper.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_leg_upper.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_leg_upper_to_l_leg_lower" type="revolute">
+    <origin xyz="6e-05 2.5e-05 -0.06502" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 1 0"/>
+    <parent link="l_leg_upper"/>
+    <child link="l_leg_lower"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="l_leg_lower">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.061000"/>
+      <inertia ixx="0.006442" ixy="0.000030" ixz="-0.001102" iyy="0.006051" iyz="-0.000192" izz="0.003004"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_leg_lower.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_leg_lower.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_leg_lower_to_l_ankle" type="revolute">
+    <origin xyz="1e-05 2.7e-05 -0.0652" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 1 0"/>
+    <parent link="l_leg_lower"/>
+    <child link="l_ankle"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="l_ankle">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.058000"/>
+      <inertia ixx="0.007614" ixy="0.000043" ixz="0.000050" iyy="0.005185" iyz="0.000078" izz="0.005355"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_ankle.stl"/>
+      </geometry>
+      <material name="#2e2e2e"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_ankle.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_ankle_to_l_foot_large" type="revolute">
+    <origin xyz="0.0198 0.00825 -0.03845" rpy="0.0 0.0 0.0"/>
+    <axis xyz="1 0 0"/>
+    <parent link="l_ankle"/>
+    <child link="l_foot_large"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="l_foot_large">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.045000"/>
+      <inertia ixx="0.009911" ixy="-0.000400" ixz="-0.000365" iyy="0.022896" iyz="0.000519" izz="0.030212"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_foot_large.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_foot_large.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_leg_lower_to_l_leg_lower_dec1" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <parent link="l_leg_lower"/>
+    <child link="l_leg_lower_dec1"/>
+  </joint>
+
+  <link name="l_leg_lower_dec1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000014"/>
+      <inertia ixx="0.000013" ixy="0.000000" ixz="0.000001" iyy="0.000012" iyz="0.000000" izz="0.000005"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_leg_lower_dec1.stl"/>
+      </geometry>
+      <material name="#ededed"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_leg_lower_dec1.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_leg_upper_to_l_leg_upper_dec1" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <parent link="l_leg_upper"/>
+    <child link="l_leg_upper_dec1"/>
+  </joint>
+
+  <link name="l_leg_upper_dec1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000009"/>
+      <inertia ixx="0.000006" ixy="-0.000000" ixz="-0.000001" iyy="0.000005" iyz="0.000000" izz="0.000006"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_leg_upper_dec1.stl"/>
+      </geometry>
+      <material name="#cccccc"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_leg_upper_dec1.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="l_hipjoint_upper_to_l_hipjoint_upper_dec1" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <parent link="l_hipjoint_upper"/>
+    <child link="l_hipjoint_upper_dec1"/>
+  </joint>
+
+  <link name="l_hipjoint_upper_dec1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000000"/>
+      <inertia ixx="0.000000" ixy="0.000000" ixz="0.000000" iyy="0.000000" iyz="0.000000" izz="0.000000"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_hipjoint_upper_dec1.stl"/>
+      </geometry>
+      <material name="#ffaa00"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/l_hipjoint_upper_dec1.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="c_waist_to_r_hipjoint_upper" type="revolute">
+    <origin xyz="0.0 -0.02157 -0.02175" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 0 1"/>
+    <parent link="c_waist"/>
+    <child link="r_hipjoint_upper"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="r_hipjoint_upper">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000011"/>
+      <inertia ixx="0.000002" ixy="-0.000000" ixz="0.000000" iyy="0.000004" iyz="0.000000" izz="0.000003"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_hipjoint_upper.stl"/>
+      </geometry>
+      <material name="#ffffff"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_hipjoint_upper.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_hipjoint_upper_to_r_hipjoint_lower" type="revolute">
+    <origin xyz="0.02391 0.00457 -0.02325" rpy="0.0 0.0 0.0"/>
+    <axis xyz="1 0 0"/>
+    <parent link="r_hipjoint_upper"/>
+    <child link="r_hipjoint_lower"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="r_hipjoint_lower">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000046"/>
+      <inertia ixx="0.000006" ixy="-0.000000" ixz="-0.000000" iyy="0.000004" iyz="0.000000" izz="0.000004"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_hipjoint_lower.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_hipjoint_lower.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_hipjoint_lower_to_r_leg_upper" type="revolute">
+    <origin xyz="-0.01977 0.00825 -0.0385" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 1 0"/>
+    <parent link="r_hipjoint_lower"/>
+    <child link="r_leg_upper"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="r_leg_upper">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000057"/>
+      <inertia ixx="0.000011" ixy="-0.000000" ixz="-0.000001" iyy="0.000013" iyz="0.000000" izz="0.000005"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_leg_upper.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_leg_upper.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_leg_upper_to_r_leg_lower" type="revolute">
+    <origin xyz="6e-05 -2.5e-05 -0.06502" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 1 0"/>
+    <parent link="r_leg_upper"/>
+    <child link="r_leg_lower"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="r_leg_lower">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000022"/>
+      <inertia ixx="0.000002" ixy="-0.000000" ixz="-0.000000" iyy="0.000002" iyz="0.000000" izz="0.000001"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_leg_lower.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_leg_lower.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_leg_lower_to_r_ankle" type="revolute">
+    <origin xyz="1e-05 -2.7e-05 -0.0652" rpy="0.0 0.0 0.0"/>
+    <axis xyz="0 1 0"/>
+    <parent link="r_leg_lower"/>
+    <child link="r_ankle"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="r_ankle">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000035"/>
+      <inertia ixx="0.000006" ixy="-0.000000" ixz="0.000000" iyy="0.000004" iyz="-0.000000" izz="0.000004"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_ankle.stl"/>
+      </geometry>
+      <material name="#2e2e2e"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_ankle.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_ankle_to_r_foot_large" type="revolute">
+    <origin xyz="0.0198 -0.00825 -0.03845" rpy="0.0 0.0 0.0"/>
+    <axis xyz="1 0 0"/>
+    <parent link="r_ankle"/>
+    <child link="r_foot_large"/>
+    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
+  </joint>
+
+  <link name="r_foot_large">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000064"/>
+      <inertia ixx="0.000014" ixy="0.000001" ixz="-0.000001" iyy="0.000032" iyz="-0.000001" izz="0.000043"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_foot_large.stl"/>
+      </geometry>
+      <material name="#2f2f2f"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_foot_large.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_leg_lower_to_r_leg_lower_dec1" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <parent link="r_leg_lower"/>
+    <child link="r_leg_lower_dec1"/>
+  </joint>
+
+  <link name="r_leg_lower_dec1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000014"/>
+      <inertia ixx="0.000013" ixy="-0.000000" ixz="0.000001" iyy="0.000012" iyz="-0.000000" izz="0.000005"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_leg_lower_dec1.stl"/>
+      </geometry>
+      <material name="#ededed"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_leg_lower_dec1.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_leg_upper_to_r_leg_upper_dec1" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <parent link="r_leg_upper"/>
+    <child link="r_leg_upper_dec1"/>
+  </joint>
+
+  <link name="r_leg_upper_dec1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000009"/>
+      <inertia ixx="0.000006" ixy="0.000000" ixz="-0.000001" iyy="0.000005" iyz="-0.000000" izz="0.000006"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_leg_upper_dec1.stl"/>
+      </geometry>
+      <material name="#cccccc"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_leg_upper_dec1.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+  <joint name="r_hipjoint_upper_to_r_hipjoint_upper_dec1" type="fixed">
+    <origin xyz="0.0 0.0 0.0" rpy="0.0 0.0 0.0"/>
+    <parent link="r_hipjoint_upper"/>
+    <child link="r_hipjoint_upper_dec1"/>
+  </joint>
+
+  <link name="r_hipjoint_upper_dec1">
+    <inertial>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <mass value="0.000000"/>
+      <inertia ixx="0.000000" ixy="0.000000" ixz="0.000000" iyy="0.000000" iyz="0.000000" izz="0.000000"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_hipjoint_upper_dec1.stl"/>
+      </geometry>
+      <material name="#ffaa00"/>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0"/>
+      <geometry>
+        <mesh filename="package://roborecipe2_description/meshes/r_hipjoint_upper_dec1.stl"/>
+      </geometry>
+    </collision>
+  </link>
+
+</robot>

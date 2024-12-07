@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urdf_part>
+    <material name="#2F2F2F">
+        <color rgba="0.188000 0.188000 0.188000 1.0" />
+    </material>
+    <link name="r_elbow">
+        <visual>
+            <material name="#2F2F2F" />
+        </visual>
+        <volume value="0.000027214451"/>
+        <mass value="0.000027214451"/>
+        <inertia ixx="0.00000105" ixy="0.00000004" ixz="-0.00000014" iyy="0.00000172" iyz="-0.00000002" izz="0.00000193"/></link>
+    <point name="r_elbow_point1" type="fixed">
+        <point_xyz>0.004700 0.019502 -0.013500</point_xyz>
+    </point>
+    <joint>
+        <axis xyz="0 0 1" />
+    </joint>
+</urdf_part>

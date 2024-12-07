@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urdf_part>
+    <material name="#FFFFFF">
+        <color rgba="1.000000 1.000000 1.000000 1.0" />
+    </material>
+    <link name="r_hipjoint_upper">
+        <visual>
+            <material name="#FFFFFF" />
+        </visual>
+        <volume value="0.000010579273"/>
+        <mass value="0.000010579273"/>
+        <inertia ixx="0.00000168" ixy="-0.00000005" ixz="0.00000004" iyy="0.00000388" iyz="0.00000009" izz="0.00000342"/></link>
+    <point name="r_hipjoint_upper_point1" type="fixed">
+        <point_xyz>0.023910 0.004570 -0.023250</point_xyz>
+    </point>
+    <joint>
+        <axis xyz="0 0 1" />
+    </joint>
+</urdf_part>

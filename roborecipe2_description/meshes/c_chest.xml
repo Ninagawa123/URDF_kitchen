@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urdf_part>
+    <material name="#FFFFFF">
+        <color rgba="1.000000 1.000000 1.000000 1.0" />
+    </material>
+    <link name="c_chest">
+        <visual>
+            <material name="#FFFFFF" />
+        </visual>
+        <volume value="0.000480388473"/>
+        <mass value="0.4215"/>
+        <inertia ixx="0.06551107" ixy="-0.00063491" ixz="-0.00918116" iyy="0.12767976" iyz="0.00193534" izz="0.13252717" />
+    </link>
+    <point name="c_chest_point1" type="fixed">
+        <point_xyz>0.011450 0.000001 0.062400</point_xyz>
+    </point>
+    <point name="c_chest_point2" type="fixed">
+        <point_xyz>0.011470 0.048948 0.045400</point_xyz>
+    </point>
+    <point name="c_chest_point3" type="fixed">
+        <point_xyz>0.011470 -0.048948 0.045400</point_xyz>
+    </point>
+    <joint>
+        <axis xyz="0 0 1" />
+    </joint>
+</urdf_part>

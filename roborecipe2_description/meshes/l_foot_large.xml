@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urdf_part>
+    <material name="#2F2F2F">
+        <color rgba="0.188000 0.188000 0.188000 1.0" />
+    </material>
+    <link name="l_foot_large">
+        <visual>
+            <material name="#2F2F2F" />
+        </visual>
+        <volume value="0.000063544191"/>
+        <mass value="0.045"/>
+        <inertia ixx="0.00991107" ixy="-0.00040007" ixz="-0.00036519" iyy="0.02289599" iyz="0.00051877" izz="0.03021229" />
+    </link>
+    <joint>
+        <axis xyz="1 0 0" />
+    </joint>
+</urdf_part>

@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urdf_part>
+    <material name="#EDEDED">
+        <color rgba="0.933000 0.933000 0.933000 1.0" />
+    </material>
+    <link name="r_arm_upper_dec">
+        <visual>
+            <material name="#EDEDED" />
+        </visual>
+        <volume value="0.000002930082"/>
+        <mass value="0.000002930082"/>
+        <inertia ixx="0.00000012" ixy="-0.00000000" ixz="0.00000000" iyy="0.00000008" iyz="-0.00000000" izz="0.00000019"/></link>
+    <joint>
+        <axis xyz="1 0 0" />
+    </joint>
+</urdf_part>
