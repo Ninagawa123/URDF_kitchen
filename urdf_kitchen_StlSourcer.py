@@ -120,7 +120,7 @@ class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("URDF kitchen - PartsSourcer v0.0.1 -")
+        self.setWindowTitle("URDF kitchen - StlSourcer v0.0.1 -")
         self.setGeometry(100, 100, 700, 700)
         self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
         self.absolute_origin = [0, 0, 0]  # 大原点の設定
