@@ -2282,7 +2282,7 @@ class CustomNodeGraph(NodeGraph):
         # 例：ウィンドウタイトルの更新
         if hasattr(self, 'widget') and self.widget:
             if self.widget.window():
-                title = f"URDF Kitchen - Assembler - {text}"
+                title = f"URDF Kitchen - Assembler v0.0.1 - {text}"
                 self.widget.window().setWindowTitle(title)
 
     def get_robot_name(self):
