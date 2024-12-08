@@ -54,6 +54,7 @@ python urdf_kitchen_Assembler.py
   
 絶賛バグフィックス中です。  
 特にパラメータの計算や反映について検算や検証が必要です。  
+現在、AssemnblerのLoad Project, Save Projectが正しく動作しないのでご注意ください。  
   
 # Tutorial  
 準備中です。少々お待ちください。  
