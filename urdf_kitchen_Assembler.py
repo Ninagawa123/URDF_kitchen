@@ -465,7 +465,7 @@ class InspectorWindow(QtWidgets.QWidget):
             traceback.print_exc()
 
     def apply_color_to_stl(self):
-        """選択された色をSTLモデルに適用"""
+        """選択された色をSTLモデルとカラーサンプルに適用"""
         if not self.current_node:
             print("No node selected")
             return
@@ -480,6 +480,13 @@ class InspectorWindow(QtWidgets.QWidget):
             # ノードの色情報を更新
             self.current_node.node_color = rgb_values
             
+            # カラーサンプルチップを必ず更新
+            rgb_display = [int(v * 255) for v in rgb_values]
+            self.color_sample.setStyleSheet(
+                f"background-color: rgb({rgb_display[0]},{rgb_display[1]},{rgb_display[2]}); "
+                f"border: 1px solid black;"
+            )
+            
             # STLモデルの色を変更
             if self.stl_viewer and hasattr(self.stl_viewer, 'stl_actors'):
                 if self.current_node in self.stl_viewer.stl_actors:
@@ -489,11 +496,11 @@ class InspectorWindow(QtWidgets.QWidget):
                     print(f"Applied color: RGB({rgb_values[0]:.3f}, {rgb_values[1]:.3f}, {rgb_values[2]:.3f})")
                 else:
                     print("No STL model found for this node")
+            
         except ValueError as e:
             print(f"Error: Invalid color value - {str(e)}")
         except Exception as e:
             print(f"Error applying color: {str(e)}")
-            import traceback
             traceback.print_exc()
 
     def update_color_sample(self):
@@ -508,32 +515,6 @@ class InspectorWindow(QtWidgets.QWidget):
         except ValueError:
             pass
 
-    def show_color_picker(self):
-        """カラーピッカーを表示"""
-        try:
-            # 現在の色をQColorに変換
-            current_color = QtGui.QColor(
-                *[min(255, max(0, int(float(input.text()) * 255))) 
-                  for input in self.color_inputs]
-            )
-        except ValueError:
-            current_color = QtGui.QColor(255, 255, 255)
-        
-        # カラーピッカーを表示
-        color = QtWidgets.QColorDialog.getColor(
-            initial=current_color,
-            parent=self,
-            options=QtWidgets.QColorDialog.DontUseNativeDialog
-        )
-        
-        if color.isValid():
-            # カラー値を0-1の範囲に変換してセット
-            for i, component in enumerate([color.red(), color.green(), color.blue()]):
-                self.color_inputs[i].setText(f"{component / 255:.3f}")
-            
-            # カラーサンプルを更新
-            self.update_color_sample()
-    
     def update_port_coordinate(self, port_index, coord_index, value):
         """ポート座標の更新"""
         try:
@@ -593,7 +574,13 @@ class InspectorWindow(QtWidgets.QWidget):
                 print(f"Setting color: {node.node_color}")
                 for i, value in enumerate(node.node_color[:3]):
                     self.color_inputs[i].setText(f"{value:.3f}")
-                self.update_color_sample()
+                
+                # カラーサンプルチップの更新
+                rgb_display = [int(v * 255) for v in node.node_color[:3]]
+                self.color_sample.setStyleSheet(
+                    f"background-color: rgb({rgb_display[0]},{rgb_display[1]},{rgb_display[2]}); "
+                    f"border: 1px solid black;"
+                )
                 # STLモデルにも色を適用
                 self.apply_color_to_stl()
             else:
@@ -601,6 +588,9 @@ class InspectorWindow(QtWidgets.QWidget):
                 node.node_color = [1.0, 1.0, 1.0]
                 for color_input in self.color_inputs:
                     color_input.setText("1.000")
+                self.color_sample.setStyleSheet(
+                    "background-color: rgb(255,255,255); border: 1px solid black;"
+                )
                 print("Default color set to white")
 
             # 回転軸の選択を更新するためのシグナルを接続
@@ -613,9 +603,13 @@ class InspectorWindow(QtWidgets.QWidget):
             # ラジオボタンのイベントハンドラを設定
             self.axis_group.buttonClicked.connect(self.on_axis_selection_changed)
 
+            # バリデータの設定
+            self.setup_validators()
+
+            print(f"Inspector window updated for node: {node.name()}")
+
         except Exception as e:
             print(f"Error updating inspector info: {str(e)}")
-            import traceback
             traceback.print_exc()
 
     def update_rotation_axis(self, button):
@@ -640,45 +634,57 @@ class InspectorWindow(QtWidgets.QWidget):
         """カラーピッカーを表示"""
         try:
             current_color = QtGui.QColor(
-                *[min(255, max(0, int(float(input.text()) * 255)))
-                  for input in self.color_inputs]
+                *[min(255, max(0, int(float(input.text()) * 255))) 
+                for input in self.color_inputs]
             )
         except ValueError:
             current_color = QtGui.QColor(255, 255, 255)
-
+        
         color = QtWidgets.QColorDialog.getColor(
             initial=current_color,
             parent=self,
             options=QtWidgets.QColorDialog.DontUseNativeDialog
         )
-
+        
         if color.isValid():
-            for i, component in enumerate([color.red(), color.green(), color.blue()]):
-                self.color_inputs[i].setText(f"{component / 255:.3f}")
-
+            # RGB値を0-1の範囲に変換してセット
+            rgb_values = [color.red() / 255.0, color.green() / 255.0, color.blue() / 255.0]
+            
+            # 入力フィールドを更新
+            for i, value in enumerate(rgb_values):
+                self.color_inputs[i].setText(f"{value:.3f}")
+            
+            # カラーサンプルチップを直接更新
+            self.color_sample.setStyleSheet(
+                f"background-color: rgb({color.red()},{color.green()},{color.blue()}); "
+                f"border: 1px solid black;"
+            )
+            
+            # ノードの色情報を更新
             if self.current_node:
-                self.current_node.node_color = [
-                    color.red() / 255.0,
-                    color.green() / 255.0,
-                    color.blue() / 255.0
-                ]
+                self.current_node.node_color = rgb_values
+                
+            # STLモデルに色を適用
+            self.apply_color_to_stl()
+            
+            print(f"Color picker: Selected RGB({rgb_values[0]:.3f}, {rgb_values[1]:.3f}, {rgb_values[2]:.3f})")
 
     def update_color_sample(self):
         """カラーサンプルの表示を更新"""
         try:
-            rgb_values = [min(255, max(0, int(float(input.text()) * 255)))
-                          for input in self.color_inputs]
+            rgb_values = [min(255, max(0, int(float(input.text()) * 255))) 
+                        for input in self.color_inputs]
             self.color_sample.setStyleSheet(
                 f"background-color: rgb({rgb_values[0]},{rgb_values[1]},{rgb_values[2]}); "
                 f"border: 1px solid black;"
             )
-
+            
             if self.current_node:
-                self.current_node.node_color = [
-                    float(input.text()) for input in self.color_inputs
-                ]
-        except ValueError:
-            pass
+                self.current_node.node_color = [float(input.text()) for input in self.color_inputs]
+                
+        except ValueError as e:
+            print(f"Error updating color sample: {str(e)}")
+            traceback.print_exc()
 
     def update_node_name(self):
         """ノード名の更新"""
@@ -837,23 +843,6 @@ class InspectorWindow(QtWidgets.QWidget):
                 # デフォルト値を設定
                 new_node.rotation_axis = 0
                 print("Using default rotation axis: X")
-
-
-
-            # joint_elem = root.find('.//joint/axis')
-            # if joint_elem is not None:
-            #     axis_xyz = joint_elem.get('xyz', '1 0 0').split()
-            #     axis_values = [float(x) for x in axis_xyz]
-            #     if axis_values[2] == 1:  # Z軸
-            #         self.current_node.rotation_axis = 2
-            #         self.axis_group.button(2).setChecked(True)
-            #     elif axis_values[1] == 1:  # Y軸
-            #         self.current_node.rotation_axis = 1
-            #         self.axis_group.button(1).setChecked(True)
-            #     else:  # X軸（デフォルト）
-            #         self.current_node.rotation_axis = 0
-            #         self.axis_group.button(0).setChecked(True)
-            #     print(f"Set rotation axis: {self.current_node.rotation_axis} from xyz: {axis_xyz}")
 
             # ポイントの処理
             points = root.findall('point')
@@ -1189,34 +1178,6 @@ class InspectorWindow(QtWidgets.QWidget):
             if self.stl_viewer:
                 self.stl_viewer.update_rotation_axis(self.current_node, axis_id)
 
-    def show_color_picker(self):
-        """カラーピッカーを表示"""
-        try:
-            current_color = QtGui.QColor(
-                *[min(255, max(0, int(float(input.text()) * 255))) 
-                for input in self.color_inputs]
-            )
-        except ValueError:
-            current_color = QtGui.QColor(255, 255, 255)
-        
-        color = QtWidgets.QColorDialog.getColor(
-            initial=current_color,
-            parent=self,
-            options=QtWidgets.QColorDialog.DontUseNativeDialog
-        )
-        
-        if color.isValid():
-            for i, component in enumerate([color.red(), color.green(), color.blue()]):
-                self.color_inputs[i].setText(f"{component / 255:.3f}")
-            
-            if self.current_node:
-                self.current_node.node_color = [
-                    color.red() / 255.0,
-                    color.green() / 255.0,
-                    color.blue() / 255.0
-                ]
-                self.apply_color_to_stl()
-
     def apply_color_to_stl(self):
         """選択された色をSTLモデルに適用"""
         if not self.current_node:
@@ -1377,7 +1338,6 @@ class STLViewerWidget(QtWidgets.QWidget):
         self.renderer.SetBackground(initial_bg, initial_bg, initial_bg)
         
         self.iren.Initialize()
-
 
     def store_current_transform(self, node):
         """現在の変換を保存"""
@@ -2305,7 +2265,6 @@ class CustomNodeGraph(NodeGraph):
             self.name_input.setText(name)
         print(f"Robot name set to: {name}")
 
-
     def clean_robot_name(self, name):
         """ロボット名から_descriptionを除去"""
         if name.endswith('_description'):
@@ -2323,7 +2282,6 @@ class CustomNodeGraph(NodeGraph):
             self.robot_name = robot_name
             return True
         return False
-
 
     def export_urdf(self):
         """URDFファイルをエクスポート"""
@@ -2737,7 +2695,6 @@ class CustomNodeGraph(NodeGraph):
             print(f"Error showing inspector: {str(e)}")
             traceback.print_exc()
 
-
     def remove_node(self, node):
         self.stl_viewer.remove_stl_for_node(node)
         super(CustomNodeGraph, self).remove_node(node)
@@ -3046,9 +3003,6 @@ class CustomNodeGraph(NodeGraph):
             )
             return False
 
-
-
-
     def _restore_stl_viewer_state(self, backup):
         """STLビューアの状態を復元"""
         if not backup or not hasattr(self, 'stl_viewer'):
@@ -3073,7 +3027,6 @@ class CustomNodeGraph(NodeGraph):
                     self.meshes_dir = current_dir
                     print(f"Found meshes directory: {self.meshes_dir}")
                     return
-
 
     def load_project(self, file_path=None):
         """プロジェクトの読み込み（コンソール出力版）"""
@@ -3199,9 +3152,8 @@ class CustomNodeGraph(NodeGraph):
             )
             return False
 
-
     def _load_node_data(self, node_elem):
-        """ノードデータの読み込み（出力ポート数の修正版）"""
+        """ノードデータの読み込み"""
         try:
             node_type = node_elem.find("type").text
             
@@ -3219,9 +3171,9 @@ class CustomNodeGraph(NodeGraph):
 
             # 出力ポート数の処理
             if isinstance(node, FooNode):
-                points_elem = node_elem.find("points")
+                points_elem = node_elem.findall("point")
                 if points_elem is not None:
-                    point_count = len(points_elem.findall("point"))
+                    point_count = len(points_elem)
                     print(f"Found {point_count} points for node {node.name()}")
                     
                     # 現在のポート数を取得
@@ -3239,18 +3191,21 @@ class CustomNodeGraph(NodeGraph):
                     print(f"Set output_count to {point_count}")
 
             # ポイントデータの設定
-            points_elem = node_elem.find("points")
-            if points_elem is not None:
+            points_elem = node_elem.findall("point")
+            if points_elem:
                 node.points = []
-                for point_elem in points_elem.findall("point"):
-                    xyz_text = point_elem.find("xyz").text
-                    xyz_values = [float(x) for x in xyz_text.split()]
-                    point_data = {
-                        'name': point_elem.find("name").text,
-                        'type': point_elem.find("type").text,
-                        'xyz': xyz_values
-                    }
-                    node.points.append(point_data)
+                for point_elem in points_elem:
+                    point_name = point_elem.get('name')
+                    point_type = point_elem.get('type')
+                    xyz_elem = point_elem.find("point_xyz")
+                    if xyz_elem is not None and xyz_elem.text:
+                        xyz_values = [float(x) for x in xyz_elem.text.split()]
+                        point_data = {
+                            'name': point_name,
+                            'type': point_type,
+                            'xyz': xyz_values
+                        }
+                        node.points.append(point_data)
                 print(f"Loaded {len(node.points)} point data entries")
 
             # 位置の設定
@@ -3260,59 +3215,65 @@ class CustomNodeGraph(NodeGraph):
                 y = float(pos_elem.find("y").text)
                 node.set_pos(x, y)
 
-            # 物理プロパティの設定
-            volume_elem = node_elem.find("volume")
-            if volume_elem is not None:
-                node.volume_value = float(volume_elem.text)
+            # inertialタグ内のvolume, mass, inertiaを処理
+            inertial_elem = node_elem.find(".//inertial")
+            if inertial_elem is not None:
+                # 質量の設定
+                mass_elem = inertial_elem.find("mass")
+                if mass_elem is not None:
+                    node.mass_value = float(mass_elem.get('value', '0.0'))
+                    print(f"Loaded mass: {node.mass_value}")
 
-            mass_elem = node_elem.find("mass")
-            if mass_elem is not None:
-                node.mass_value = float(mass_elem.text)
+                # ボリュームの設定
+                volume_elem = inertial_elem.find("volume")
+                if volume_elem is not None:
+                    node.volume_value = float(volume_elem.get('value', '0.0'))
+                    print(f"Loaded volume: {node.volume_value}")
 
-            # 慣性テンソルの設定
-            inertia_elem = node_elem.find("inertia")
-            if inertia_elem is not None:
-                node.inertia = {
-                    'ixx': float(inertia_elem.get('ixx', '0')),
-                    'ixy': float(inertia_elem.get('ixy', '0')),
-                    'ixz': float(inertia_elem.get('ixz', '0')),
-                    'iyy': float(inertia_elem.get('iyy', '0')),
-                    'iyz': float(inertia_elem.get('iyz', '0')),
-                    'izz': float(inertia_elem.get('izz', '0'))
-                }
+                # 慣性テンソルの設定
+                inertia_elem = inertial_elem.find("inertia")
+                if inertia_elem is not None:
+                    node.inertia = {
+                        'ixx': float(inertia_elem.get('ixx', '0')),
+                        'ixy': float(inertia_elem.get('ixy', '0')),
+                        'ixz': float(inertia_elem.get('ixz', '0')),
+                        'iyy': float(inertia_elem.get('iyy', '0')),
+                        'iyz': float(inertia_elem.get('iyz', '0')),
+                        'izz': float(inertia_elem.get('izz', '0'))
+                    }
+                    print("Loaded inertia tensor")
 
             # 色情報の設定
-            color_elem = node_elem.find("color")
-            if color_elem is not None and color_elem.text:
-                node.node_color = [float(x) for x in color_elem.text.split()]
+            color_elem = node_elem.find(".//material/color")
+            if color_elem is not None:
+                rgba = color_elem.get('rgba', '1.0 1.0 1.0 1.0').split()
+                node.node_color = [float(x) for x in rgba[:3]]  # RGBのみ使用
+                print(f"Loaded color: RGB({node.node_color})")
 
             # 回転軸の設定
-            axis_elem = node_elem.find("rotation_axis")
+            axis_elem = node_elem.find(".//joint/axis")
             if axis_elem is not None:
-                node.rotation_axis = int(axis_elem.text)
+                axis_xyz = axis_elem.get('xyz', '1 0 0').split()
+                axis_values = [float(x) for x in axis_xyz]
+                if axis_values[2] == 1:      # Z軸
+                    node.rotation_axis = 2
+                elif axis_values[1] == 1:    # Y軸
+                    node.rotation_axis = 1
+                else:                        # X軸（デフォルト）
+                    node.rotation_axis = 0
+                print(f"Set rotation axis: {node.rotation_axis}")
+            else:
+                node.rotation_axis = 0  # デフォルト値
+                print("Using default rotation axis: X")
 
-            # Massless Decorationの読み込みを追加
+            # Massless Decorationの設定
             massless_dec_elem = node_elem.find("massless_decoration")
             if massless_dec_elem is not None:
                 node.massless_decoration = massless_dec_elem.text.lower() == 'true'
-                print(f"Loaded massless_decoration: {node.massless_decoration} for node: {node.name()}")
+                print(f"Loaded massless_decoration: {node.massless_decoration}")
             else:
                 node.massless_decoration = False
-                print(f"Set default massless_decoration (False) for node: {node.name()}")
-
-            # 累積座標の設定
-            coords_elem = node_elem.find("cumulative_coords")
-            if coords_elem is not None:
-                node.cumulative_coords = []
-                for coord_elem in coords_elem.findall("coord"):
-                    point_index = int(coord_elem.find("point_index").text)
-                    xyz_text = coord_elem.find("xyz").text
-                    xyz_values = [float(x) for x in xyz_text.split()]
-                    coord_data = {
-                        'point_index': point_index,
-                        'xyz': xyz_values
-                    }
-                    node.cumulative_coords.append(coord_data)
+                print(f"Set default massless_decoration (False)")
 
             # STLファイルの設定と処理
             stl_elem = node_elem.find("stl_file")
@@ -3335,13 +3296,6 @@ class CustomNodeGraph(NodeGraph):
                         self.stl_viewer.load_stl_for_node(node)
                 else:
                     print(f"Warning: STL file not found: {abs_path}")
-
-            # ノードの状態を確認
-            if isinstance(node, FooNode):
-                print(f"Final node state for {node.name()}:")
-                print(f"  Output ports: {len(node.output_ports())}")
-                print(f"  Point count: {len(node.points)}")
-                print(f"  Output count: {node.output_count}")
 
             return node
 
@@ -3422,7 +3376,7 @@ class CustomNodeGraph(NodeGraph):
         return parent_coords
 
     def import_xmls_from_folder(self):
-        """フォルダ内のすべてのXMLファイルを読み込む（色の適用を含む）"""
+        """フォルダ内のすべてのXMLファイルを読み込む"""
         message_box = QtWidgets.QMessageBox()
         message_box.setIcon(QtWidgets.QMessageBox.Information)
         message_box.setWindowTitle("Select Directory")
@@ -3445,12 +3399,11 @@ class CustomNodeGraph(NodeGraph):
 
             # _descriptionが末尾にある場合は削除
             if robot_name.endswith('_description'):
-                robot_name = robot_name[:-12]  # '_description'の長さ(12)を削除
+                robot_name = robot_name[:-12]
                 print(f"Removed '_description' suffix from robot name")
 
             # ロボット名を更新
             self.robot_name = robot_name
-            # UI上の名前入力フィールドを更新
             if hasattr(self, 'name_input') and self.name_input:
                 self.name_input.setText(robot_name)
             print(f"Set robot name to: {robot_name}")
@@ -3468,9 +3421,7 @@ class CustomNodeGraph(NodeGraph):
 
         for xml_file in xml_files:
             try:
-                # XMLファイルのフルパス
                 xml_path = os.path.join(folder_path, xml_file)
-                # 対応するSTLファイルのパス
                 stl_path = os.path.join(folder_path, xml_file[:-4] + '.stl')
                 
                 print(f"\nProcessing: {xml_file}")
@@ -3493,67 +3444,82 @@ class CustomNodeGraph(NodeGraph):
                 # リンク情報の処理
                 link_elem = root.find('link')
                 if link_elem is not None:
+                    # リンク名の設定
                     link_name = link_elem.get('name')
                     if link_name:
                         new_node.set_name(link_name)
+                        print(f"Set link name: {link_name}")
 
-                    # 質量の設定
-                    mass_elem = link_elem.find('mass')
-                    if mass_elem is not None:
-                        new_node.mass_value = float(mass_elem.get('value', 0))
+                    # 慣性関連の処理
+                    inertial_elem = link_elem.find('inertial')
+                    if inertial_elem is not None:
+                        # 質量の設定
+                        mass_elem = inertial_elem.find('mass')
+                        if mass_elem is not None:
+                            new_node.mass_value = float(mass_elem.get('value', '0.0'))
+                            print(f"Set mass: {new_node.mass_value}")
 
-                    # 慣性モーメントの設定
-                    inertia_elem = link_elem.find('inertia')
-                    if inertia_elem is not None:
-                        new_node.inertia = {
-                            'ixx': float(inertia_elem.get('ixx', 0)),
-                            'ixy': float(inertia_elem.get('ixy', 0)),
-                            'ixz': float(inertia_elem.get('ixz', 0)),
-                            'iyy': float(inertia_elem.get('iyy', 0)),
-                            'iyz': float(inertia_elem.get('iyz', 0)),
-                            'izz': float(inertia_elem.get('izz', 0))
-                        }
+                        # ボリュームの設定
+                        volume_elem = inertial_elem.find('volume')
+                        if volume_elem is not None:
+                            new_node.volume_value = float(volume_elem.get('value', '0.0'))
+                            print(f"Set volume: {new_node.volume_value}")
+
+                        # 慣性テンソルの設定
+                        inertia_elem = inertial_elem.find('inertia')
+                        if inertia_elem is not None:
+                            new_node.inertia = {
+                                'ixx': float(inertia_elem.get('ixx', '0.0')),
+                                'ixy': float(inertia_elem.get('ixy', '0.0')),
+                                'ixz': float(inertia_elem.get('ixz', '0.0')),
+                                'iyy': float(inertia_elem.get('iyy', '0.0')),
+                                'iyz': float(inertia_elem.get('iyz', '0.0')),
+                                'izz': float(inertia_elem.get('izz', '0.0'))
+                            }
+                            print("Set inertia tensor")
+
+                        # 重心位置の設定
+                        com_elem = link_elem.find('center_of_mass')
+                        if com_elem is not None and com_elem.text:
+                            com_values = [float(x) for x in com_elem.text.split()]
+                            if len(com_values) == 3:
+                                new_node.center_of_mass = com_values
+                                print(f"Set center of mass: {com_values}")
 
                 # 色情報の処理
                 material_elem = root.find('.//material/color')
                 if material_elem is not None:
                     rgba = material_elem.get('rgba', '1.0 1.0 1.0 1.0').split()
                     new_node.node_color = [float(x) for x in rgba[:3]]
-                    print(f"Set color from material: RGB({new_node.node_color})")
+                    print(f"Set color: RGB({new_node.node_color})")
                 else:
                     new_node.node_color = [1.0, 1.0, 1.0]
                     print("Using default color: white")
 
-                # STLファイルの処理
-                if os.path.exists(stl_path):
-                    print(f"Loading corresponding STL file: {stl_path}")
-                    new_node.stl_file = stl_path
-                    if self.stl_viewer:
-                        self.stl_viewer.load_stl_for_node(new_node)
-                else:
-                    print(f"Warning: STL file not found: {stl_path}")
-
-                print(f"Successfully imported: {xml_file}")
-                    
-                # 回転軸の処理を修正
-                joint_elem = root.find('.//joint/axis')  # パスを修正
+                # 回転軸の処理
+                joint_elem = root.find('.//joint')
                 if joint_elem is not None:
-                    axis_xyz = joint_elem.get('xyz', '1 0 0').split()
-                    # xyz値を配列に変換
-                    axis_values = [float(x) for x in axis_xyz]
-                    # 軸の判定を修正
-                    if axis_values[2] == 1:  # Z軸
-                        new_node.rotation_axis = 2
-                        print("Set rotation axis to Z")
-                    elif axis_values[1] == 1:  # Y軸
-                        new_node.rotation_axis = 1
-                        print("Set rotation axis to Y")
-                    else:  # X軸（デフォルト）
-                        new_node.rotation_axis = 0
-                        print("Set rotation axis to X")
-                    print(f"Set rotation axis: {new_node.rotation_axis} from xyz: {axis_xyz}")
+                    # ジョイントタイプの確認
+                    joint_type = joint_elem.get('type', '')
+                    if joint_type == 'fixed':
+                        new_node.rotation_axis = 3  # Fixed
+                        print("Set rotation axis to Fixed")
+                    else:
+                        # 回転軸の処理
+                        axis_elem = joint_elem.find('axis')
+                        if axis_elem is not None:
+                            axis_xyz = axis_elem.get('xyz', '1 0 0').split()
+                            axis_values = [float(x) for x in axis_xyz]
+                            if axis_values[2] == 1:      # Z軸
+                                new_node.rotation_axis = 2
+                                print("Set rotation axis to Z")
+                            elif axis_values[1] == 1:    # Y軸
+                                new_node.rotation_axis = 1
+                                print("Set rotation axis to Y")
+                            else:                        # X軸（デフォルト）
+                                new_node.rotation_axis = 0
+                                print("Set rotation axis to X")
                 else:
-                    # デフォルト値を設定
                     new_node.rotation_axis = 0
                     print("Using default rotation axis: X")
 
@@ -3585,24 +3551,22 @@ class CustomNodeGraph(NodeGraph):
                             'point_index': len(new_node.points) - 1,
                             'xyz': [0.0, 0.0, 0.0]
                         })
-
-                # ボリューム情報の処理を追加
-                volume_elem = root.find('.//volume')
-                if volume_elem is not None:
-                    volume_value = float(volume_elem.get('value', 0))
-                    new_node.volume_value = volume_value
-                    print(f"Set volume: {volume_value}")
+                        print(f"Added point: {point_name} at {xyz_values}")
 
                 # STLファイルの処理
                 if os.path.exists(stl_path):
                     print(f"Loading corresponding STL file: {stl_path}")
                     new_node.stl_file = stl_path
-                    self.stl_viewer.load_stl_for_node(new_node)
+                    if self.stl_viewer:
+                        self.stl_viewer.load_stl_for_node(new_node)
+                        # STLモデルに色を適用
+                        if hasattr(new_node, 'node_color'):
+                            self.stl_viewer.apply_color_to_node(new_node)
                 else:
                     print(f"Warning: STL file not found: {stl_path}")
 
                 print(f"Successfully imported: {xml_file}")
-                
+
             except Exception as e:
                 print(f"Error processing {xml_file}: {str(e)}")
                 traceback.print_exc()
