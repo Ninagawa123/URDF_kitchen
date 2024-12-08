@@ -1023,7 +1023,6 @@ class MainWindow(QMainWindow):
 
         return properties
 
-
     def calculate_center_of_mass(self):
         """
         重心を計算して表示する。
@@ -1080,6 +1079,10 @@ class MainWindow(QMainWindow):
         return center_of_mass
 
     def calculate_inertia_tensor(self):
+        """
+        STLモデルの慣性テンソルを計算する。
+        重心位置を考慮し、正確なイナーシャを算出する。
+        """
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
             print("No STL model is loaded.")
             return None
@@ -1091,14 +1094,12 @@ class MainWindow(QMainWindow):
         mass_properties = vtk.vtkMassProperties()
         mass_properties.SetInputData(poly_data)
         mass_properties.Update()
-
         volume = mass_properties.GetVolume()
         density = float(self.density_input.text())
         mass = volume * density
 
-        # 重心の取得方法を変更
+        # 重心の取得
         if hasattr(self, 'com_checkbox') and self.com_checkbox.isChecked():
-            # チェックされている場合は入力値を使用
             try:
                 com_text = self.com_input.text().strip('()').split(',')
                 center_of_mass = [float(x.strip()) for x in com_text]
@@ -1107,7 +1108,6 @@ class MainWindow(QMainWindow):
                 print(f"Error parsing Center of Mass input: {e}")
                 return None
         else:
-            # チェックされていない場合は計算値を使用
             com_filter = vtk.vtkCenterOfMass()
             com_filter.SetInputData(poly_data)
             com_filter.SetUseScalarsAsWeights(False)
@@ -1115,39 +1115,55 @@ class MainWindow(QMainWindow):
             center_of_mass = com_filter.GetCenter()
             print(f"Calculated Center of Mass: {center_of_mass}")
 
-        # 慣性テンソルを計算
+        # 慣性テンソルの計算
         inertia_tensor = np.zeros((3, 3))
         num_cells = poly_data.GetNumberOfCells()
+        total_volume = 0.0
 
         for i in range(num_cells):
             cell = poly_data.GetCell(i)
             if cell.GetCellType() == vtk.VTK_TRIANGLE:
-                p1, p2, p3 = [np.array(cell.GetPoints().GetPoint(j)) for j in range(3)]
+                # 三角形の頂点を取得
+                points = [np.array(cell.GetPoints().GetPoint(j)) for j in range(3)]
+                
+                # 重心からの相対位置を計算
+                rel_points = [p - np.array(center_of_mass) for p in points]
+                
+                # 三角形の面積を計算
+                v1 = rel_points[1] - rel_points[0]
+                v2 = rel_points[2] - rel_points[0]
+                area = 0.5 * np.linalg.norm(np.cross(v1, v2))
                 
                 # 三角形の重心を計算
-                centroid = (p1 + p2 + p3) / 3
+                tri_com = sum(rel_points) / 3.0
                 
-                # 重心からの相対位置
-                r = centroid - center_of_mass
+                # 三角形の体積要素を計算（面積 × 厚さの概算）
+                thickness = 0.001  # 仮の厚さ
+                elem_volume = area * thickness
+                total_volume += elem_volume
                 
-                # 三角形の面積
-                area = 0.5 * np.linalg.norm(np.cross(p2 - p1, p3 - p1))
-                
-                # 慣性テンソルに寄与
-                inertia_tensor[0, 0] += area * (r[1]**2 + r[2]**2)
-                inertia_tensor[1, 1] += area * (r[0]**2 + r[2]**2)
-                inertia_tensor[2, 2] += area * (r[0]**2 + r[1]**2)
-                inertia_tensor[0, 1] -= area * r[0] * r[1]
-                inertia_tensor[0, 2] -= area * r[0] * r[2]
-                inertia_tensor[1, 2] -= area * r[1] * r[2]
+                # 平行軸の定理を使用して慣性テンソルを計算
+                for p in rel_points:
+                    r_squared = np.sum(p * p)
+                    
+                    # 対角成分
+                    inertia_tensor[0, 0] += elem_volume * (r_squared - p[0] * p[0])
+                    inertia_tensor[1, 1] += elem_volume * (r_squared - p[1] * p[1])
+                    inertia_tensor[2, 2] += elem_volume * (r_squared - p[2] * p[2])
+                    
+                    # 非対角成分
+                    inertia_tensor[0, 1] -= elem_volume * p[0] * p[1]
+                    inertia_tensor[0, 2] -= elem_volume * p[0] * p[2]
+                    inertia_tensor[1, 2] -= elem_volume * p[1] * p[2]
 
-        # 対称性を利用して下三角を埋める
+        # 体積で正規化し、質量を考慮
+        scale_factor = mass / total_volume
+        inertia_tensor *= scale_factor
+
+        # 対称性を保証
         inertia_tensor[1, 0] = inertia_tensor[0, 1]
         inertia_tensor[2, 0] = inertia_tensor[0, 2]
         inertia_tensor[2, 1] = inertia_tensor[1, 2]
-
-        # 密度を掛けて最終的な慣性テンソルを得る
-        inertia_tensor *= density
 
         print("Inertia_tensor:")
         print(inertia_tensor)
@@ -1158,10 +1174,102 @@ class MainWindow(QMainWindow):
         # UIを更新
         if hasattr(self, 'inertia_tensor_input'):
             self.inertia_tensor_input.setText(urdf_inertia)
+            self.com_input.setText(f"({center_of_mass[0]:.6f}, {center_of_mass[1]:.6f}, {center_of_mass[2]:.6f})")
         else:
             print("Warning: inertia_tensor_input not found")
 
         return inertia_tensor
+
+    def export_urdf(self):
+        if not hasattr(self, 'stl_file_path'):
+            print("No STL file has been loaded.")
+            return
+
+        # STLファイルのパスとファイル名を取得
+        stl_dir = os.path.dirname(self.stl_file_path)
+        stl_filename = os.path.basename(self.stl_file_path)
+        stl_name_without_ext = os.path.splitext(stl_filename)[0]
+
+        # デフォルトのURDFファイル名を設定
+        default_urdf_filename = f"{stl_name_without_ext}.xml"
+        urdf_file_path, _ = QFileDialog.getSaveFileName(self, "Save URDF File", os.path.join(
+            stl_dir, default_urdf_filename), "XML Files (*.xml)")
+
+        if not urdf_file_path:
+            return
+
+        try:
+            # 色情報の取得と変換
+            rgb_values = [float(input.text()) for input in self.color_inputs]
+            hex_color = '#{:02X}{:02X}{:02X}'.format(
+                int(rgb_values[0] * 255),
+                int(rgb_values[1] * 255),
+                int(rgb_values[2] * 255)
+            )
+            rgba_str = f"{rgb_values[0]:.6f} {rgb_values[1]:.6f} {rgb_values[2]:.6f} 1.0"
+
+            # 重心の座標を取得
+            try:
+                com_text = self.com_input.text().strip('()').split(',')
+                com_values = [float(x.strip()) for x in com_text]
+                center_of_mass_str = f"{com_values[0]:.6f} {com_values[1]:.6f} {com_values[2]:.6f}"
+            except (ValueError, IndexError):
+                print("Warning: Invalid center of mass format, using default values")
+                center_of_mass_str = "0.000000 0.000000 0.000000"
+
+            # 軸情報の取得
+            axis_options = ["1 0 0", "0 1 0", "0 0 1", "0 0 0"]  # fixedのために"0 0 0"を追加
+            checked_id = self.axis_group.checkedId()
+            if 0 <= checked_id < len(axis_options):
+                axis_vector = axis_options[checked_id]
+            else:
+                print("Warning: No axis selected, using default X axis")
+                axis_vector = "1 0 0"
+
+            # URDFの内容を構築
+            urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urdf_part>
+    <material name="{hex_color}">
+        <color rgba="{rgba_str}" />
+    </material>
+    <link name="{stl_name_without_ext}">
+        <visual>
+            <origin xyz="{center_of_mass_str}" rpy="0 0 0"/>
+            <material name="{hex_color}" />
+        </visual>
+        <inertial>
+            <origin xyz="{center_of_mass_str}"/>
+            <mass value="{self.mass_input.text()}"/>
+            <volume value="{self.volume_input.text()}"/>
+            {self.inertia_tensor_input.toPlainText().strip()}
+        </inertial>
+        <center_of_mass>{center_of_mass_str}</center_of_mass>
+    </link>"""
+
+            # ポイント要素の追加
+            for i, checkbox in enumerate(self.point_checkboxes):
+                if checkbox.isChecked():
+                    x, y, z = self.point_coords[i]
+                    urdf_content += f"""
+    <point name="point{i+1}" type="fixed">
+        <point_xyz>{x:.6f} {y:.6f} {z:.6f}</point_xyz>
+    </point>"""
+
+            # 軸情報の追加
+            urdf_content += f"""
+    <joint>
+        <axis xyz="{axis_vector}" />
+    </joint>
+</urdf_part>"""
+
+            # ファイルに保存
+            with open(urdf_file_path, "w") as f:
+                f.write(urdf_content)
+            print(f"URDF file saved: {urdf_file_path}")
+
+        except Exception as e:
+            print(f"Error during URDF export: {str(e)}")
+            traceback.print_exc()
 
     def format_inertia_for_urdf(self, inertia_tensor):
         # 値が非常に小さい場合は0とみなす閾値
@@ -1689,86 +1797,6 @@ class MainWindow(QMainWindow):
         self.render_window.Render()
 
 
-    def export_urdf(self):
-        if not hasattr(self, 'stl_file_path'):
-            print("No STL file has been loaded.")
-            return
-
-        # STLファイルのパスとファイル名を取得
-        stl_dir = os.path.dirname(self.stl_file_path)
-        stl_filename = os.path.basename(self.stl_file_path)
-        stl_name_without_ext = os.path.splitext(stl_filename)[0]
-
-        # デフォルトのURDFファイル名を設定
-        default_urdf_filename = f"{stl_name_without_ext}.xml"
-        urdf_file_path, _ = QFileDialog.getSaveFileName(self, "Save URDF File", os.path.join(
-            stl_dir, default_urdf_filename), "XML Files (*.xml)")
-
-        if not urdf_file_path:
-            return
-
-        try:
-            # 現在の色を取得してHEX形式に変換
-            rgb_values = [float(input.text()) for input in self.color_inputs]
-            hex_color = '#{:02X}{:02X}{:02X}'.format(
-                int(rgb_values[0] * 255),
-                int(rgb_values[1] * 255),
-                int(rgb_values[2] * 255)
-            )
-            rgba_str = f"{rgb_values[0]:.6f} {rgb_values[1]:.6f} {rgb_values[2]:.6f} 1.0"
-        except ValueError:
-            # 色の取得に失敗した場合はデフォルト値を使用
-            hex_color = '#FFFFFF'
-            rgba_str = "1.0 1.0 1.0 1.0"
-
-        # URDFの内容を文字列として構築（インデントを整える）
-        urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
-<urdf_part>
-    <material name="{hex_color}">
-        <color rgba="{rgba_str}" />
-    </material>
-    <link name="{stl_name_without_ext}">
-        <visual>
-            <material name="{hex_color}" />
-        </visual>
-        <volume value="{self.volume_input.text()}"/>
-        <mass value="{self.mass_input.text()}"/>
-        {self.inertia_tensor_input.toPlainText().strip()}
-    </link>"""
-
-        # チェックされているポイントについてpoint要素を追加
-        for i, checkbox in enumerate(self.point_checkboxes):
-            if checkbox.isChecked():
-                x, y, z = self.point_coords[i]
-                urdf_content += f"""
-    <point name="{stl_name_without_ext}_point{i+1}" type="fixed">
-        <point_xyz>{x:.6f} {y:.6f} {z:.6f}</point_xyz>
-    </point>"""
-
-        # 選択されている軸に応じてjoint要素を追加
-        axis_options = ["1 0 0", "0 1 0", "0 0 1"]
-        checked_id = self.axis_group.checkedId()
-        if 0 <= checked_id < len(axis_options):
-            axis_vector = axis_options[checked_id]
-        else:
-            # デフォルト値を設定（必要に応じて変更可能）
-            print(f"Invalid axis selection ID: {checked_id}. Using default axis '1 0 0'.")
-            axis_vector = "1 0 0"
-
-        urdf_content += f"""
-    <joint>
-        <axis xyz="{axis_vector}" />
-    </joint>
-</urdf_part>"""
-
-        # URDFファイルを保存
-        try:
-            with open(urdf_file_path, "w") as f:
-                f.write(urdf_content)
-            print(f"URDF file has been saved: {urdf_file_path}")
-        except Exception as e:
-            print(f"Failed to save URDF file: {e}")
-
 
 
     def get_mirrored_filename(self, original_path):
@@ -1789,9 +1817,6 @@ class MainWindow(QMainWindow):
             new_name = 'mirrored_' + name
         
         return os.path.join(dir_path, new_name + ext)
-
-
-
 
     def export_mirror_stl_xml(self):
         if not hasattr(self, 'stl_file_path') or not self.stl_file_path:
@@ -1975,39 +2000,52 @@ class MainWindow(QMainWindow):
             print(f"An error occurred during mirror export: {str(e)}")
             traceback.print_exc()
 
-
     def _load_points_from_xml(self, root):
         """XMLからポイントデータを読み込む"""
         points_with_data = set()
-        points = root.findall('./point')
+        # './/point'とすることで、どの階層にあるpointタグも検索できる
+        points = root.findall('.//point')
         print(f"Found {len(points)} points in XML")
 
         for i, point in enumerate(points):
+            if i >= len(self.point_checkboxes):  # 配列の境界チェック
+                break
+
             xyz_element = point.find('point_xyz')
             if xyz_element is not None and xyz_element.text:
                 try:
                     x, y, z = map(float, xyz_element.text.strip().split())
-                    print(f"Point {i+1}: {x}, {y}, z")
+                    print(f"Loading point {i+1}: ({x}, {y}, {z})")
 
+                    # 座標の設定
                     self.point_inputs[i][0].setText(f"{x:.6f}")
                     self.point_inputs[i][1].setText(f"{y:.6f}")
                     self.point_inputs[i][2].setText(f"{z:.6f}")
                     self.point_coords[i] = [x, y, z]
                     points_with_data.add(i)
 
-                    # ポイントの表示を設定
+                    # チェックボックスをオンにする
                     self.point_checkboxes[i].setChecked(True)
+
+                    # ポイントの表示を設定
                     if self.point_actors[i] is None:
                         self.point_actors[i] = vtk.vtkAssembly()
                         self.create_point_coordinate(self.point_actors[i], [0, 0, 0])
-                        self.renderer.AddActor(self.point_actors[i])
-                    
+
                     self.point_actors[i].SetPosition(self.point_coords[i])
+                    self.renderer.AddActor(self.point_actors[i])
                     self.point_actors[i].VisibilityOn()
-                    
-                    print(f"Activated visualization for point {i+1}")
-                except Exception as e:
+
+                    print(f"Successfully loaded and visualized point {i+1}")
+
+                except (ValueError, IndexError) as e:
                     print(f"Error processing point {i+1}: {e}")
+                    continue
+
+        if not points_with_data:
+            print("No valid points found in XML")
+        else:
+            print(f"Successfully loaded {len(points_with_data)} points")
 
         return points_with_data
 
@@ -2049,19 +2087,66 @@ class MainWindow(QMainWindow):
     def load_parameters_from_xml(self, root):
         """XMLからパラメータを読み込んで設定する共通処理"""
         try:
+            has_parameters = False
+
+            # 色情報の読み込み
+            material_element = root.find(".//material")
+            if material_element is not None:
+                color_element = material_element.find("color")
+                if color_element is not None:
+                    rgba_str = color_element.get('rgba')
+                    if rgba_str:
+                        try:
+                            r, g, b, _ = map(float, rgba_str.split())
+                            # 色情報を入力フィールドに設定
+                            self.color_inputs[0].setText(f"{r:.3f}")
+                            self.color_inputs[1].setText(f"{g:.3f}")
+                            self.color_inputs[2].setText(f"{b:.3f}")
+                            
+                            # カラーサンプルの更新
+                            self.update_color_sample()
+                            
+                            # STLモデルに色を適用
+                            if hasattr(self, 'stl_actor') and self.stl_actor:
+                                self.stl_actor.GetProperty().SetColor(r, g, b)
+                                self.render_window.Render()
+                            
+                            has_parameters = True
+                            print(f"Loaded color: R={r:.3f}, G={g:.3f}, B={b:.3f}")
+                        except ValueError as e:
+                            print(f"Error parsing color values: {e}")
+
+            # 軸情報の読み込み
+            joint_element = root.find(".//joint/axis")
+            if joint_element is not None:
+                axis_str = joint_element.get('xyz')
+                if axis_str:
+                    try:
+                        x, y, z = map(float, axis_str.split())
+                        # 対応するラジオボタンを選択
+                        if x == 1:
+                            self.radio_buttons[0].setChecked(True)
+                            print("Set axis to X (roll)")
+                        elif y == 1:
+                            self.radio_buttons[1].setChecked(True)
+                            print("Set axis to Y (pitch)")
+                        elif z == 1:
+                            self.radio_buttons[2].setChecked(True)
+                            print("Set axis to Z (yaw)")
+                        else:
+                            self.radio_buttons[3].setChecked(True)  # fixed
+                            print("Set axis to fixed")
+                        has_parameters = True
+                    except ValueError as e:
+                        print(f"Error parsing axis values: {e}")
+
             # 体積を取得して設定
             volume_element = root.find(".//volume")
             if volume_element is not None:
                 volume = volume_element.get('value')
                 self.volume_input.setText(volume)
                 self.volume_checkbox.setChecked(True)
-
-            # 密度を取得して設定
-            density_element = root.find(".//density")
-            if density_element is not None:
-                density = density_element.get('value')
-                self.density_input.setText(density)
-                self.density_checkbox.setChecked(True)
+                has_parameters = True
 
             # 質量を取得して設定
             mass_element = root.find(".//mass")
@@ -2069,121 +2154,53 @@ class MainWindow(QMainWindow):
                 mass = mass_element.get('value')
                 self.mass_input.setText(mass)
                 self.mass_checkbox.setChecked(True)
+                has_parameters = True
 
-            # 重心を取得して設定
+            # 重心の取得と設定（優先順位付き）
+            com_str = None
+            
+            # まず<center_of_mass>タグを確認
             com_element = root.find(".//center_of_mass")
-            if com_element is not None:
-                com = com_element.text.strip()
-                self.com_input.setText(com)
-                self.com_checkbox.setChecked(True)
+            if com_element is not None and com_element.text:
+                com_str = com_element.text.strip()
+            
+            # 次にinertialのorigin要素を確認
+            if com_str is None:
+                inertial_origin = root.find(".//inertial/origin")
+                if inertial_origin is not None:
+                    xyz = inertial_origin.get('xyz')
+                    if xyz:
+                        com_str = xyz
+            
+            # 最後にvisualのorigin要素を確認
+            if com_str is None:
+                visual_origin = root.find(".//visual/origin")
+                if visual_origin is not None:
+                    xyz = visual_origin.get('xyz')
+                    if xyz:
+                        com_str = xyz
 
-            # 慣性テンソルを取得して設定
+            # 重心値を設定
+            if com_str:
+                try:
+                    x, y, z = map(float, com_str.split())
+                    self.com_input.setText(f"({x:.6f}, {y:.6f}, {z:.6f})")
+                    print(f"Loaded center of mass: ({x:.6f}, {y:.6f}, {z:.6f})")
+                    has_parameters = True
+                except ValueError as e:
+                    print(f"Error parsing center of mass values: {e}")
+
+            # 慣性テンソルの設定
             inertia_element = root.find(".//inertia")
             if inertia_element is not None:
                 inertia_str = ET.tostring(inertia_element, encoding='unicode')
                 self.inertia_tensor_input.setText(inertia_str)
-
-            # カラー情報を読み込む（material/color要素から）
-            color_element = root.find(".//material/color")
-            if color_element is not None:
-                rgba_str = color_element.get('rgba')
-                if rgba_str:
-                    try:
-                        # スペースで分割してRGB値を取得
-                        r, g, b, _ = map(float, rgba_str.split())
-                        
-                        # インプットフィールドに値を設定
-                        self.color_inputs[0].setText(f"{r:.3f}")
-                        self.color_inputs[1].setText(f"{g:.3f}")
-                        self.color_inputs[2].setText(f"{b:.3f}")
-                        
-                        # カラーサンプルを更新
-                        self.update_color_sample()
-                        
-                        # STLモデルに色を適用
-                        if hasattr(self, 'stl_actor') and self.stl_actor:
-                            self.stl_actor.GetProperty().SetColor(r, g, b)
-                            self.render_window.Render()
-                        
-                        print(f"Material color loaded and applied: R={r:.3f}, G={g:.3f}, B={b:.3f}")
-                    except (ValueError, IndexError) as e:
-                        print(f"Warning: Invalid color format in XML: {rgba_str}")
-                        print(f"Error details: {e}")
-                else:
-                    print("Warning: color element found but rgba attribute is missing")
-            else:
-                print("No material color information found in XML")
-
-            # ポイントの読み込みを追加
-            points = root.findall(".//point")
-            for i, point in enumerate(points):
-                if i >= len(self.point_checkboxes):
-                    break
-
-                xyz_element = point.find("point_xyz")
-                if xyz_element is not None and xyz_element.text:
-                    try:
-                        # 座標テキストを分割して数値に変換
-                        coords = xyz_element.text.strip().split()
-                        if len(coords) == 3:
-                            x, y, z = map(float, coords)
-                            
-                            # テキストフィールドに値を設定
-                            self.point_inputs[i][0].setText(f"{x:.6f}")
-                            self.point_inputs[i][1].setText(f"{y:.6f}")
-                            self.point_inputs[i][2].setText(f"{z:.6f}")
-                            
-                            # 内部の座標データを更新
-                            self.point_coords[i] = [x, y, z]
-                            
-                            # チェックボックスを有効化してポイントを表示
-                            self.point_checkboxes[i].setChecked(True)
-                            self.show_point(i)
-                            
-                            print(f"Loaded point {i+1}: ({x:.6f}, {y:.6f}, {z:.6f})")
-                    except ValueError as e:
-                        print(f"Error parsing coordinates for point {i+1}: {e}")
-
-            # 軸情報を探す
-            axis_found = False
-            axis_element = root.find(".//axis")
-            if axis_element is not None:
-                xyz_str = axis_element.get('xyz')
-                if xyz_str:
-                    try:
-                        x, y, z = map(float, xyz_str.split())
-                        # 軸の値に基づいてラジオボタンを設定
-                        if x == 1:  # "1 0 0"
-                            self.radio_buttons[0].setChecked(True)
-                            axis_found = True
-                        elif y == 1:  # "0 1 0"
-                            self.radio_buttons[1].setChecked(True)
-                            axis_found = True
-                        elif z == 1:  # "0 0 1"
-                            self.radio_buttons[2].setChecked(True)
-                            axis_found = True
-                    except ValueError:
-                        print(f"Warning: Invalid axis format in XML: {xyz_str}")
-
-            # axis要素が見つからないか、解析できない場合はデフォルトのX軸を設定
-            if not axis_found:
-                self.radio_buttons[0].setChecked(True)
-                print("No valid axis found in XML, defaulting to X axis rotation")
-
-            # XMLにパラメータが含まれている場合は再計算をスキップ
-            has_parameters = any([
-                volume_element is not None,
-                density_element is not None,
-                mass_element is not None,
-                com_element is not None,
-                inertia_element is not None
-            ])
+                has_parameters = True
 
             return has_parameters
 
         except Exception as e:
-            print(f"An error occurred while loading parameters: {str(e)}")
-            import traceback
+            print(f"Error loading parameters: {str(e)}")
             traceback.print_exc()
             return False
 
@@ -2358,12 +2375,37 @@ class MainWindow(QMainWindow):
                 print(f"Corresponding XML file not found: {xml_path}")
                 return
 
-            # XML処理
-            self._process_xml_data(xml_path, stl_path)
+            # XMLファイルを解析
+            try:
+                tree = ET.parse(xml_path)
+                root = tree.getroot()
+                
+                # XMLからパラメータを読み込む
+                has_parameters = self.load_parameters_from_xml(root)
+                
+                # パラメータがXMLに含まれていない場合のみ再計算を行う
+                if not has_parameters:
+                    self.calculate_and_update_properties()
+                    
+                # ポイントデータを読み込む
+                points_with_data = self._load_points_from_xml(root)
+                
+                print(f"XML file loaded: {xml_path}")
+                if points_with_data:
+                    print(f"Loaded {len(points_with_data)} points")
+                
+                # 表示を更新
+                self.refresh_view()
+
+            except ET.ParseError:
+                print(f"Error parsing XML file: {xml_path}")
+            except Exception as e:
+                print(f"Error processing XML file: {str(e)}")
+                traceback.print_exc()
 
         except Exception as e:
             print(f"An error occurred while loading the file: {str(e)}")
-
+            traceback.print_exc()
 
     def bulk_convert_l_to_r(self):
         try:
@@ -2530,7 +2572,6 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Error during bulk conversion: {str(e)}")
             traceback.print_exc()
-
 
     def start_rotation_test(self):
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
