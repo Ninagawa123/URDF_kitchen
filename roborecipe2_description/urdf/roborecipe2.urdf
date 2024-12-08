@@ -8,9 +8,6 @@
 <material name="#2f2f2f">
   <color rgba="0.188 0.188 0.188 1.0"/>
 </material>
-<material name="#cccccc">
-  <color rgba="0.800 0.800 0.800 1.0"/>
-</material>
 <material name="#ededed">
   <color rgba="0.933 0.933 0.933 1.0"/>
 </material>
@@ -31,17 +28,15 @@
 
   <joint name="base_link_to_c_waist" type="fixed">
     <origin xyz="0 0 0" rpy="0.0 0.0 0.0"/>
-    <axis xyz="1 0 0"/>
     <parent link="base_link"/>
     <child link="c_waist"/>
-    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>
   </joint>
 
   <link name="c_waist">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.142800"/>
-      <inertia ixx="0.013013" ixy="0.000011" ixz="-0.000139" iyy="0.010774" iyz="-0.000075" izz="0.018328"/>
+      <inertia ixx="0.000268" ixy="-0.000000" ixz="0.000005" iyy="0.000292" iyz="0.000003" izz="0.000366"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -70,14 +65,14 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.421500"/>
-      <inertia ixx="0.065511" ixy="-0.000635" ixz="-0.009181" iyy="0.127680" iyz="0.001935" izz="0.132527"/>
+      <inertia ixx="0.003186" ixy="0.000009" ixz="-0.000261" iyy="0.003556" iyz="-0.000143" izz="0.004575"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <mesh filename="package://roborecipe2_description/meshes/c_chest.stl"/>
       </geometry>
-      <material name="#ffffff"/>
+      <material name="#2e2e2e"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -88,7 +83,7 @@
   </link>
 
   <joint name="c_chest_to_c_head" type="revolute">
-    <origin xyz="0.01145 1e-06 0.0624" rpy="0.0 0.0 0.0"/>
+    <origin xyz="0.01145 -0.0 0.0624" rpy="0.0 0.0 0.0"/>
     <axis xyz="0 0 1"/>
     <parent link="c_chest"/>
     <child link="c_head"/>
@@ -99,7 +94,7 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.013000"/>
-      <inertia ixx="0.000844" ixy="-0.000005" ixz="0.000106" iyy="0.001141" iyz="-0.000013" izz="0.000766"/>
+      <inertia ixx="0.000022" ixy="0.000000" ixz="0.000000" iyy="0.000029" iyz="0.000000" izz="0.000022"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -117,7 +112,7 @@
   </link>
 
   <joint name="c_chest_to_l_shoulder" type="revolute">
-    <origin xyz="0.01147 0.048948 0.0454" rpy="0.0 0.0 0.0"/>
+    <origin xyz="0.01145 0.04885 0.0454" rpy="0.0 0.0 0.0"/>
     <axis xyz="0 1 0"/>
     <parent link="c_chest"/>
     <child link="l_shoulder"/>
@@ -128,7 +123,7 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.014000"/>
-      <inertia ixx="0.001181" ixy="-0.000086" ixz="-0.000026" iyy="0.002294" iyz="-0.000010" izz="0.002875"/>
+      <inertia ixx="0.000016" ixy="-0.000001" ixz="0.000000" iyy="0.000022" iyz="-0.000000" izz="0.000026"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -157,7 +152,7 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.098000"/>
-      <inertia ixx="0.010929" ixy="0.000024" ixz="-0.002817" iyy="0.013498" iyz="-0.000004" izz="0.004443"/>
+      <inertia ixx="0.000243" ixy="-0.000001" ixz="-0.000049" iyy="0.000322" iyz="0.000000" izz="0.000131"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -186,7 +181,7 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.044000"/>
-      <inertia ixx="0.001510" ixy="-0.000065" ixz="-0.000266" iyy="0.003127" iyz="0.000037" izz="0.003426"/>
+      <inertia ixx="0.000034" ixy="0.000002" ixz="-0.000002" iyy="0.000051" iyz="-0.000001" izz="0.000062"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -215,7 +210,7 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.030000"/>
-      <inertia ixx="0.008520" ixy="0.000043" ixz="0.000172" iyy="0.007705" iyz="0.000107" izz="0.002024"/>
+      <inertia ixx="0.000105" ixy="0.000001" ixz="0.000003" iyy="0.000095" iyz="0.000002" izz="0.000030"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -287,7 +282,7 @@
   </link>
 
   <joint name="c_chest_to_r_shoulder" type="revolute">
-    <origin xyz="0.01147 -0.048948 0.0454" rpy="0.0 0.0 0.0"/>
+    <origin xyz="0.01145 -0.04885 0.0454" rpy="0.0 0.0 0.0"/>
     <axis xyz="0 1 0"/>
     <parent link="c_chest"/>
     <child link="r_shoulder"/>
@@ -297,8 +292,8 @@
   <link name="r_shoulder">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.000020"/>
-      <inertia ixx="0.000002" ixy="0.000000" ixz="-0.000000" iyy="0.000003" iyz="0.000000" izz="0.000004"/>
+      <mass value="0.014000"/>
+      <inertia ixx="0.000016" ixy="0.000001" ixz="0.000000" iyy="0.000010" iyz="0.000000" izz="0.000021"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -326,8 +321,8 @@
   <link name="r_arm_upper">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.000072"/>
-      <inertia ixx="0.000008" ixy="-0.000000" ixz="-0.000002" iyy="0.000010" iyz="0.000000" izz="0.000003"/>
+      <mass value="0.098000"/>
+      <inertia ixx="0.000074" ixy="0.000000" ixz="-0.000015" iyy="0.000098" iyz="-0.000000" izz="0.000040"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -355,8 +350,8 @@
   <link name="r_elbow">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.000027"/>
-      <inertia ixx="0.000001" ixy="0.000000" ixz="-0.000000" iyy="0.000002" iyz="-0.000000" izz="0.000002"/>
+      <mass value="0.044000"/>
+      <inertia ixx="0.000008" ixy="-0.000001" ixz="-0.000001" iyy="0.000013" iyz="0.000000" izz="0.000016"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -384,8 +379,8 @@
   <link name="r_arm_lower">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.000049"/>
-      <inertia ixx="0.000014" ixy="-0.000000" ixz="0.000000" iyy="0.000013" iyz="-0.000000" izz="0.000003"/>
+      <mass value="0.030000"/>
+      <inertia ixx="0.000023" ixy="-0.000000" ixz="0.000001" iyy="0.000021" iyz="-0.000000" izz="0.000007"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -412,7 +407,7 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.000003"/>
-      <inertia ixx="0.000000" ixy="-0.000000" ixz="0.000000" iyy="0.000000" iyz="-0.000000" izz="0.000000"/>
+      <inertia ixx="0.000000" ixy="0.000000" ixz="0.000000" iyy="0.000000" iyz="0.000000" izz="0.000000"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -465,15 +460,15 @@
   <link name="c_chest_dec1">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.000000"/>
-      <inertia ixx="0.000000" ixy="0.000000" ixz="0.000000" iyy="0.000000" iyz="0.000000" izz="0.000000"/>
+      <mass value="0.086483"/>
+      <inertia ixx="0.000640" ixy="0.000001" ixz="0.000080" iyy="0.000348" iyz="-0.000045" izz="0.000548"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <mesh filename="package://roborecipe2_description/meshes/c_chest_dec1.stl"/>
       </geometry>
-      <material name="#ffffff"/>
+      <material name="#ededed"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -500,7 +495,7 @@
       <geometry>
         <mesh filename="package://roborecipe2_description/meshes/c_chest_dec2.stl"/>
       </geometry>
-      <material name="#2f2f2f"/>
+      <material name="#2e2e2e"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -522,7 +517,7 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.011500"/>
-      <inertia ixx="0.001825" ixy="0.000053" ixz="0.000045" iyy="0.004217" iyz="-0.000093" izz="0.003722"/>
+      <inertia ixx="0.000014" ixy="-0.000000" ixz="-0.000000" iyy="0.000022" iyz="-0.000002" izz="0.000020"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -551,7 +546,7 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.058000"/>
-      <inertia ixx="0.007689" ixy="0.000043" ixz="-0.000036" iyy="0.005267" iyz="-0.000081" izz="0.005395"/>
+      <inertia ixx="0.000131" ixy="-0.000003" ixz="0.000001" iyy="0.000085" iyz="-0.000001" izz="0.000102"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -609,7 +604,7 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.061000"/>
-      <inertia ixx="0.006442" ixy="0.000030" ixz="-0.001102" iyy="0.006051" iyz="-0.000192" izz="0.003004"/>
+      <inertia ixx="0.000147" ixy="-0.000000" ixz="-0.000004" iyy="0.000127" iyz="0.000006" izz="0.000063"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -638,7 +633,7 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.058000"/>
-      <inertia ixx="0.007614" ixy="0.000043" ixz="0.000050" iyy="0.005185" iyz="0.000078" izz="0.005355"/>
+      <inertia ixx="0.000132" ixy="-0.000003" ixz="-0.000001" iyy="0.000087" iyz="0.000001" izz="0.000103"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -721,14 +716,14 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.000009"/>
-      <inertia ixx="0.000006" ixy="-0.000000" ixz="-0.000001" iyy="0.000005" iyz="0.000000" izz="0.000006"/>
+      <inertia ixx="0.000000" ixy="-0.000000" ixz="-0.000000" iyy="0.000000" iyz="0.000000" izz="0.000000"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <mesh filename="package://roborecipe2_description/meshes/l_leg_upper_dec1.stl"/>
       </geometry>
-      <material name="#cccccc"/>
+      <material name="#ededed"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -776,8 +771,8 @@
   <link name="r_hipjoint_upper">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.000011"/>
-      <inertia ixx="0.000002" ixy="-0.000000" ixz="0.000000" iyy="0.000004" iyz="0.000000" izz="0.000003"/>
+      <mass value="0.011500"/>
+      <inertia ixx="0.000013" ixy="0.000000" ixz="0.000000" iyy="0.000019" iyz="0.000001" izz="0.000015"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -805,8 +800,8 @@
   <link name="r_hipjoint_lower">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.000046"/>
-      <inertia ixx="0.000006" ixy="-0.000000" ixz="-0.000000" iyy="0.000004" iyz="0.000000" izz="0.000004"/>
+      <mass value="0.058000"/>
+      <inertia ixx="0.000104" ixy="0.000002" ixz="0.000001" iyy="0.000067" iyz="0.000001" izz="0.000081"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -834,8 +829,8 @@
   <link name="r_leg_upper">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.000057"/>
-      <inertia ixx="0.000011" ixy="-0.000000" ixz="-0.000001" iyy="0.000013" iyz="0.000000" izz="0.000005"/>
+      <mass value="0.091000"/>
+      <inertia ixx="0.000082" ixy="0.000000" ixz="-0.000007" iyy="0.000082" iyz="-0.000001" izz="0.000042"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -863,8 +858,8 @@
   <link name="r_leg_lower">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.000022"/>
-      <inertia ixx="0.000002" ixy="-0.000000" ixz="-0.000000" iyy="0.000002" iyz="0.000000" izz="0.000001"/>
+      <mass value="0.061000"/>
+      <inertia ixx="0.000043" ixy="0.000000" ixz="-0.000001" iyy="0.000037" iyz="-0.000002" izz="0.000018"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -892,8 +887,8 @@
   <link name="r_ankle">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.000035"/>
-      <inertia ixx="0.000006" ixy="-0.000000" ixz="0.000000" iyy="0.000004" iyz="-0.000000" izz="0.000004"/>
+      <mass value="0.058000"/>
+      <inertia ixx="0.000058" ixy="0.000001" ixz="-0.000001" iyy="0.000038" iyz="-0.000000" izz="0.000045"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -921,8 +916,8 @@
   <link name="r_foot_large">
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
-      <mass value="0.000064"/>
-      <inertia ixx="0.000014" ixy="0.000001" ixz="-0.000001" iyy="0.000032" iyz="-0.000001" izz="0.000043"/>
+      <mass value="0.045000"/>
+      <inertia ixx="0.000061" ixy="-0.000006" ixz="-0.000001" iyy="0.000090" iyz="-0.000003" izz="0.000141"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -949,7 +944,7 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.000014"/>
-      <inertia ixx="0.000013" ixy="-0.000000" ixz="0.000001" iyy="0.000012" iyz="-0.000000" izz="0.000005"/>
+      <inertia ixx="0.000000" ixy="0.000000" ixz="0.000000" iyy="0.000000" iyz="-0.000000" izz="0.000000"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
@@ -976,14 +971,14 @@
     <inertial>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <mass value="0.000009"/>
-      <inertia ixx="0.000006" ixy="0.000000" ixz="-0.000001" iyy="0.000005" iyz="-0.000000" izz="0.000006"/>
+      <inertia ixx="0.000000" ixy="0.000000" ixz="-0.000000" iyy="0.000000" iyz="-0.000000" izz="0.000000"/>
     </inertial>
     <visual>
       <origin xyz="0 0 0" rpy="0 0 0"/>
       <geometry>
         <mesh filename="package://roborecipe2_description/meshes/r_leg_upper_dec1.stl"/>
       </geometry>
-      <material name="#cccccc"/>
+      <material name="#ededed"/>
     </visual>
     <collision>
       <origin xyz="0 0 0" rpy="0 0 0"/>
