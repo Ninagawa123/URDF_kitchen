@@ -50,6 +50,11 @@ python urdf_kitchen_PartsEditor.py
 python urdf_kitchen_Assembler.py  
 と入力して実行します。初回起動は少し時間がかかります。  
   
+# バグレポート  
+  
+絶賛バグフィックス中です。  
+特にパラメータの計算や反映について検算や検証が必要です。  
+  
 # Tutorial  
 準備中です。少々お待ちください。  
   
