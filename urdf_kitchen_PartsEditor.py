@@ -1826,7 +1826,7 @@ class MainWindow(QMainWindow):
             original_filename = os.path.basename(self.stl_file_path)
             name, ext = os.path.splitext(original_filename)
 
-            # 新しいファイル名を生成
+            # 新しいファイル名を生成（L/R反転）
             if name.startswith('L_'):
                 new_name = 'R_' + name[2:]
             elif name.startswith('l_'):
@@ -1857,24 +1857,13 @@ class MainWindow(QMainWindow):
             transform_filter.Update()
 
             # 法線の修正
-            # まず連結性を確認
-            connect = vtk.vtkPolyDataConnectivityFilter()
-            connect.SetInputData(transform_filter.GetOutput())
-            connect.Update()
-
-            # 法線の一貫性を確保
             normal_generator = vtk.vtkPolyDataNormals()
-            normal_generator.SetInputData(connect.GetOutput())
+            normal_generator.SetInputData(transform_filter.GetOutput())
             normal_generator.ConsistencyOn()
             normal_generator.AutoOrientNormalsOn()
             normal_generator.ComputeCellNormalsOn()
             normal_generator.ComputePointNormalsOn()
-            normal_generator.SplittingOff()
-            normal_generator.NonManifoldTraversalOn()
             normal_generator.Update()
-
-            # 法線が修正されたデータを取得
-            mirrored_poly_data = normal_generator.GetOutput()
 
             # XMLファイルを確認し読み込む
             xml_path = os.path.splitext(self.stl_file_path)[0] + '.xml'
@@ -1884,57 +1873,49 @@ class MainWindow(QMainWindow):
                     tree = ET.parse(xml_path)
                     xml_data = tree.getroot()
                     print(f"Found and loaded XML file: {xml_path}")
+
+                    # XMLから物理パラメータを取得
+                    mass = float(xml_data.find(".//mass").get('value'))
+                    volume = float(xml_data.find(".//volume").get('value'))
+                    
+                    # 重心位置を取得（center_of_mass要素から）
+                    com_element = xml_data.find(".//center_of_mass")
+                    if com_element is not None and com_element.text:
+                        x, y, z = map(float, com_element.text.strip().split())
+                        center_of_mass = [x, -y, z]  # Y座標のみを反転
+                    else:
+                        # inertialのorigin要素から取得
+                        inertial_origin = xml_data.find(".//inertial/origin")
+                        if inertial_origin is not None:
+                            xyz = inertial_origin.get('xyz')
+                            x, y, z = map(float, xyz.split())
+                            center_of_mass = [x, -y, z]  # Y座標のみを反転
+
+                    # 色情報を取得
+                    color_element = xml_data.find(".//material/color")
+                    if color_element is not None:
+                        rgba_str = color_element.get('rgba')
+                        hex_color = xml_data.find(".//material").get('name')
+                    else:
+                        rgba_str = "1.0 1.0 1.0 1.0"
+                        hex_color = "#FFFFFF"
+
                 except ET.ParseError:
                     print(f"Error parsing XML file: {xml_path}")
-
-            # 物理プロパティを計算（質量を保持）
-            volume, mass, center_of_mass, inertia_tensor = self.process_mirror_properties(
-                xml_data,
-                mirrored_poly_data,
-                density=float(self.density_input.text())
-            )
+                    return
 
             # ミラー化したSTLを保存
             writer = vtk.vtkSTLWriter()
             writer.SetFileName(mirrored_stl_path)
-            writer.SetInputData(mirrored_poly_data)
+            writer.SetInputData(normal_generator.GetOutput())
             writer.Write()
+
+            # イナーシャテンソルを計算
+            inertia_tensor = self.calculate_inertia_tensor_for_mirrored(
+                normal_generator.GetOutput(), mass, center_of_mass)
 
             # 新しいXMLファイルのパスを生成
             new_xml_path = os.path.splitext(mirrored_stl_path)[0] + '.xml'
-
-            # 色情報を取得
-            try:
-                if xml_data is not None:
-                    color_element = xml_data.find(".//material/color")
-                    if color_element is not None:
-                        rgba_str = color_element.get('rgba', "1.0 1.0 1.0 1.0")
-                        try:
-                            r, g, b, _ = map(float, rgba_str.split())
-                            hex_color = '#{:02X}{:02X}{:02X}'.format(
-                                int(r * 255), int(g * 255), int(b * 255))
-                        except (ValueError, IndexError):
-                            hex_color = '#FFFFFF'
-                            rgba_str = "1.0 1.0 1.0 1.0"
-                    else:
-                        rgb_values = [float(input.text()) for input in self.color_inputs]
-                        hex_color = '#{:02X}{:02X}{:02X}'.format(
-                            int(rgb_values[0] * 255),
-                            int(rgb_values[1] * 255),
-                            int(rgb_values[2] * 255)
-                        )
-                        rgba_str = f"{rgb_values[0]:.6f} {rgb_values[1]:.6f} {rgb_values[2]:.6f} 1.0"
-                else:
-                    rgb_values = [float(input.text()) for input in self.color_inputs]
-                    hex_color = '#{:02X}{:02X}{:02X}'.format(
-                        int(rgb_values[0] * 255),
-                        int(rgb_values[1] * 255),
-                        int(rgb_values[2] * 255)
-                    )
-                    rgba_str = f"{rgb_values[0]:.6f} {rgb_values[1]:.6f} {rgb_values[2]:.6f} 1.0"
-            except ValueError:
-                hex_color = '#FFFFFF'
-                rgba_str = "1.0 1.0 1.0 1.0"
 
             # XMLファイルの内容を生成
             urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -1944,13 +1925,19 @@ class MainWindow(QMainWindow):
     </material>
     <link name="{new_name}">
         <visual>
+            <origin xyz="{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}" rpy="0 0 0"/>
             <material name="{hex_color}" />
         </visual>
-        <volume value="{volume:.12f}"/>
-        <mass value="{mass:.12f}"/>
-        {self.format_inertia_for_urdf(inertia_tensor)}</link>"""
+        <inertial>
+            <origin xyz="{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}"/>
+            <mass value="{mass:.12f}"/>
+            <volume value="{volume:.12f}"/>
+            {self.format_inertia_for_urdf(inertia_tensor)}
+        </inertial>
+        <center_of_mass>{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}</center_of_mass>
+    </link>"""
 
-            # チェックされているポイントについてpoint要素を追加
+            # ポイントデータを反転してコピー
             if xml_data is not None:
                 points = xml_data.findall('.//point')
                 for point in points:
@@ -1959,7 +1946,7 @@ class MainWindow(QMainWindow):
                         try:
                             x, y, z = map(float, xyz_element.text.strip().split())
                             mirrored_y = -y  # Y座標のみ反転
-                            point_name = point.get('name', '').replace('l_', 'r_').replace('L_', 'R_')
+                            point_name = point.get('name')
                             urdf_content += f"""
     <point name="{point_name}" type="fixed">
         <point_xyz>{x:.6f} {mirrored_y:.6f} {z:.6f}</point_xyz>
@@ -1967,27 +1954,26 @@ class MainWindow(QMainWindow):
                         except ValueError:
                             print(f"Error processing point coordinates in XML")
 
-            # 選択されている軸に応じてjoint要素を追加
-            axis_options = ["1 0 0", "0 1 0", "0 0 1"]
-            checked_id = self.axis_group.checkedId()
-            if 0 <= checked_id < len(axis_options):
-                axis_vector = axis_options[checked_id]
+            # 軸情報を取得して適用
+            if xml_data is not None:
+                axis_element = xml_data.find('.//joint/axis')
+                if axis_element is not None:
+                    axis_str = axis_element.get('xyz')
+                    mirrored_axis = self.mirror_axis_value(axis_str)
+                else:
+                    mirrored_axis = "1 0 0"
             else:
-                axis_vector = "1 0 0"  # デフォルト値
+                mirrored_axis = "1 0 0"
 
             urdf_content += f"""
     <joint>
-        <axis xyz="{axis_vector}" />
+        <axis xyz="{mirrored_axis}" />
     </joint>
 </urdf_part>"""
 
             # XMLファイルを保存
             with open(new_xml_path, "w") as f:
                 f.write(urdf_content)
-
-            # 結果ダイアログを表示
-            dialog = ResultDialog(mirrored_stl_path, new_xml_path, self)
-            dialog.exec()
 
             print(f"Mirror export completed successfully:")
             print(f"STL file: {mirrored_stl_path}")
@@ -1996,6 +1982,59 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"An error occurred during mirror export: {str(e)}")
             traceback.print_exc()
+
+    def calculate_inertia_tensor_for_mirrored(self, poly_data, mass, center_of_mass):
+        """
+        ミラーリングされたモデルの慣性テンソルを計算
+        """
+        # 体積を計算
+        mass_properties = vtk.vtkMassProperties()
+        mass_properties.SetInputData(poly_data)
+        mass_properties.Update()
+        total_volume = mass_properties.GetVolume()
+
+        inertia_tensor = np.zeros((3, 3))
+        num_cells = poly_data.GetNumberOfCells()
+
+        for i in range(num_cells):
+            cell = poly_data.GetCell(i)
+            if cell.GetCellType() == vtk.VTK_TRIANGLE:
+                points = [np.array(cell.GetPoints().GetPoint(j)) for j in range(3)]
+                rel_points = [p - np.array(center_of_mass) for p in points]
+                
+                # 三角形の面積と重心を計算
+                v1 = rel_points[1] - rel_points[0]
+                v2 = rel_points[2] - rel_points[0]
+                area = 0.5 * np.linalg.norm(np.cross(v1, v2))
+                tri_com = sum(rel_points) / 3.0
+                
+                # 三角形の体積要素
+                thickness = 0.001
+                elem_volume = area * thickness
+                
+                for p in rel_points:
+                    r_squared = np.sum(p * p)
+                    
+                    # 対角成分
+                    inertia_tensor[0, 0] += elem_volume * (r_squared - p[0] * p[0])
+                    inertia_tensor[1, 1] += elem_volume * (r_squared - p[1] * p[1])
+                    inertia_tensor[2, 2] += elem_volume * (r_squared - p[2] * p[2])
+                    
+                    # 非対角成分（Y軸に関する反転を考慮）
+                    inertia_tensor[0, 1] -= elem_volume * p[0] * p[1]  # 符号反転
+                    inertia_tensor[0, 2] -= elem_volume * p[0] * p[2]
+                    inertia_tensor[1, 2] -= elem_volume * p[1] * p[2]  # 符号反転
+
+        # 質量による正規化
+        scale_factor = mass / total_volume
+        inertia_tensor *= scale_factor
+
+        # 対称性の保証
+        inertia_tensor[1, 0] = inertia_tensor[0, 1]
+        inertia_tensor[2, 0] = inertia_tensor[0, 2]
+        inertia_tensor[2, 1] = inertia_tensor[1, 2]
+
+        return inertia_tensor
 
     def _load_points_from_xml(self, root):
         """XMLからポイントデータを読み込む"""
@@ -2488,12 +2527,14 @@ class MainWindow(QMainWindow):
                         transformer.SetTransform(transform)
                         transformer.Update()
 
-                        # 頂点の順序を反転して法線を修正
-                        reverse = vtk.vtkReverseSense()
-                        reverse.SetInputConnection(transformer.GetOutputPort())
-                        reverse.ReverseCellsOn()
-                        reverse.ReverseNormalsOn()
-                        reverse.Update()
+                        # 法線の修正
+                        normal_generator = vtk.vtkPolyDataNormals()
+                        normal_generator.SetInputData(transformer.GetOutput())
+                        normal_generator.ConsistencyOn()
+                        normal_generator.AutoOrientNormalsOn()
+                        normal_generator.ComputeCellNormalsOn()
+                        normal_generator.ComputePointNormalsOn()
+                        normal_generator.Update()
 
                         # 対応するXMLファイルを探す
                         xml_path = os.path.splitext(stl_path)[0] + '.xml'
@@ -2502,56 +2543,55 @@ class MainWindow(QMainWindow):
                             try:
                                 tree = ET.parse(xml_path)
                                 xml_data = tree.getroot()
-                                print(f"Found corresponding XML file: {xml_path}")
+                                print(f"Found and loaded XML file: {xml_path}")
+
+                                # XMLから物理パラメータを取得
+                                mass = float(xml_data.find(".//mass").get('value'))
+                                volume = float(xml_data.find(".//volume").get('value'))
+                                
+                                # 重心位置を取得（center_of_mass要素から）
+                                com_element = xml_data.find(".//center_of_mass")
+                                if com_element is not None and com_element.text:
+                                    x, y, z = map(float, com_element.text.strip().split())
+                                    center_of_mass = [x, -y, z]  # Y座標のみを反転
+                                else:
+                                    # inertialのorigin要素から取得
+                                    inertial_origin = xml_data.find(".//inertial/origin")
+                                    if inertial_origin is not None:
+                                        xyz = inertial_origin.get('xyz')
+                                        x, y, z = map(float, xyz.split())
+                                        center_of_mass = [x, -y, z]  # Y座標のみを反転
+
+                                # 色情報を取得
+                                color_element = xml_data.find(".//material/color")
+                                if color_element is not None:
+                                    rgba_str = color_element.get('rgba')
+                                    hex_color = xml_data.find(".//material").get('name')
+                                else:
+                                    rgba_str = "1.0 1.0 1.0 1.0"
+                                    hex_color = "#FFFFFF"
+
                             except ET.ParseError:
                                 print(f"Error parsing XML file: {xml_path}")
-                                xml_data = None
-
-                        # 物理プロパティを計算（質量を保持）
-                        volume, mass, center_of_mass, inertia_tensor = self.process_mirror_properties(
-                            xml_data,
-                            reverse.GetOutput(),
-                            density=float(self.density_input.text())
-                        )
+                                continue
 
                         # 新しいファイル名を生成
                         new_name = 'R_' + file_name[2:] if file_name.startswith('L_') else 'r_' + file_name[2:]
-                        new_stl_path = os.path.join(folder_path, new_name)
                         new_name_without_ext = os.path.splitext(new_name)[0]
+                        new_stl_path = os.path.join(folder_path, new_name)
 
-                        # 変換したSTLを保存
+                        # ミラー化したSTLを保存
                         writer = vtk.vtkSTLWriter()
                         writer.SetFileName(new_stl_path)
-                        writer.SetInputConnection(reverse.GetOutputPort())
+                        writer.SetInputData(normal_generator.GetOutput())
                         writer.Write()
+
+                        # イナーシャテンソルを計算
+                        inertia_tensor = self.calculate_inertia_tensor_for_mirrored(
+                            normal_generator.GetOutput(), mass, center_of_mass)
 
                         # 新しいXMLファイルのパスを生成
                         new_xml_path = os.path.splitext(new_stl_path)[0] + '.xml'
-
-                        # 色情報を取得
-                        if xml_data is not None:
-                            color_element = xml_data.find(".//material/color")
-                            if color_element is not None:
-                                rgba_str = color_element.get('rgba', "1.0 1.0 1.0 1.0")
-                                try:
-                                    r, g, b, _ = map(float, rgba_str.split())
-                                    hex_color = '#{:02X}{:02X}{:02X}'.format(
-                                        int(r * 255), int(g * 255), int(b * 255))
-                                except (ValueError, IndexError):
-                                    hex_color = '#FFFFFF'
-                                    rgba_str = "1.0 1.0 1.0 1.0"
-                        else:
-                            try:
-                                rgb_values = [float(input.text()) for input in self.color_inputs]
-                                hex_color = '#{:02X}{:02X}{:02X}'.format(
-                                    int(rgb_values[0] * 255),
-                                    int(rgb_values[1] * 255),
-                                    int(rgb_values[2] * 255)
-                                )
-                                rgba_str = f"{rgb_values[0]:.6f} {rgb_values[1]:.6f} {rgb_values[2]:.6f} 1.0"
-                            except ValueError:
-                                hex_color = '#FFFFFF'
-                                rgba_str = "1.0 1.0 1.0 1.0"
 
                         # XMLファイルの内容を生成
                         urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -2561,13 +2601,19 @@ class MainWindow(QMainWindow):
     </material>
     <link name="{new_name_without_ext}">
         <visual>
+            <origin xyz="{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}" rpy="0 0 0"/>
             <material name="{hex_color}" />
         </visual>
-        <volume value="{volume:.12f}"/>
-        <mass value="{mass:.12f}"/>
-        {self.format_inertia_for_urdf(inertia_tensor)}</link>"""
+        <inertial>
+            <origin xyz="{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}"/>
+            <mass value="{mass:.12f}"/>
+            <volume value="{volume:.12f}"/>
+            {self.format_inertia_for_urdf(inertia_tensor)}
+        </inertial>
+        <center_of_mass>{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}</center_of_mass>
+    </link>"""
 
-                        # 既存のXMLからポイントデータを取得して反転
+                        # ポイントデータを反転してコピー
                         if xml_data is not None:
                             points = xml_data.findall('.//point')
                             for point in points:
@@ -2576,7 +2622,7 @@ class MainWindow(QMainWindow):
                                     try:
                                         x, y, z = map(float, xyz_element.text.strip().split())
                                         mirrored_y = -y  # Y座標のみ反転
-                                        point_name = point.get('name', '').replace('l_', 'r_').replace('L_', 'R_')
+                                        point_name = point.get('name')
                                         urdf_content += f"""
     <point name="{point_name}" type="fixed">
         <point_xyz>{x:.6f} {mirrored_y:.6f} {z:.6f}</point_xyz>
@@ -2584,16 +2630,20 @@ class MainWindow(QMainWindow):
                                     except ValueError:
                                         print(f"Error processing point coordinates in XML")
 
-                        # 既存のXMLから回転軸情報を取得
-                        axis_vector = "1 0 0"  # デフォルト値
+                        # 軸情報を取得して適用
                         if xml_data is not None:
-                            axis_element = xml_data.find('.//axis')
+                            axis_element = xml_data.find('.//joint/axis')
                             if axis_element is not None:
-                                axis_vector = axis_element.get('xyz', "1 0 0")
+                                axis_str = axis_element.get('xyz')
+                                mirrored_axis = self.mirror_axis_value(axis_str)
+                            else:
+                                mirrored_axis = "1 0 0"
+                        else:
+                            mirrored_axis = "1 0 0"
 
                         urdf_content += f"""
     <joint>
-        <axis xyz="{axis_vector}" />
+        <axis xyz="{mirrored_axis}" />
     </joint>
 </urdf_part>"""
 
@@ -2607,6 +2657,7 @@ class MainWindow(QMainWindow):
 
                     except Exception as e:
                         print(f"Error processing file {file_name}: {str(e)}")
+                        traceback.print_exc()
                         continue
 
                 # 処理完了メッセージ
@@ -2618,6 +2669,19 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Error during bulk conversion: {str(e)}")
             traceback.print_exc()
+
+    def mirror_axis_value(self, axis_str):
+        """
+        軸情報を左右反転する際の処理
+        回転軸の向きは左右で変更しない
+        """
+        try:
+            x, y, z = map(float, axis_str.split())
+            # 軸の向きは変更せずにそのまま返す
+            return f"{x:.1f} {y:.1f} {z:.1f}"
+        except ValueError:
+            print(f"Error parsing axis values: {axis_str}")
+            return "1 0 0"  # デフォルト値
 
     def start_rotation_test(self):
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
