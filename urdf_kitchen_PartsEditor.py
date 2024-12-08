@@ -1790,20 +1790,21 @@ class MainWindow(QMainWindow):
         
         return os.path.join(dir_path, new_name + ext)
 
+
+
+
     def export_mirror_stl_xml(self):
         if not hasattr(self, 'stl_file_path') or not self.stl_file_path:
             print("No STL file has been loaded.")
             return
 
         try:
-            # 元のファイルのディレクトリとファイル名を取得
+            # 元のファイルのパスとファイル名を取得
             original_dir = os.path.dirname(self.stl_file_path)
             original_filename = os.path.basename(self.stl_file_path)
-
-            # 新しいファイル名を生成
             name, ext = os.path.splitext(original_filename)
 
-            # ファイル名の先頭を確認して適切な新しいファイル名を生成
+            # 新しいファイル名を生成
             if name.startswith('L_'):
                 new_name = 'R_' + name[2:]
             elif name.startswith('l_'):
@@ -1818,14 +1819,14 @@ class MainWindow(QMainWindow):
             # ミラー化したSTLのパスを設定
             mirrored_stl_path = os.path.join(original_dir, new_name + ext)
 
-            # STLのミラー化と保存
+            # STLの読み込みとミラー化
             reader = vtk.vtkSTLReader()
             reader.SetFileName(self.stl_file_path)
             reader.Update()
 
-            # ミラー変換を作成（Y軸に対して反転）
+            # Y軸に対して反転する変換を作成
             transform = vtk.vtkTransform()
-            transform.Scale(1, -1, 1)  # Y軸のみ-1でスケーリング
+            transform.Scale(1, -1, 1)
 
             # 変換を適用
             transform_filter = vtk.vtkTransformPolyDataFilter()
@@ -1847,11 +1848,29 @@ class MainWindow(QMainWindow):
             normal_generator.ComputeCellNormalsOn()
             normal_generator.ComputePointNormalsOn()
             normal_generator.SplittingOff()
-            normal_generator.NonManifoldTraversalOn()  # 非マニフォールドの処理を有効化
+            normal_generator.NonManifoldTraversalOn()
             normal_generator.Update()
 
             # 法線が修正されたデータを取得
             mirrored_poly_data = normal_generator.GetOutput()
+
+            # XMLファイルを確認し読み込む
+            xml_path = os.path.splitext(self.stl_file_path)[0] + '.xml'
+            xml_data = None
+            if os.path.exists(xml_path):
+                try:
+                    tree = ET.parse(xml_path)
+                    xml_data = tree.getroot()
+                    print(f"Found and loaded XML file: {xml_path}")
+                except ET.ParseError:
+                    print(f"Error parsing XML file: {xml_path}")
+
+            # 物理プロパティを計算（質量を保持）
+            volume, mass, center_of_mass, inertia_tensor = self.process_mirror_properties(
+                xml_data,
+                mirrored_poly_data,
+                density=float(self.density_input.text())
+            )
 
             # ミラー化したSTLを保存
             writer = vtk.vtkSTLWriter()
@@ -1859,76 +1878,43 @@ class MainWindow(QMainWindow):
             writer.SetInputData(mirrored_poly_data)
             writer.Write()
 
-            # プロパティの計算
-            # 体積を計算
-            mass_properties = vtk.vtkMassProperties()
-            mass_properties.SetInputData(mirrored_poly_data)
-            volume = mass_properties.GetVolume()
+            # 新しいXMLファイルのパスを生成
+            new_xml_path = os.path.splitext(mirrored_stl_path)[0] + '.xml'
 
-            # 密度を取得
-            density = float(self.density_input.text())
-
-            # 質量を計算
-            mass = volume * density
-
-            # 重心を計算
-            com_filter = vtk.vtkCenterOfMass()
-            com_filter.SetInputData(mirrored_poly_data)
-            com_filter.SetUseScalarsAsWeights(False)
-            com_filter.Update()
-            center_of_mass = com_filter.GetCenter()
-
-            # 慣性テンソルを計算
-            inertia_tensor = np.zeros((3, 3))
-            num_cells = mirrored_poly_data.GetNumberOfCells()
-
-            for i in range(num_cells):
-                cell = mirrored_poly_data.GetCell(i)
-                if cell.GetCellType() == vtk.VTK_TRIANGLE:
-                    p1, p2, p3 = [np.array(cell.GetPoints().GetPoint(j))
-                                for j in range(3)]
-
-                    # 三角形の重心を計算
-                    centroid = (p1 + p2 + p3) / 3
-
-                    # 重心からの相対位置
-                    r = centroid - np.array(center_of_mass)
-
-                    # 三角形の面積
-                    area = 0.5 * np.linalg.norm(np.cross(p2 - p1, p3 - p1))
-
-                    # 慣性テンソルに寄与
-                    inertia_tensor[0, 0] += area * (r[1]**2 + r[2]**2)
-                    inertia_tensor[1, 1] += area * (r[0]**2 + r[2]**2)
-                    inertia_tensor[2, 2] += area * (r[0]**2 + r[1]**2)
-                    inertia_tensor[0, 1] -= area * r[0] * r[1]
-                    inertia_tensor[0, 2] -= area * r[0] * r[2]
-                    inertia_tensor[1, 2] -= area * r[1] * r[2]
-
-            # 対称性を利用して下三角を埋める
-            inertia_tensor[1, 0] = inertia_tensor[0, 1]
-            inertia_tensor[2, 0] = inertia_tensor[0, 2]
-            inertia_tensor[2, 1] = inertia_tensor[1, 2]
-
-            # 密度を掛けて最終的な慣性テンソルを得る
-            inertia_tensor *= density
-
-            # XMLファイルのパスを生成
-            xml_path = os.path.join(original_dir, new_name + '.xml')
-
+            # 色情報を取得
             try:
-                rgb_values = [float(input.text()) for input in self.color_inputs]
-                hex_color = '#{:02X}{:02X}{:02X}'.format(
-                    int(rgb_values[0] * 255),
-                    int(rgb_values[1] * 255),
-                    int(rgb_values[2] * 255)
-                )
-                rgba_str = f"{rgb_values[0]:.6f} {rgb_values[1]:.6f} {rgb_values[2]:.6f} 1.0"
+                if xml_data is not None:
+                    color_element = xml_data.find(".//material/color")
+                    if color_element is not None:
+                        rgba_str = color_element.get('rgba', "1.0 1.0 1.0 1.0")
+                        try:
+                            r, g, b, _ = map(float, rgba_str.split())
+                            hex_color = '#{:02X}{:02X}{:02X}'.format(
+                                int(r * 255), int(g * 255), int(b * 255))
+                        except (ValueError, IndexError):
+                            hex_color = '#FFFFFF'
+                            rgba_str = "1.0 1.0 1.0 1.0"
+                    else:
+                        rgb_values = [float(input.text()) for input in self.color_inputs]
+                        hex_color = '#{:02X}{:02X}{:02X}'.format(
+                            int(rgb_values[0] * 255),
+                            int(rgb_values[1] * 255),
+                            int(rgb_values[2] * 255)
+                        )
+                        rgba_str = f"{rgb_values[0]:.6f} {rgb_values[1]:.6f} {rgb_values[2]:.6f} 1.0"
+                else:
+                    rgb_values = [float(input.text()) for input in self.color_inputs]
+                    hex_color = '#{:02X}{:02X}{:02X}'.format(
+                        int(rgb_values[0] * 255),
+                        int(rgb_values[1] * 255),
+                        int(rgb_values[2] * 255)
+                    )
+                    rgba_str = f"{rgb_values[0]:.6f} {rgb_values[1]:.6f} {rgb_values[2]:.6f} 1.0"
             except ValueError:
                 hex_color = '#FFFFFF'
                 rgba_str = "1.0 1.0 1.0 1.0"
 
-            # XMLの内容を構築
+            # XMLファイルの内容を生成
             urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <urdf_part>
     <material name="{hex_color}">
@@ -1943,18 +1929,30 @@ class MainWindow(QMainWindow):
         {self.format_inertia_for_urdf(inertia_tensor)}</link>"""
 
             # チェックされているポイントについてpoint要素を追加
-            for i, checkbox in enumerate(self.point_checkboxes):
-                if checkbox.isChecked():
-                    x = self.point_coords[i][0]
-                    mirrored_y = -self.point_coords[i][1]  # Y座標のみ反転
-                    z = self.point_coords[i][2]
-                    urdf_content += f"""
-    <point name="{new_name}_point{i+1}" type="fixed">
+            if xml_data is not None:
+                points = xml_data.findall('.//point')
+                for point in points:
+                    xyz_element = point.find('point_xyz')
+                    if xyz_element is not None and xyz_element.text:
+                        try:
+                            x, y, z = map(float, xyz_element.text.strip().split())
+                            mirrored_y = -y  # Y座標のみ反転
+                            point_name = point.get('name', '').replace('l_', 'r_').replace('L_', 'R_')
+                            urdf_content += f"""
+    <point name="{point_name}" type="fixed">
         <point_xyz>{x:.6f} {mirrored_y:.6f} {z:.6f}</point_xyz>
     </point>"""
+                        except ValueError:
+                            print(f"Error processing point coordinates in XML")
 
             # 選択されている軸に応じてjoint要素を追加
-            axis_vector = ["1 0 0", "0 1 0", "0 0 1"][self.axis_group.checkedId()]
+            axis_options = ["1 0 0", "0 1 0", "0 0 1"]
+            checked_id = self.axis_group.checkedId()
+            if 0 <= checked_id < len(axis_options):
+                axis_vector = axis_options[checked_id]
+            else:
+                axis_vector = "1 0 0"  # デフォルト値
+
             urdf_content += f"""
     <joint>
         <axis xyz="{axis_vector}" />
@@ -1962,66 +1960,21 @@ class MainWindow(QMainWindow):
 </urdf_part>"""
 
             # XMLファイルを保存
-            with open(xml_path, "w") as f:
+            with open(new_xml_path, "w") as f:
                 f.write(urdf_content)
 
             # 結果ダイアログを表示
-            dialog = ResultDialog(mirrored_stl_path, xml_path, self)
+            dialog = ResultDialog(mirrored_stl_path, new_xml_path, self)
             dialog.exec()
 
-        except Exception as e:
-            print(f"An error occurred: {str(e)}")
-            import traceback
-            traceback.print_exc()
-
-    def _process_xml_data(self, xml_path, stl_path):
-        """XMLデータを処理する共通メソッド"""
-        try:
-            print("Processing XML data...")
-            tree = ET.parse(xml_path)
-            root = tree.getroot()
-
-            # XMLからパラメータを読み込む
-            has_parameters = self.load_parameters_from_xml(root)
-
-            # パラメータがXMLに含まれていない場合のみ再計算を行う
-            if not has_parameters:
-                self.calculate_and_update_properties()
-
-            # 全てのポイントをリセット
-            print("Resetting all points...")
-            for i in range(self.num_points):
-                self.point_inputs[i][0].setText("0.000000")
-                self.point_inputs[i][1].setText("0.000000")
-                self.point_inputs[i][2].setText("0.000000")
-                self.point_coords[i] = [0, 0, 0]
-                self.point_checkboxes[i].setChecked(False)
-                if self.point_actors[i]:
-                    self.point_actors[i].VisibilityOff()
-            
-            print("All points have been reset")
-
-            # ポイントデータの処理
-            points_with_data = self._load_points_from_xml(root)
-
-            # カラー情報の適用
-            self._apply_color_from_xml(root)
-
-            # 表示の更新
-            self._refresh_display()
-
-            print(f"XML file has been loaded: {xml_path}")
-            if stl_path:
-                print(f"STL file has been loaded: {stl_path}")
-            print(f"Number of set points: {len(points_with_data)}")
-            print("Display has been refreshed")
-
-            return True
+            print(f"Mirror export completed successfully:")
+            print(f"STL file: {mirrored_stl_path}")
+            print(f"XML file: {new_xml_path}")
 
         except Exception as e:
-            print(f"An error occurred while processing XML data: {e}")
+            print(f"An error occurred during mirror export: {str(e)}")
             traceback.print_exc()
-            return False
+
 
     def _load_points_from_xml(self, root):
         """XMLからポイントデータを読み込む"""
@@ -2466,52 +2419,12 @@ class MainWindow(QMainWindow):
                                 print(f"Error parsing XML file: {xml_path}")
                                 xml_data = None
 
-                        # ボリュームプロパティを計算
-                        mass_properties = vtk.vtkMassProperties()
-                        mass_properties.SetInputConnection(reverse.GetOutputPort())
-                        volume = mass_properties.GetVolume()
-
-                        # XMLからパラメータを取得するか、デフォルト値を使用
-                        if xml_data is not None:
-                            density_element = xml_data.find(".//density")
-                            density = float(density_element.get('value')) if density_element is not None else 1.0
-                        else:
-                            density = float(self.density_input.text())
-
-                        # 質量を計算
-                        mass = volume * density
-
-                        # 重心を計算
-                        com_filter = vtk.vtkCenterOfMass()
-                        com_filter.SetInputConnection(reverse.GetOutputPort())
-                        com_filter.SetUseScalarsAsWeights(False)
-                        com_filter.Update()
-                        center_of_mass = com_filter.GetCenter()
-
-                        # 慣性テンソルを計算
-                        inertia_tensor = np.zeros((3, 3))
-                        poly_data = reverse.GetOutput()
-                        num_cells = poly_data.GetNumberOfCells()
-
-                        for i in range(num_cells):
-                            cell = poly_data.GetCell(i)
-                            if cell.GetCellType() == vtk.VTK_TRIANGLE:
-                                p1, p2, p3 = [np.array(cell.GetPoints().GetPoint(j)) for j in range(3)]
-                                centroid = (p1 + p2 + p3) / 3
-                                r = centroid - np.array(center_of_mass)
-                                area = 0.5 * np.linalg.norm(np.cross(p2 - p1, p3 - p1))
-
-                                inertia_tensor[0, 0] += area * (r[1]**2 + r[2]**2)
-                                inertia_tensor[1, 1] += area * (r[0]**2 + r[2]**2)
-                                inertia_tensor[2, 2] += area * (r[0]**2 + r[1]**2)
-                                inertia_tensor[0, 1] -= area * r[0] * r[1]
-                                inertia_tensor[0, 2] -= area * r[0] * r[2]
-                                inertia_tensor[1, 2] -= area * r[1] * r[2]
-
-                        inertia_tensor[1, 0] = inertia_tensor[0, 1]
-                        inertia_tensor[2, 0] = inertia_tensor[0, 2]
-                        inertia_tensor[2, 1] = inertia_tensor[1, 2]
-                        inertia_tensor *= density
+                        # 物理プロパティを計算（質量を保持）
+                        volume, mass, center_of_mass, inertia_tensor = self.process_mirror_properties(
+                            xml_data,
+                            reverse.GetOutput(),
+                            density=float(self.density_input.text())
+                        )
 
                         # 新しいファイル名を生成
                         new_name = 'R_' + file_name[2:] if file_name.startswith('L_') else 'r_' + file_name[2:]
@@ -2524,7 +2437,7 @@ class MainWindow(QMainWindow):
                         writer.SetInputConnection(reverse.GetOutputPort())
                         writer.Write()
 
-                        # XMLファイルのパスを生成
+                        # 新しいXMLファイルのパスを生成
                         new_xml_path = os.path.splitext(new_stl_path)[0] + '.xml'
 
                         # 色情報を取得
@@ -2616,7 +2529,6 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             print(f"Error during bulk conversion: {str(e)}")
-            import traceback
             traceback.print_exc()
 
 
@@ -2795,6 +2707,76 @@ class MainWindow(QMainWindow):
         text_actor_bottom.GetTextProperty().SetJustificationToLeft()
         text_actor_bottom.GetTextProperty().SetVerticalJustificationToBottom()
         self.renderer.AddActor(text_actor_bottom)
+
+    def process_mirror_properties(self, xml_data, reverse_output, density=1.0):
+        """
+        ミラーリングされたモデルの物理プロパティを処理する
+        Args:
+            xml_data: 元のXMLデータ
+            reverse_output: 反転後のvtkPolyData
+            density: デフォルトの密度（元のXMLに質量情報がない場合に使用）
+        Returns:
+            tuple: (volume, mass, center_of_mass, inertia_tensor)
+        """
+        # 体積を計算（新しいジオメトリから）
+        mass_properties = vtk.vtkMassProperties()
+        mass_properties.SetInputData(reverse_output)
+        volume = mass_properties.GetVolume()
+
+        # 質量を元のXMLから取得（ない場合は体積×密度で計算）
+        if xml_data is not None:
+            mass_element = xml_data.find(".//mass")
+            if mass_element is not None:
+                mass = float(mass_element.get('value'))
+            else:
+                mass = volume * density
+        else:
+            mass = volume * density
+
+        # 重心を計算
+        com_filter = vtk.vtkCenterOfMass()
+        com_filter.SetInputData(reverse_output)
+        com_filter.SetUseScalarsAsWeights(False)
+        com_filter.Update()
+        center_of_mass = list(com_filter.GetCenter())
+        
+        # Y座標のみを反転
+        center_of_mass[1] = -center_of_mass[1]
+
+        # 慣性テンソルを計算（質量を考慮）
+        inertia_tensor = np.zeros((3, 3))
+        poly_data = reverse_output
+        num_cells = poly_data.GetNumberOfCells()
+
+        # 実際の質量を使用して慣性テンソルを計算
+        density_for_inertia = mass / volume  # 実際の質量から密度を逆算
+        
+        for i in range(num_cells):
+            cell = poly_data.GetCell(i)
+            if cell.GetCellType() == vtk.VTK_TRIANGLE:
+                p1, p2, p3 = [np.array(cell.GetPoints().GetPoint(j)) for j in range(3)]
+                centroid = (p1 + p2 + p3) / 3
+                r = centroid - np.array(center_of_mass)
+                area = 0.5 * np.linalg.norm(np.cross(p2 - p1, p3 - p1))
+
+                # 慣性テンソルの計算
+                inertia_tensor[0, 0] += area * (r[1]**2 + r[2]**2)
+                inertia_tensor[1, 1] += area * (r[0]**2 + r[2]**2)
+                inertia_tensor[2, 2] += area * (r[0]**2 + r[1]**2)
+                inertia_tensor[0, 1] -= area * r[0] * r[1]
+                inertia_tensor[0, 2] -= area * r[0] * r[2]
+                inertia_tensor[1, 2] -= area * r[1] * r[2]
+
+        # 対称性を利用して下三角を埋める
+        inertia_tensor[1, 0] = inertia_tensor[0, 1]
+        inertia_tensor[2, 0] = inertia_tensor[0, 2]
+        inertia_tensor[2, 1] = inertia_tensor[1, 2]
+
+        # 実際の質量に基づいて慣性テンソルをスケーリング
+        inertia_tensor *= density_for_inertia
+
+        return volume, mass, center_of_mass, inertia_tensor
+
 
 class ResultDialog(QDialog):
     def __init__(self, stl_path: str, xml_path: str, parent=None):
