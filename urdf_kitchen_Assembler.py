@@ -139,7 +139,7 @@ class FooNode(BaseNode):
         self.view.mouseDoubleClickEvent = self.node_double_clicked
 
     def _add_output(self, name=''):
-        if self.output_count < 10:
+        if self.output_count < 8:  # 最大8ポートまで
             self.output_count += 1
             port_name = f'out_{self.output_count}'
             super(FooNode, self).add_output(port_name)
@@ -166,10 +166,8 @@ class FooNode(BaseNode):
             
             print(f"Added output port '{port_name}' with zero coordinates")
             return port_name
-        else:
-            print("Maximum number of output ports (10) reached.")
-            return None
-    
+
+
     def remove_output(self):
         """出力ポートの削除（修正版）"""
         if self.output_count > 1:
@@ -213,19 +211,18 @@ class FooNode(BaseNode):
         else:
             print("Cannot remove the last output port")
 
+
     def node_double_clicked(self, event):
         print(f"Node {self.name()} double-clicked!")
         if hasattr(self.graph, 'show_inspector'):
             try:
-                # グラフのメインビューウィジェットを取得
-                graph_widget = self.graph.widget
+                # グラフのビューを正しく取得
+                graph_view = self.graph.viewer()  # NodeGraphQtではviewer()メソッドを使用
                 
-                # イベントからシーン座標を取得
+                # シーン座標をビュー座標に変換
                 scene_pos = event.scenePos()
-                
-                # シーン座標をビューの座標系に変換し、さらにグローバル（スクリーン）座標に変換
-                view_pos = graph_widget.mapFromScene(scene_pos)
-                screen_pos = graph_widget.mapToGlobal(view_pos)
+                view_pos = graph_view.mapFromScene(scene_pos)
+                screen_pos = graph_view.mapToGlobal(view_pos)
                 
                 print(f"Double click at screen coordinates: ({screen_pos.x()}, {screen_pos.y()})")
                 self.graph.show_inspector(self, screen_pos)
@@ -233,6 +230,7 @@ class FooNode(BaseNode):
             except Exception as e:
                 print(f"Error getting mouse position: {str(e)}")
                 traceback.print_exc()
+                # フォールバック：位置指定なしでインスペクタを表示
                 self.graph.show_inspector(self)
         else:
             print("Error: graph does not have show_inspector method")
@@ -772,36 +770,39 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.name_edit.setText(link_name)
                     print(f"Set link name: {link_name}")
 
-                # ボリュームの設定
-                volume_elem = root.find('.//volume')
-                if volume_elem is not None:
-                    volume = float(volume_elem.get('value', '0.0'))
-                    self.current_node.volume_value = volume
-                    self.volume_input.setText(f"{volume:.6f}")
-                    print(f"Set volume: {volume}")
+                # 物理プロパティの設定
+                inertial_elem = link_elem.find('inertial')
+                if inertial_elem is not None:
+                    # ボリュームの設定
+                    volume_elem = inertial_elem.find('volume')
+                    if volume_elem is not None:
+                        volume = float(volume_elem.get('value', '0.0'))
+                        self.current_node.volume_value = volume
+                        self.volume_input.setText(f"{volume:.6f}")
+                        print(f"Set volume: {volume}")
 
-                # 質量の設定
-                mass_elem = link_elem.find('mass')
-                if mass_elem is not None:
-                    mass = float(mass_elem.get('value', '0.0'))
-                    self.current_node.mass_value = mass
-                    self.mass_input.setText(f"{mass:.6f}")
-                    print(f"Set mass: {mass}")
+                    # 質量の設定
+                    mass_elem = inertial_elem.find('mass')
+                    if mass_elem is not None:
+                        mass = float(mass_elem.get('value', '0.0'))
+                        self.current_node.mass_value = mass
+                        self.mass_input.setText(f"{mass:.6f}")
+                        print(f"Set mass: {mass}")
 
-                # 慣性モーメントの設定
-                inertia_elem = link_elem.find('inertia')
-                if inertia_elem is not None:
-                    self.current_node.inertia = {
-                        'ixx': float(inertia_elem.get('ixx', '0')),
-                        'ixy': float(inertia_elem.get('ixy', '0')),
-                        'ixz': float(inertia_elem.get('ixz', '0')),
-                        'iyy': float(inertia_elem.get('iyy', '0')),
-                        'iyz': float(inertia_elem.get('iyz', '0')),
-                        'izz': float(inertia_elem.get('izz', '0'))
-                    }
-                    print("Set inertia tensor")
+                    # 慣性モーメントの設定
+                    inertia_elem = inertial_elem.find('inertia')
+                    if inertia_elem is not None:
+                        self.current_node.inertia = {
+                            'ixx': float(inertia_elem.get('ixx', '0')),
+                            'ixy': float(inertia_elem.get('ixy', '0')),
+                            'ixz': float(inertia_elem.get('ixz', '0')),
+                            'iyy': float(inertia_elem.get('iyy', '0')),
+                            'iyz': float(inertia_elem.get('iyz', '0')),
+                            'izz': float(inertia_elem.get('izz', '0'))
+                        }
+                        print("Set inertia tensor")
 
-            # 色情報の処理を修正
+            # 色情報の処理
             material_elem = root.find('.//material/color')
             if material_elem is not None:
                 rgba = material_elem.get('rgba', '1.0 1.0 1.0 1.0').split()
@@ -815,59 +816,84 @@ class InspectorWindow(QtWidgets.QWidget):
                 self.apply_color_to_stl()
                 print(f"Set color: RGB({rgb_values[0]:.3f}, {rgb_values[1]:.3f}, {rgb_values[2]:.3f})")
 
-            # 回転軸の処理を修正
-            joint_elem = root.find('.//joint')  # joint要素全体を取得
+            # 回転軸の処理
+            joint_elem = root.find('joint')
             if joint_elem is not None:
                 # jointのtype属性を確認
                 joint_type = joint_elem.get('type', '')
                 if joint_type == 'fixed':
-                    new_node.rotation_axis = 3  # 3をFixedとして使用
+                    self.current_node.rotation_axis = 3  # 3をFixedとして使用
+                    if self.axis_group.button(3):  # Fixed用のボタンが存在する場合
+                        self.axis_group.button(3).setChecked(True)
                     print("Set rotation axis to Fixed")
                 else:
-                    # 既存の回転軸処理
+                    # 回転軸の処理
                     axis_elem = joint_elem.find('axis')
                     if axis_elem is not None:
                         axis_xyz = axis_elem.get('xyz', '1 0 0').split()
                         axis_values = [float(x) for x in axis_xyz]
                         if axis_values[2] == 1:  # Z軸
-                            new_node.rotation_axis = 2
+                            self.current_node.rotation_axis = 2
+                            self.axis_group.button(2).setChecked(True)
                             print("Set rotation axis to Z")
                         elif axis_values[1] == 1:  # Y軸
-                            new_node.rotation_axis = 1
+                            self.current_node.rotation_axis = 1
+                            self.axis_group.button(1).setChecked(True)
                             print("Set rotation axis to Y")
                         else:  # X軸（デフォルト）
-                            new_node.rotation_axis = 0
+                            self.current_node.rotation_axis = 0
+                            self.axis_group.button(0).setChecked(True)
                             print("Set rotation axis to X")
-                        print(f"Set rotation axis: {new_node.rotation_axis} from xyz: {axis_xyz}")
-            else:
-                # デフォルト値を設定
-                new_node.rotation_axis = 0
-                print("Using default rotation axis: X")
+                        print(f"Set rotation axis from xyz: {axis_xyz}")
 
             # ポイントの処理
             points = root.findall('point')
             num_points = len(points)
-            print(f"Found {num_points} points")
+            print(f"Found {num_points} points in XML")
 
-            # 必要な数のポートを追加
-            while len(self.current_node.points) < num_points:
-                self.add_point()
+            # 現在のポート数と必要なポート数を比較
+            current_ports = len(self.current_node.output_ports())
+            print(f"Current ports: {current_ports}, Required points: {num_points}")
 
-            # ポイントデータの更新
-            self.current_node.points = []
-            for point_elem in points:
-                point_name = point_elem.get('name')
-                point_type = point_elem.get('type')
-                point_xyz_elem = point_elem.find('point_xyz')
+            # ポート数を調整
+            if isinstance(self.current_node, FooNode):
+                while current_ports < num_points:
+                    self.current_node._add_output()
+                    current_ports += 1
+                    print(f"Added new port, total now: {current_ports}")
 
-                if point_xyz_elem is not None and point_xyz_elem.text:
-                    xyz_values = [float(x) for x in point_xyz_elem.text.strip().split()]
-                    self.current_node.points.append({
-                        'name': point_name,
-                        'type': point_type,
-                        'xyz': xyz_values
+                while current_ports > num_points:
+                    self.current_node.remove_output()
+                    current_ports -= 1
+                    print(f"Removed port, total now: {current_ports}")
+
+                # ポイントデータの更新
+                self.current_node.points = []
+                for point_elem in points:
+                    point_name = point_elem.get('name')
+                    point_type = point_elem.get('type')
+                    point_xyz_elem = point_elem.find('point_xyz')
+
+                    if point_xyz_elem is not None and point_xyz_elem.text:
+                        xyz_values = [float(x) for x in point_xyz_elem.text.strip().split()]
+                        self.current_node.points.append({
+                            'name': point_name,
+                            'type': point_type,
+                            'xyz': xyz_values
+                        })
+                        print(f"Added point {point_name}: {xyz_values}")
+
+                # 累積座標の更新
+                self.current_node.cumulative_coords = []
+                for i in range(len(self.current_node.points)):
+                    self.current_node.cumulative_coords.append({
+                        'point_index': i,
+                        'xyz': [0.0, 0.0, 0.0]
                     })
-                    print(f"Added point {point_name}: {xyz_values}")
+
+                # output_countを更新
+                self.current_node.output_count = len(self.current_node.points)
+                print(f"Updated output_count to: {self.current_node.output_count}")
 
             # UI更新
             self.update_info(self.current_node)
@@ -877,7 +903,7 @@ class InspectorWindow(QtWidgets.QWidget):
             print(f"Error loading XML: {str(e)}")
             import traceback
             traceback.print_exc()
-
+            
     def load_xml_with_stl(self):
         """XMLファイルとそれに対応するSTLファイルを読み込む"""
         if not self.current_node:
@@ -939,7 +965,7 @@ class InspectorWindow(QtWidgets.QWidget):
                         'izz': float(inertia_elem.get('izz', '0'))
                     }
 
-            # 色情報の処理を追加
+            # 色情報の処理
             material_elem = root.find('.//material/color')
             if material_elem is not None:
                 rgba = material_elem.get('rgba', '1.0 1.0 1.0 1.0').split()
@@ -951,7 +977,7 @@ class InspectorWindow(QtWidgets.QWidget):
                 self.update_color_sample()
                 print(f"Set color: RGB({rgb_values[0]:.3f}, {rgb_values[1]:.3f}, {rgb_values[2]:.3f})")
 
-            # 回転軸の処理を追加
+            # 回転軸の処理
             joint_elem = root.find('.//joint/axis')
             if joint_elem is not None:
                 axis_xyz = joint_elem.get('xyz', '1 0 0').split()
@@ -970,10 +996,20 @@ class InspectorWindow(QtWidgets.QWidget):
             # ポイントの処理
             points = root.findall('point')
             num_points = len(points)
+            print(f"Found {num_points} points")
 
-            # 必要な数のポートを追加
-            while len(self.current_node.points) < num_points:
-                self.add_point()
+            # 現在のポート数と必要なポート数を比較
+            current_ports = len(self.current_node.points)
+            if num_points > current_ports:
+                # 不足しているポートを追加
+                ports_to_add = num_points - current_ports
+                for _ in range(ports_to_add):
+                    self.add_point()
+            elif num_points < current_ports:
+                # 余分なポートを削除
+                ports_to_remove = current_ports - num_points
+                for _ in range(ports_to_remove):
+                    self.remove_point()
 
             # ポイントデータの更新
             self.current_node.points = []
@@ -989,6 +1025,7 @@ class InspectorWindow(QtWidgets.QWidget):
                         'type': point_type,
                         'xyz': xyz_values
                     })
+                    print(f"Added point {point_name}: {xyz_values}")
 
             # STLファイルの処理
             if os.path.exists(stl_path):
@@ -2773,7 +2810,7 @@ class CustomNodeGraph(NodeGraph):
             return QPointF(0, 0)  # デフォルト値を返す
 
     def _save_node_data(self, node, project_dir):
-        """ノードデータの保存（デバッグトレース付き）"""
+        """ノードデータの保存"""
         print(f"\nStarting _save_node_data for node: {node.name()}")
         node_elem = ET.Element("node")
         
@@ -2784,6 +2821,11 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(node_elem, "name").text = node.name()
             ET.SubElement(node_elem, "type").text = node.__class__.__name__
 
+            # output_count の保存
+            if hasattr(node, 'output_count'):
+                ET.SubElement(node_elem, "output_count").text = str(node.output_count)
+                print(f"  Saved output_count: {node.output_count}")
+
             # STLファイル情報
             if hasattr(node, 'stl_file') and node.stl_file:
                 print(f"  Processing STL file for node {node.name()}: {node.stl_file}")
@@ -2792,14 +2834,6 @@ class CustomNodeGraph(NodeGraph):
                 try:
                     stl_path = os.path.abspath(node.stl_file)
                     print(f"    Absolute STL path: {stl_path}")
-
-                    # STLビューアの参照を切断
-                    if hasattr(self, 'stl_viewer') and self.stl_viewer:
-                        print(f"    Temporarily removing STL viewer reference for node: {node.name()}")
-                        if node in self.stl_viewer.stl_actors:
-                            del self.stl_viewer.stl_actors[node]
-                        if node in self.stl_viewer.transforms:
-                            del self.stl_viewer.transforms[node]
 
                     if self.meshes_dir and stl_path.startswith(self.meshes_dir):
                         rel_path = os.path.relpath(stl_path, self.meshes_dir)
@@ -2816,9 +2850,6 @@ class CustomNodeGraph(NodeGraph):
                     print(f"    Error processing STL file: {str(e)}")
                     stl_elem.set('error', str(e))
 
-            # その他のノード情報を保存
-            print(f"  Saving other node data for: {node.name()}")
-            
             # 位置情報
             pos = node.pos()
             pos_elem = ET.SubElement(node_elem, "position")
@@ -2832,36 +2863,54 @@ class CustomNodeGraph(NodeGraph):
             # 物理プロパティ
             if hasattr(node, 'volume_value'):
                 ET.SubElement(node_elem, "volume").text = str(node.volume_value)
+                print(f"  Saved volume: {node.volume_value}")
+
             if hasattr(node, 'mass_value'):
                 ET.SubElement(node_elem, "mass").text = str(node.mass_value)
+                print(f"  Saved mass: {node.mass_value}")
 
             # 慣性テンソル
             if hasattr(node, 'inertia'):
                 inertia_elem = ET.SubElement(node_elem, "inertia")
                 for key, value in node.inertia.items():
                     inertia_elem.set(key, str(value))
+                print("  Saved inertia tensor")
 
             # 色情報
             if hasattr(node, 'node_color'):
-                ET.SubElement(node_elem, "color").text = ' '.join(map(str, node.node_color))
+                color_elem = ET.SubElement(node_elem, "color")
+                color_elem.text = ' '.join(map(str, node.node_color))
+                print(f"  Saved color: {node.node_color}")
 
             # 回転軸
             if hasattr(node, 'rotation_axis'):
                 ET.SubElement(node_elem, "rotation_axis").text = str(node.rotation_axis)
+                print(f"  Saved rotation axis: {node.rotation_axis}")
 
-            # Massless Decorationの保存
+            # Massless Decoration
             if hasattr(node, 'massless_decoration'):
                 ET.SubElement(node_elem, "massless_decoration").text = str(node.massless_decoration)
-                print(f"Saved massless_decoration: {node.massless_decoration} for node: {node.name()}")
+                print(f"  Saved massless_decoration: {node.massless_decoration}")
 
             # ポイントデータ
             if hasattr(node, 'points'):
                 points_elem = ET.SubElement(node_elem, "points")
-                for point in node.points:
+                for i, point in enumerate(node.points):
                     point_elem = ET.SubElement(points_elem, "point")
+                    point_elem.set('index', str(i))
                     ET.SubElement(point_elem, "name").text = point['name']
                     ET.SubElement(point_elem, "type").text = point['type']
                     ET.SubElement(point_elem, "xyz").text = ' '.join(map(str, point['xyz']))
+                print(f"  Saved {len(node.points)} points")
+
+            # 累積座標
+            if hasattr(node, 'cumulative_coords'):
+                coords_elem = ET.SubElement(node_elem, "cumulative_coords")
+                for coord in node.cumulative_coords:
+                    coord_elem = ET.SubElement(coords_elem, "coord")
+                    ET.SubElement(coord_elem, "point_index").text = str(coord['point_index'])
+                    ET.SubElement(coord_elem, "xyz").text = ' '.join(map(str, coord['xyz']))
+                print(f"  Saved cumulative coordinates")
 
             print(f"  Completed saving node data for: {node.name()}")
             return node_elem
@@ -3152,6 +3201,7 @@ class CustomNodeGraph(NodeGraph):
             )
             return False
 
+
     def _load_node_data(self, node_elem):
         """ノードデータの読み込み"""
         try:
@@ -3169,44 +3219,33 @@ class CustomNodeGraph(NodeGraph):
                 node.set_name(name_elem.text)
                 print(f"Loading node: {name_elem.text}")
 
-            # 出力ポート数の処理
+            # output_count の復元とポートの追加
             if isinstance(node, FooNode):
-                points_elem = node_elem.findall("point")
+                points_elem = node_elem.find("points")
                 if points_elem is not None:
-                    point_count = len(points_elem)
-                    print(f"Found {point_count} points for node {node.name()}")
-                    
-                    # 現在のポート数を取得
-                    current_ports = len(node.output_ports())
+                    points = points_elem.findall("point")
+                    num_points = len(points)
+                    print(f"Found {num_points} points")
                     
                     # 必要な数のポートを追加
-                    ports_to_add = point_count - current_ports
-                    print(f"Adding {ports_to_add} output ports to match point count")
-                    
-                    for _ in range(ports_to_add):
+                    while len(node.output_ports()) < num_points:
                         node._add_output()
+                        print(f"Added output port, total now: {len(node.output_ports())}")
 
-                    # output_countを正しい値に設定
-                    node.output_count = point_count
-                    print(f"Set output_count to {point_count}")
-
-            # ポイントデータの設定
-            points_elem = node_elem.findall("point")
-            if points_elem:
-                node.points = []
-                for point_elem in points_elem:
-                    point_name = point_elem.get('name')
-                    point_type = point_elem.get('type')
-                    xyz_elem = point_elem.find("point_xyz")
-                    if xyz_elem is not None and xyz_elem.text:
-                        xyz_values = [float(x) for x in xyz_elem.text.split()]
+                    # ポイントデータの復元
+                    node.points = []
+                    for point_elem in points:
                         point_data = {
-                            'name': point_name,
-                            'type': point_type,
-                            'xyz': xyz_values
+                            'name': point_elem.find("name").text,
+                            'type': point_elem.find("type").text,
+                            'xyz': [float(x) for x in point_elem.find("xyz").text.split()]
                         }
                         node.points.append(point_data)
-                print(f"Loaded {len(node.points)} point data entries")
+                        print(f"Restored point: {point_data}")
+
+                    # output_countを更新
+                    node.output_count = num_points
+                    print(f"Set output_count to {num_points}")
 
             # 位置の設定
             pos_elem = node_elem.find("position")
@@ -3214,66 +3253,61 @@ class CustomNodeGraph(NodeGraph):
                 x = float(pos_elem.find("x").text)
                 y = float(pos_elem.find("y").text)
                 node.set_pos(x, y)
+                print(f"Set position: ({x}, {y})")
 
-            # inertialタグ内のvolume, mass, inertiaを処理
-            inertial_elem = node_elem.find(".//inertial")
-            if inertial_elem is not None:
-                # 質量の設定
-                mass_elem = inertial_elem.find("mass")
-                if mass_elem is not None:
-                    node.mass_value = float(mass_elem.get('value', '0.0'))
-                    print(f"Loaded mass: {node.mass_value}")
+            # 物理プロパティの復元
+            volume_elem = node_elem.find("volume")
+            if volume_elem is not None:
+                node.volume_value = float(volume_elem.text)
+                print(f"Restored volume: {node.volume_value}")
 
-                # ボリュームの設定
-                volume_elem = inertial_elem.find("volume")
-                if volume_elem is not None:
-                    node.volume_value = float(volume_elem.get('value', '0.0'))
-                    print(f"Loaded volume: {node.volume_value}")
+            mass_elem = node_elem.find("mass")
+            if mass_elem is not None:
+                node.mass_value = float(mass_elem.text)
+                print(f"Restored mass: {node.mass_value}")
 
-                # 慣性テンソルの設定
-                inertia_elem = inertial_elem.find("inertia")
-                if inertia_elem is not None:
-                    node.inertia = {
-                        'ixx': float(inertia_elem.get('ixx', '0')),
-                        'ixy': float(inertia_elem.get('ixy', '0')),
-                        'ixz': float(inertia_elem.get('ixz', '0')),
-                        'iyy': float(inertia_elem.get('iyy', '0')),
-                        'iyz': float(inertia_elem.get('iyz', '0')),
-                        'izz': float(inertia_elem.get('izz', '0'))
-                    }
-                    print("Loaded inertia tensor")
+            # 慣性テンソルの復元
+            inertia_elem = node_elem.find("inertia")
+            if inertia_elem is not None:
+                node.inertia = {
+                    'ixx': float(inertia_elem.get('ixx', '0.0')),
+                    'ixy': float(inertia_elem.get('ixy', '0.0')),
+                    'ixz': float(inertia_elem.get('ixz', '0.0')),
+                    'iyy': float(inertia_elem.get('iyy', '0.0')),
+                    'iyz': float(inertia_elem.get('iyz', '0.0')),
+                    'izz': float(inertia_elem.get('izz', '0.0'))
+                }
+                print(f"Restored inertia tensor")
 
-            # 色情報の設定
-            color_elem = node_elem.find(".//material/color")
-            if color_elem is not None:
-                rgba = color_elem.get('rgba', '1.0 1.0 1.0 1.0').split()
-                node.node_color = [float(x) for x in rgba[:3]]  # RGBのみ使用
-                print(f"Loaded color: RGB({node.node_color})")
+            # 色情報の復元
+            color_elem = node_elem.find("color")
+            if color_elem is not None and color_elem.text:
+                node.node_color = [float(x) for x in color_elem.text.split()]
+                print(f"Restored color: {node.node_color}")
 
-            # 回転軸の設定
-            axis_elem = node_elem.find(".//joint/axis")
-            if axis_elem is not None:
-                axis_xyz = axis_elem.get('xyz', '1 0 0').split()
-                axis_values = [float(x) for x in axis_xyz]
-                if axis_values[2] == 1:      # Z軸
-                    node.rotation_axis = 2
-                elif axis_values[1] == 1:    # Y軸
-                    node.rotation_axis = 1
-                else:                        # X軸（デフォルト）
-                    node.rotation_axis = 0
-                print(f"Set rotation axis: {node.rotation_axis}")
-            else:
-                node.rotation_axis = 0  # デフォルト値
-                print("Using default rotation axis: X")
+            # 回転軸の復元
+            rotation_axis_elem = node_elem.find("rotation_axis")
+            if rotation_axis_elem is not None:
+                node.rotation_axis = int(rotation_axis_elem.text)
+                print(f"Restored rotation axis: {node.rotation_axis}")
 
-            # Massless Decorationの設定
+            # Massless Decorationの復元
             massless_dec_elem = node_elem.find("massless_decoration")
             if massless_dec_elem is not None:
                 node.massless_decoration = massless_dec_elem.text.lower() == 'true'
-                print(f"Loaded massless_decoration: {node.massless_decoration}")
-            else:
-                node.massless_decoration = False
-                print(f"Set default massless_decoration (False)")
+                print(f"Restored massless_decoration: {node.massless_decoration}")
+
+            # 累積座標の復元
+            coords_elem = node_elem.find("cumulative_coords")
+            if coords_elem is not None:
+                node.cumulative_coords = []
+                for coord_elem in coords_elem.findall("coord"):
+                    coord_data = {
+                        'point_index': int(coord_elem.find("point_index").text),
+                        'xyz': [float(x) for x in coord_elem.find("xyz").text.split()]
+                    }
+                    node.cumulative_coords.append(coord_data)
+                print("Restored cumulative coordinates")
 
             # STLファイルの設定と処理
             stl_elem = node_elem.find("stl_file")
@@ -3297,6 +3331,7 @@ class CustomNodeGraph(NodeGraph):
                 else:
                     print(f"Warning: STL file not found: {abs_path}")
 
+            print(f"Node {node.name()} loaded successfully")
             return node
 
         except Exception as e:
