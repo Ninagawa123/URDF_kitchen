@@ -5,13 +5,18 @@
     </material>
     <link name="l_elbow">
         <visual>
+            <origin xyz="0.001539 0.000476 -0.010514" rpy="0 0 0"/>
             <material name="#2F2F2F" />
         </visual>
-        <volume value="0.000031588248"/>
-        <mass value="0.044"/>
-        <inertia ixx="0.00150966" ixy="-0.00006523" ixz="-0.00026592" iyy="0.00312665" iyz="0.00003709" izz="0.00342606" />
+        <inertial>
+            <origin xyz="0.001539 0.000476 -0.010514"/>
+            <mass value="0.044"/>
+            <volume value="0.000031588248"/>
+            <inertia ixx="0.00003373" ixy="0.00000246" ixz="-0.00000221" iyy="0.00005076" iyz="-0.00000117" izz="0.00006237"/>
+        </inertial>
+        <center_of_mass>0.001539 0.000476 -0.010514</center_of_mass>
     </link>
-    <point name="l_elbow_point1" type="fixed">
+    <point name="point1" type="fixed">
         <point_xyz>0.004700 -0.019502 -0.013500</point_xyz>
     </point>
     <joint>

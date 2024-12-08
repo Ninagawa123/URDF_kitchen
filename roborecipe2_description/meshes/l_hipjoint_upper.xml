@@ -5,13 +5,18 @@
     </material>
     <link name="l_hipjoint_upper">
         <visual>
+            <origin xyz="0.000000 0.000000 0.000000" rpy="0 0 0"/>
             <material name="#FFFFFF" />
         </visual>
-        <volume value="0.000010579273"/>
-        <mass value="0.0115"/>
-        <inertia ixx="0.00182517" ixy="0.00005329" ixz="0.00004516" iyy="0.00421678" iyz="-0.00009260" izz="0.00372156"/>
+        <inertial>
+            <origin xyz="0.000000 0.000000 0.000000"/>
+            <mass value="0.0115"/>
+            <volume value="0.000010579273"/>
+            <inertia ixx="0.00001399" ixy="-0.00000006" ixz="-0.00000035" iyy="0.00002202" iyz="-0.00000171" izz="0.00002033"/>
+        </inertial>
+        <center_of_mass>0.000000 0.000000 0.000000</center_of_mass>
     </link>
-    <point name="l_hipjoint_upper_point1" type="fixed">
+    <point name="point1" type="fixed">
         <point_xyz>0.023910 -0.004570 -0.023250</point_xyz>
     </point>
     <joint>

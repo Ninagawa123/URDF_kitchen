@@ -5,11 +5,16 @@
     </material>
     <link name="c_head">
         <visual>
+            <origin xyz="-0.005039 0.000000 0.009422" rpy="0 0 0"/>
             <material name="#EDEDED" />
         </visual>
-        <volume value="0.000049996185"/>
-        <mass value="0.013"/>
-        <inertia ixx="0.00084394" ixy="-0.00000526" ixz="0.00010608" iyy="0.00114108" iyz="-0.00001350" izz="0.00076555" />
+        <inertial>
+            <origin xyz="-0.005039 0.000000 0.009422"/>
+            <mass value="0.013"/>
+            <volume value="0.000049996185"/>
+            <inertia ixx="0.00002218" ixy="0.00000023" ixz="0.00000006" iyy="0.00002911" iyz="0.00000039" izz="0.00002210"/>
+        </inertial>
+        <center_of_mass>-0.005039 0.000000 0.009422</center_of_mass>
     </link>
     <joint>
         <axis xyz="0 0 1" />

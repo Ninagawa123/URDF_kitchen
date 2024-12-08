@@ -5,13 +5,18 @@
     </material>
     <link name="c_chest_dec1">
         <visual>
+            <origin xyz="0.014967 0.000002 0.050926" rpy="0 0 0"/>
             <material name="#EDEDED" />
         </visual>
-        <volume value="0.000098565747"/>
-        <mass value="0.000098565747r"/>
-        <inertia ixx="0.00002706" ixy="-0.00000003" ixz="0.00000716" iyy="0.00002090" iyz="0.00000140" izz="0.00002394" />
+        <inertial>
+            <origin xyz="0.014967 0.000002 0.050926"/>
+            <mass value="0.086483053831"/>
+            <volume value="0.000098565747"/>
+            <inertia ixx="0.00064039" ixy="0.00000095" ixz="0.00007983" iyy="0.00034838" iyz="-0.00004512" izz="0.00054761"/>
+        </inertial>
+        <center_of_mass>0.014967 0.000002 0.050926</center_of_mass>
     </link>
     <joint>
-        <axis xyz="1 0 0" />
+        <axis xyz="0 0 0" />
     </joint>
 </urdf_part>

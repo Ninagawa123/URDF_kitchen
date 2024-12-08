@@ -5,11 +5,16 @@
     </material>
     <link name="l_arm_lower">
         <visual>
+            <origin xyz="0.001028 0.018240 -0.047727" rpy="0 0 0"/>
             <material name="#EDEDED" />
         </visual>
-        <volume value="0.000049124270"/>
-        <mass value="0.030"/>
-        <inertia ixx="0.00851997" ixy="0.00004311" ixz="0.00017154" iyy="0.00770489" iyz="0.00010669" izz="0.00202428" />
+        <inertial>
+            <origin xyz="0.001028 0.018240 -0.047727"/>
+            <mass value="0.030"/>
+            <volume value="0.000049124270"/>
+            <inertia ixx="0.00010484" ixy="0.00000066" ixz="0.00000299" iyy="0.00009491" iyz="0.00000224" izz="0.00003009"/>
+        </inertial>
+        <center_of_mass>0.001028 0.018240 -0.047727</center_of_mass>
     </link>
     <joint>
         <axis xyz="0 1 0" />

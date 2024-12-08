@@ -5,15 +5,21 @@
     </material>
     <link name="r_hipjoint_upper">
         <visual>
+            <origin xyz="0.000000 -0.000000 0.000000" rpy="0 0 0"/>
             <material name="#FFFFFF" />
         </visual>
-        <volume value="0.000010579273"/>
-        <mass value="0.000010579273"/>
-        <inertia ixx="0.00000168" ixy="-0.00000005" ixz="0.00000004" iyy="0.00000388" iyz="0.00000009" izz="0.00000342"/></link>
-    <point name="r_hipjoint_upper_point1" type="fixed">
+        <inertial>
+            <origin xyz="0.000000 -0.000000 0.000000"/>
+            <mass value="0.011500000000"/>
+            <volume value="0.000010579273"/>
+            <inertia ixx="0.00001332" ixy="0.00000021" ixz="0.00000027" iyy="0.00001939" iyz="0.00000056" izz="0.00001546"/>
+        </inertial>
+        <center_of_mass>0.000000 -0.000000 0.000000</center_of_mass>
+    </link>
+    <point name="point1" type="fixed">
         <point_xyz>0.023910 0.004570 -0.023250</point_xyz>
     </point>
     <joint>
-        <axis xyz="0 0 1" />
+        <axis xyz="0.0 0.0 1.0" />
     </joint>
 </urdf_part>

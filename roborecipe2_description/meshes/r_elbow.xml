@@ -5,15 +5,21 @@
     </material>
     <link name="r_elbow">
         <visual>
+            <origin xyz="0.001539 -0.000476 -0.010514" rpy="0 0 0"/>
             <material name="#2F2F2F" />
         </visual>
-        <volume value="0.000027214451"/>
-        <mass value="0.000027214451"/>
-        <inertia ixx="0.00000105" ixy="0.00000004" ixz="-0.00000014" iyy="0.00000172" iyz="-0.00000002" izz="0.00000193"/></link>
-    <point name="r_elbow_point1" type="fixed">
+        <inertial>
+            <origin xyz="0.001539 -0.000476 -0.010514"/>
+            <mass value="0.044000000000"/>
+            <volume value="0.000031588248"/>
+            <inertia ixx="0.00000846" ixy="-0.00000062" ixz="-0.00000055" iyy="0.00001274" iyz="0.00000029" izz="0.00001565"/>
+        </inertial>
+        <center_of_mass>0.001539 -0.000476 -0.010514</center_of_mass>
+    </link>
+    <point name="point1" type="fixed">
         <point_xyz>0.004700 0.019502 -0.013500</point_xyz>
     </point>
     <joint>
-        <axis xyz="0 0 1" />
+        <axis xyz="0.0 0.0 1.0" />
     </joint>
 </urdf_part>

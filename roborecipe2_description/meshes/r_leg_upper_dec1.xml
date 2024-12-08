@@ -1,16 +1,25 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urdf_part>
-    <material name="#CCCCCC">
-        <color rgba="0.800000 0.800000 0.800000 1.0" />
+    <material name="#EDEDED">
+        <color rgba="0.933000 0.933000 0.933000 1.0" />
     </material>
     <link name="r_leg_upper_dec1">
         <visual>
-            <material name="#CCCCCC" />
+            <origin xyz="0.004212 -0.021274 -0.023584" rpy="0 0 0"/>
+            <material name="#EDEDED" />
         </visual>
-        <volume value="0.000008938095"/>
-        <mass value="0.000008938095"/>
-        <inertia ixx="0.00000617" ixy="0.00000006" ixz="-0.00000054" iyy="0.00000530" iyz="-0.00000007" izz="0.00000572"/></link>
+        <inertial>
+            <origin xyz="0.004212 -0.021274 -0.023584"/>
+            <mass value="0.000008938095"/>
+            <volume value="0.000008938095"/>
+            <inertia ixx="0.00000005" ixy="0.00000000" ixz="-0.00000000" iyy="0.00000005" iyz="-0.00000000" izz="0.00000002"/>
+        </inertial>
+        <center_of_mass>0.004212 -0.021274 -0.023584</center_of_mass>
+    </link>
+    <point name="point1" type="fixed">
+        <point_xyz>0.000010 -0.000027 -0.065200</point_xyz>
+    </point>
     <joint>
-        <axis xyz="1 0 0" />
+        <axis xyz="0.0 0.0 0.0" />
     </joint>
 </urdf_part>

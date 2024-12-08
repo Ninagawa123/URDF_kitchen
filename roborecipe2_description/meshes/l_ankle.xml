@@ -5,13 +5,18 @@
     </material>
     <link name="l_ankle">
         <visual>
+            <origin xyz="-0.000352 0.013226 -0.026143" rpy="0 0 0"/>
             <material name="#2E2E2E" />
         </visual>
-        <volume value="0.000046002628"/>
-        <mass value="0.058"/>
-        <inertia ixx="0.00761438" ixy="0.00004301" ixz="0.00005023" iyy="0.00518518" iyz="0.00007813" izz="0.00535490" />
+        <inertial>
+            <origin xyz="-0.000352 0.013226 -0.026143"/>
+            <mass value="0.058"/>
+            <volume value="0.000046002628"/>
+            <inertia ixx="0.00013244" ixy="-0.00000291" ixz="-0.00000129" iyy="0.00008686" iyz="0.00000091" izz="0.00010281"/>
+        </inertial>
+        <center_of_mass>-0.000352 0.013226 -0.026143</center_of_mass>
     </link>
-    <point name="l_ankle_point1" type="fixed">
+    <point name="point1" type="fixed">
         <point_xyz>0.019800 0.008250 -0.038450</point_xyz>
     </point>
     <joint>
