@@ -1796,9 +1796,6 @@ class MainWindow(QMainWindow):
 
         self.render_window.Render()
 
-
-
-
     def get_mirrored_filename(self, original_path):
         dir_path = os.path.dirname(original_path)
         filename = os.path.basename(original_path)
@@ -2087,6 +2084,20 @@ class MainWindow(QMainWindow):
     def load_parameters_from_xml(self, root):
         """XMLからパラメータを読み込んで設定する共通処理"""
         try:
+            # まず全てのポイントをリセット
+            for i in range(self.num_points):
+                # 座標を0にリセット
+                self.point_coords[i] = [0, 0, 0]
+                for j in range(3):
+                    self.point_inputs[i][j].setText("0.000000")
+                # チェックボックスを外す
+                self.point_checkboxes[i].setChecked(False)
+                # 既存のアクターを削除
+                if self.point_actors[i]:
+                    self.point_actors[i].VisibilityOff()
+                    self.renderer.RemoveActor(self.point_actors[i])
+                    self.point_actors[i] = None
+
             has_parameters = False
 
             # 色情報の読み込み
@@ -2197,6 +2208,41 @@ class MainWindow(QMainWindow):
                 self.inertia_tensor_input.setText(inertia_str)
                 has_parameters = True
 
+            # ポイントデータの読み込み
+            points = root.findall(".//point")
+            for i, point in enumerate(points):
+                if i >= len(self.point_checkboxes):
+                    break
+
+                xyz_element = point.find("point_xyz")
+                if xyz_element is not None and xyz_element.text:
+                    try:
+                        x, y, z = map(float, xyz_element.text.strip().split())
+                        # 座標値を設定
+                        self.point_inputs[i][0].setText(f"{x:.6f}")
+                        self.point_inputs[i][1].setText(f"{y:.6f}")
+                        self.point_inputs[i][2].setText(f"{z:.6f}")
+                        self.point_coords[i] = [x, y, z]
+                        
+                        # チェックボックスをオンにする
+                        self.point_checkboxes[i].setChecked(True)
+                        
+                        # ポイントを表示
+                        if self.point_actors[i] is None:
+                            self.point_actors[i] = vtk.vtkAssembly()
+                            self.create_point_coordinate(self.point_actors[i], [0, 0, 0])
+                        self.point_actors[i].SetPosition(self.point_coords[i])
+                        self.renderer.AddActor(self.point_actors[i])
+                        self.point_actors[i].VisibilityOn()
+                        
+                        print(f"Loaded point {i+1}: ({x:.6f}, {y:.6f}, {z:.6f})")
+                        has_parameters = True
+                    except ValueError as e:
+                        print(f"Error parsing point {i+1} coordinates: {e}")
+
+            # カメラをリセット
+            self.reset_camera()
+            
             return has_parameters
 
         except Exception as e:
