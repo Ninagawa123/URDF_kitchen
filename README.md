@@ -1,7 +1,7 @@
 # URDF_kitchen beta  
 <img width="600" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_beta.png">  
   
-URDF_kitchenは、URDFの組み立てをサポートするツールです。  
+URDF_kitchenは、URDFの組み立てをサポートするPythonツールです。  
 STLファイルにジョイントポイントを設定し、ノードで接続していくことで組み立て、URDFとしてエクスポートします。  
 重量入力やイナーシャ計算、パーツごとの着色などにも対応しています。  
   
@@ -41,9 +41,16 @@ pip install PySide6
 pip install vtk  
 pip install NodeGraphQt  
 ```
+
+### 実行方法  
+  
+ターミナルにて、DLしたファイルがある場所にcdで移動し、  
+python urdf_kitchen_StlSourcer.py  
+python urdf_kitchen_PartsEditor.py  
+python urdf_kitchen_Assembler.py  
+と入力して実行します。初回起動は少し時間がかかります。  
   
 # Tutorial  
 準備中です。少々お待ちください。  
-  
   
 <img width="500" alt="urdf_kitchen_logo" src="docs/urdf_kitchen.png">
