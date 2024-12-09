@@ -47,7 +47,6 @@ def apply_dark_theme(app):
     dark_palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
     app.setPalette(dark_palette)
 
-
 class BaseLinkNode(BaseNode):
     """Base link node class"""
     __identifier__ = 'insilico.nodes'
@@ -167,7 +166,6 @@ class FooNode(BaseNode):
             print(f"Added output port '{port_name}' with zero coordinates")
             return port_name
 
-
     def remove_output(self):
         """出力ポートの削除（修正版）"""
         if self.output_count > 1:
@@ -210,7 +208,6 @@ class FooNode(BaseNode):
                 print(f"Output port {port_name} not found")
         else:
             print("Cannot remove the last output port")
-
 
     def node_double_clicked(self, event):
         print(f"Node {self.name()} double-clicked!")
@@ -3201,7 +3198,6 @@ class CustomNodeGraph(NodeGraph):
             )
             return False
 
-
     def _load_node_data(self, node_elem):
         """ノードデータの読み込み"""
         try:
@@ -3755,14 +3751,16 @@ class CustomNodeGraph(NodeGraph):
                 else:
                     # 回転ジョイントの処理
                     file.write(f'  <joint name="{joint_name}" type="revolute">\n')
+                    axis = [0, 0, 0]
+                    if child_node.rotation_axis == 0:    # X軸
+                        axis = [1, 0, 0]
+                    elif child_node.rotation_axis == 1:  # Y軸
+                        axis = [0, 1, 0]
+                    else:                          # Z軸
+                        axis = [0, 0, 1]
+                    
                     file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="0.0 0.0 0.0"/>\n')
-                    
-                    # 回転軸の設定
-                    axis = [1, 0, 0] if child_node.rotation_axis == 0 else \
-                        [0, 1, 0] if child_node.rotation_axis == 1 else \
-                        [0, 0, 1]
                     file.write(f'    <axis xyz="{axis[0]} {axis[1]} {axis[2]}"/>\n')
-                    
                     file.write(f'    <parent link="{parent_node.name()}"/>\n')
                     file.write(f'    <child link="{child_node.name()}"/>\n')
                     file.write('    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>\n')
@@ -3832,6 +3830,200 @@ class CustomNodeGraph(NodeGraph):
         except Exception as e:
             print(f"Error writing link: {str(e)}")
             traceback.print_exc()
+
+    def export_for_unity(self):
+        """Unityプロジェクト用のファイル構造を作成しエクスポート"""
+        try:
+            # ディレクトリ選択ダイアログを表示
+            message_box = QtWidgets.QMessageBox()
+            message_box.setIcon(QtWidgets.QMessageBox.Information)
+            message_box.setWindowTitle("Select Directory")
+            message_box.setText("Please select the directory where you want to create the Unity project structure.")
+            message_box.exec_()
+
+            base_dir = QtWidgets.QFileDialog.getExistingDirectory(
+                self.widget,
+                "Select Base Directory for Unity Export"
+            )
+
+            if not base_dir:
+                print("Unity export cancelled")
+                return False
+
+            # ロボット名からディレクトリ名を生成
+            robot_name = self.get_robot_name()
+            unity_dir_name = f"{robot_name}_unity_description"
+            unity_dir_path = os.path.join(base_dir, unity_dir_name)
+
+            # メインディレクトリの作成
+            os.makedirs(unity_dir_path, exist_ok=True)
+            print(f"Created Unity description directory: {unity_dir_path}")
+
+            # meshesディレクトリの作成
+            meshes_dir = os.path.join(unity_dir_path, "meshes")
+            os.makedirs(meshes_dir, exist_ok=True)
+            print(f"Created meshes directory: {meshes_dir}")
+
+            # STLファイルのコピー
+            copied_files = []
+            for node in self.all_nodes():
+                if hasattr(node, 'stl_file') and node.stl_file:
+                    if os.path.exists(node.stl_file):
+                        # ファイル名のみを取得
+                        stl_filename = os.path.basename(node.stl_file)
+                        # コピー先のパスを生成
+                        dest_path = os.path.join(meshes_dir, stl_filename)
+                        # ファイルをコピー
+                        shutil.copy2(node.stl_file, dest_path)
+                        copied_files.append(stl_filename)
+                        print(f"Copied STL file: {stl_filename}")
+
+            # URDFファイルの生成
+            urdf_file = os.path.join(unity_dir_path, f"{robot_name}.urdf")
+            with open(urdf_file, 'w', encoding='utf-8') as f:
+                # ヘッダー
+                f.write('<?xml version="1.0"?>\n')
+                f.write(f'<robot name="{robot_name}">\n\n')
+
+                # マテリアル定義の収集
+                materials = {}
+                for node in self.all_nodes():
+                    if hasattr(node, 'node_color'):
+                        rgb = node.node_color
+                        if len(rgb) >= 3:
+                            hex_color = '#{:02x}{:02x}{:02x}'.format(
+                                int(rgb[0] * 255),
+                                int(rgb[1] * 255),
+                                int(rgb[2] * 255)
+                            )
+                            materials[hex_color] = rgb
+
+                # マテリアルの書き出し
+                f.write('<!-- material color setting -->\n')
+                for hex_color, rgb in materials.items():
+                    f.write(f'<material name="{hex_color}">\n')
+                    f.write(f'  <color rgba="{rgb[0]:.3f} {rgb[1]:.3f} {rgb[2]:.3f} 1.0"/>\n')
+                    f.write('</material>\n')
+                f.write('\n')
+
+                # base_linkから開始して、ツリー構造を順番に出力
+                visited_nodes = set()
+                base_node = self.get_node_by_name('base_link')
+                if base_node:
+                    self._write_tree_structure_unity(f, base_node, None, visited_nodes, materials, unity_dir_name)
+
+                f.write('</robot>\n')
+
+            print(f"Unity export completed successfully:")
+            print(f"- Directory: {unity_dir_path}")
+            print(f"- URDF file: {urdf_file}")
+            print(f"- Copied {len(copied_files)} STL files")
+
+            QtWidgets.QMessageBox.information(
+                self.widget,
+                "Unity Export Complete",
+                f"URDF files have been exported for Unity URDF-Importer:\n\n"
+                f"Directory Path:\n{unity_dir_path}\n\n"
+                f"URDF File:\n{urdf_file}\n\n"
+                f"The files are ready to be imported using Unity URDF-Importer."
+            )
+
+            return True
+
+        except Exception as e:
+            error_msg = f"Error exporting for Unity: {str(e)}"
+            print(error_msg)
+            traceback.print_exc()
+            
+            QtWidgets.QMessageBox.critical(
+                self.widget,
+                "Export Error",
+                error_msg
+            )
+            return False
+
+    def _write_tree_structure_unity(self, file, node, parent_node, visited_nodes, materials, unity_dir_name):
+        """Unity用のツリー構造を順番に出力"""
+        if node in visited_nodes:
+            return
+        visited_nodes.add(node)
+
+        if node.name() == "base_link":
+            # base_linkの出力
+            self._write_base_link(file)
+        
+        # 現在のノードに接続されているジョイントとリンクを処理
+        for port in node.output_ports():
+            for connected_port in port.connected_ports():
+                child_node = connected_port.node()
+                if child_node not in visited_nodes:
+                    # まずジョイントを出力
+                    self._write_joint(file, node, child_node)
+                    file.write('\n')
+                    
+                    # 次にリンクを出力（Unity用のパスで）
+                    self._write_link_unity(file, child_node, materials, unity_dir_name)
+                    file.write('\n')
+                    
+                    # 再帰的に子ノードを処理
+                    self._write_tree_structure_unity(file, child_node, node, visited_nodes, materials, unity_dir_name)
+
+    def _write_link_unity(self, file, node, materials, unity_dir_name):
+        """Unity用のリンク出力"""
+        try:
+            file.write(f'  <link name="{node.name()}">\n')
+            
+            # 慣性パラメータ
+            if hasattr(node, 'mass_value') and hasattr(node, 'inertia'):
+                file.write('    <inertial>\n')
+                file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+                file.write(f'      <mass value="{node.mass_value:.6f}"/>\n')
+                file.write('      <inertia')
+                for key, value in node.inertia.items():
+                    file.write(f' {key}="{value:.6f}"')
+                file.write('/>\n')
+                file.write('    </inertial>\n')
+
+            # ビジュアルとコリジョン
+            if hasattr(node, 'stl_file') and node.stl_file:
+                try:
+                    stl_filename = os.path.basename(node.stl_file)
+                    # パスは直接meshesを指定
+                    package_path = f"package://meshes/{stl_filename}"
+
+                    # メインのビジュアル
+                    file.write('    <visual>\n')
+                    file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+                    file.write('      <geometry>\n')
+                    file.write(f'        <mesh filename="{package_path}"/>\n')
+                    file.write('      </geometry>\n')
+                    if hasattr(node, 'node_color'):
+                        hex_color = '#{:02x}{:02x}{:02x}'.format(
+                            int(node.node_color[0] * 255),
+                            int(node.node_color[1] * 255),
+                            int(node.node_color[2] * 255)
+                        )
+                        file.write(f'      <material name="{hex_color}"/>\n')
+                    file.write('    </visual>\n')
+
+                    # コリジョン
+                    file.write('    <collision>\n')
+                    file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+                    file.write('      <geometry>\n')
+                    file.write(f'        <mesh filename="{package_path}"/>\n')
+                    file.write('      </geometry>\n')
+                    file.write('    </collision>\n')
+
+                except Exception as e:
+                    print(f"Error processing STL file for node {node.name()}: {str(e)}")
+                    traceback.print_exc()
+
+            file.write('  </link>\n')
+
+        except Exception as e:
+            print(f"Error writing link: {str(e)}")
+            traceback.print_exc()
+
 
 # ユーティリティ関数
 def shutdown():
@@ -4090,8 +4282,9 @@ if __name__ == '__main__':
             "Save Project": None,
             "--spacer4--": None,  # スペーサー用のダミーキー
             "Export URDF": None,
+            "Export for Unity": None,
             "--spacer5--": None,  # スペーサー用のダミーキー
-            "open urdf-loaders": None,
+            "open urdf-loaders": None
         }
 
         for button_text in buttons.keys():
@@ -4110,6 +4303,7 @@ if __name__ == '__main__':
         left_layout.addStretch()
 
         # ボタンのコネクション設定
+        buttons["Import XMLs"].clicked.connect(graph.import_xmls_from_folder)
         buttons["Add Node"].clicked.connect(
             lambda: graph.create_node(
                 'insilico.nodes.FooNode',
@@ -4119,12 +4313,12 @@ if __name__ == '__main__':
         )
         buttons["Delete Node"].clicked.connect(
             lambda: delete_selected_node(graph))
-        buttons["Import XMLs"].clicked.connect(graph.import_xmls_from_folder)
-        buttons["Export URDF"].clicked.connect(lambda: graph.export_urdf())
-        buttons["Save Project"].clicked.connect(graph.save_project)
-        buttons["Load Project"].clicked.connect(lambda: load_project(graph))
         buttons["Recalc Positions"].clicked.connect(
             graph.recalculate_all_positions)
+        buttons["Save Project"].clicked.connect(graph.save_project)
+        buttons["Load Project"].clicked.connect(lambda: load_project(graph))
+        buttons["Export URDF"].clicked.connect(lambda: graph.export_urdf())
+        buttons["Export for Unity"].clicked.connect(graph.export_for_unity)
         buttons["open urdf-loaders"].clicked.connect(
             lambda: QtGui.QDesktopServices.openUrl(
                 QtCore.QUrl(
