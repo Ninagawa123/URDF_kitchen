@@ -56,6 +56,7 @@ python urdf_kitchen_Assembler.py
 特にパラメータの計算や反映について検算や検証が必要です。  
 
 - urdf_kitchen_StlSourcer.py で回転を繰り返すと誤差が蓄積するようです。回転前に一度Rでリセットし、最小の回転回数で保存を行うとズレを抑えられる可能性があります。(20241214)  
+- AssemblerでRotationをFixedにしたとき、Rotation Testボタンで本来は動かないべきだが、Z軸で回転する(20241214)  
   
 # Tutorial  
 準備中です。少々お待ちください。  
