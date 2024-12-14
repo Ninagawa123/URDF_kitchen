@@ -65,5 +65,7 @@ python urdf_kitchen_Assembler.py
 
 https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb  
  
-[![URDF Kitchenロゴ](docs/urdf_kitchen.png)](https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb)
 
+<a href="[https://github.com/deepmind/mujoco](https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb)">
+  <img src="docs/urdf_kitchen.png" alt="URDF Kitchenロゴ" width="400">
+</a>
