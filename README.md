@@ -64,5 +64,6 @@ python urdf_kitchen_Assembler.py
 公式のチュートリアルやガイドも別途製作中です。  
 
 https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb  
-  
-<img width="500" alt="urdf_kitchen_logo" src="docs/urdf_kitchen.png">
+ 
+[![URDF Kitchenロゴ](docs/urdf_kitchen.png)]([https://github.com/deepmind/mujoco](https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb  )) 
+
