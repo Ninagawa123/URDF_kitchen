@@ -59,6 +59,10 @@ python urdf_kitchen_Assembler.py
 - AssemblerでRotationをFixedにしたとき、Rotation Testボタンで本来は動かないべきだが、Z軸で回転する(20241214)  
   
 # Tutorial  
-準備中です。少々お待ちください。  
+
+作業のフローをとりいそぎ下記の記事にまとめました。  
+公式のチュートリアルやガイドも別途製作中です。  
+
+https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb  
   
 <img width="500" alt="urdf_kitchen_logo" src="docs/urdf_kitchen.png">
