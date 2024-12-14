@@ -1303,8 +1303,8 @@ class STLViewerWidget(QtWidgets.QWidget):
         # ボタンとスライダーのレイアウト
         button_layout = QtWidgets.QVBoxLayout()  # 垂直レイアウトに変更
 
-        # Angle Resetボタン
-        self.reset_button = QtWidgets.QPushButton("Angle Reset")
+        # Reset Angleボタン
+        self.reset_button = QtWidgets.QPushButton("Reset Angle")
         self.reset_button.clicked.connect(self.reset_camera)
         button_layout.addWidget(self.reset_button)
 
