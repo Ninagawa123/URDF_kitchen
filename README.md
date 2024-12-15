@@ -31,7 +31,7 @@ urdfをプラモデルのように最後の組み立てられるツールです�
 https://gkjohnson.github.io/urdf-loaders/javascript/example/bundle/
 
 # Install  
-python 3.9などで動作します。(3.10はライブラリの都合で素直に動かないかもしれません)  
+python 3.9, python 3.11などで動作します。(3.10はライブラリの都合で素直に動かないかもしれません)  
   
 ### libraryとpip  
   
