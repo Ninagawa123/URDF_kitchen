@@ -4,7 +4,7 @@ Description: A Python script for configuring connection points of parts for urdf
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Version     : 0.0.1
+Version     : 0.0.2
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
 Copyright (c) 2024 Ninagawa123
@@ -1080,8 +1080,12 @@ class MainWindow(QMainWindow):
 
     def calculate_inertia_tensor(self):
         """
-        STLモデルの慣性テンソルを計算する。
+        三角形メッシュの慣性テンソルを計算する。
         重心位置を考慮し、正確なイナーシャを算出する。
+        
+        Returns:
+            numpy.ndarray: 3x3の慣性テンソル行列
+            None: エラーが発生した場合
         """
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
             print("No STL model is loaded.")
@@ -1090,91 +1094,98 @@ class MainWindow(QMainWindow):
         # ポリデータを取得
         poly_data = self.stl_actor.GetMapper().GetInput()
 
-        # 体積と質量を取得
+        # 体積と質量を取得して表示
         mass_properties = vtk.vtkMassProperties()
         mass_properties.SetInputData(poly_data)
         mass_properties.Update()
         volume = mass_properties.GetVolume()
         density = float(self.density_input.text())
         mass = volume * density
+        print(f"Volume: {volume:.6f}, Density: {density:.6f}, Mass: {mass:.6f}")
 
-        # 重心の取得
-        if hasattr(self, 'com_checkbox') and self.com_checkbox.isChecked():
-            try:
-                com_text = self.com_input.text().strip('()').split(',')
-                center_of_mass = [float(x.strip()) for x in com_text]
-                print(f"Using fixed Center of Mass: {center_of_mass}")
-            except (ValueError, IndexError) as e:
-                print(f"Error parsing Center of Mass input: {e}")
-                return None
-        else:
-            com_filter = vtk.vtkCenterOfMass()
-            com_filter.SetInputData(poly_data)
-            com_filter.SetUseScalarsAsWeights(False)
-            com_filter.Update()
-            center_of_mass = com_filter.GetCenter()
-            print(f"Calculated Center of Mass: {center_of_mass}")
+        # UIまたは計算から重心を取得
+        center_of_mass = self.get_center_of_mass()
+        if center_of_mass is None:
+            print("Error getting center of mass")
+            return None
 
-        # 慣性テンソルの計算
+        # 慣性テンソルの初期化
         inertia_tensor = np.zeros((3, 3))
+        
+        # 全三角形に対して処理
         num_cells = poly_data.GetNumberOfCells()
-        total_volume = 0.0
-
+        print(f"Processing {num_cells} triangles...")
+        
         for i in range(num_cells):
             cell = poly_data.GetCell(i)
             if cell.GetCellType() == vtk.VTK_TRIANGLE:
-                # 三角形の頂点を取得
-                points = [np.array(cell.GetPoints().GetPoint(j)) for j in range(3)]
+                # 三角形の頂点を取得（重心を原点とした座標系で）
+                points = [np.array(cell.GetPoints().GetPoint(j)) - center_of_mass for j in range(3)]
                 
-                # 重心からの相対位置を計算
-                rel_points = [p - np.array(center_of_mass) for p in points]
+                # 三角形の面積と法線ベクトルを計算
+                v1 = points[1] - points[0]
+                v2 = points[2] - points[0]
+                normal = np.cross(v1, v2)
+                area = 0.5 * np.linalg.norm(normal)
                 
-                # 三角形の面積を計算
-                v1 = rel_points[1] - rel_points[0]
-                v2 = rel_points[2] - rel_points[0]
-                area = 0.5 * np.linalg.norm(np.cross(v1, v2))
-                
-                # 三角形の重心を計算
-                tri_com = sum(rel_points) / 3.0
-                
-                # 三角形の体積要素を計算（面積 × 厚さの概算）
-                thickness = 0.001  # 仮の厚さ
-                elem_volume = area * thickness
-                total_volume += elem_volume
-                
-                # 平行軸の定理を使用して慣性テンソルを計算
-                for p in rel_points:
+                if area < 1e-10:  # 面積が極めて小さい三角形は無視
+                    continue
+
+                # 三角形の重心
+                tri_centroid = np.mean(points, axis=0)
+
+                # 三角形の局所的な慣性テンソルを計算
+                covariance = np.zeros((3, 3))
+                for p in points:
                     r_squared = np.sum(p * p)
-                    
-                    # 対角成分
-                    inertia_tensor[0, 0] += elem_volume * (r_squared - p[0] * p[0])
-                    inertia_tensor[1, 1] += elem_volume * (r_squared - p[1] * p[1])
-                    inertia_tensor[2, 2] += elem_volume * (r_squared - p[2] * p[2])
-                    
-                    # 非対角成分
-                    inertia_tensor[0, 1] -= elem_volume * p[0] * p[1]
-                    inertia_tensor[0, 2] -= elem_volume * p[0] * p[2]
-                    inertia_tensor[1, 2] -= elem_volume * p[1] * p[2]
+                    for a in range(3):
+                        for b in range(3):
+                            if a == b:
+                                # 対角成分
+                                covariance[a, a] += (r_squared - p[a] * p[a]) * area / 12.0
+                            else:
+                                # 非対角成分
+                                covariance[a, b] -= (p[a] * p[b]) * area / 12.0
 
-        # 体積で正規化し、質量を考慮
-        scale_factor = mass / total_volume
-        inertia_tensor *= scale_factor
+                # 平行軸の定理を適用
+                r_squared = np.sum(tri_centroid * tri_centroid)
+                for a in range(3):
+                    for b in range(3):
+                        if a == b:
+                            inertia_tensor[a, a] += covariance[a, a] + area * (r_squared - tri_centroid[a] * tri_centroid[a])
+                        else:
+                            inertia_tensor[a, b] += covariance[a, b] - area * tri_centroid[a] * tri_centroid[b]
 
-        # 対称性を保証
-        inertia_tensor[1, 0] = inertia_tensor[0, 1]
-        inertia_tensor[2, 0] = inertia_tensor[0, 2]
-        inertia_tensor[2, 1] = inertia_tensor[1, 2]
+        # 密度を考慮して最終的な慣性テンソルを計算
+        inertia_tensor *= density
 
-        print("Inertia_tensor:")
+        # 数値誤差の処理
+        threshold = 1e-10
+        for i in range(3):
+            for j in range(3):
+                if abs(inertia_tensor[i, j]) < threshold:
+                    inertia_tensor[i, j] = 0.0
+
+        # 対称性の確認と強制
+        inertia_tensor = 0.5 * (inertia_tensor + inertia_tensor.T)
+        
+        # 慣性テンソルの値を表示
+        print("\nCalculated Inertia Tensor:")
         print(inertia_tensor)
 
-        # URDF形式の慣性テンソル文字列を生成
-        urdf_inertia = self.format_inertia_for_urdf(inertia_tensor)
+        # 対角成分が正であることを確認
+        if not all(inertia_tensor[i, i] > 0 for i in range(3)):
+            print("\nWarning: Negative diagonal elements detected in inertia tensor!")
+            for i in range(3):
+                if inertia_tensor[i, i] <= 0:
+                    print(f"Fixing negative diagonal element: {inertia_tensor[i, i]} -> {abs(inertia_tensor[i, i])}")
+                    inertia_tensor[i, i] = abs(inertia_tensor[i, i])
 
-        # UIを更新
+        # URDFフォーマットに変換してUIを更新
+        urdf_inertia = self.format_inertia_for_urdf(inertia_tensor)
         if hasattr(self, 'inertia_tensor_input'):
             self.inertia_tensor_input.setText(urdf_inertia)
-            self.com_input.setText(f"({center_of_mass[0]:.6f}, {center_of_mass[1]:.6f}, {center_of_mass[2]:.6f})")
+            print("\nInertia tensor has been updated in UI")
         else:
             print("Warning: inertia_tensor_input not found")
 
@@ -1271,18 +1282,71 @@ class MainWindow(QMainWindow):
             print(f"Error during URDF export: {str(e)}")
             traceback.print_exc()
 
+
+    def get_center_of_mass(self):
+        """
+        UIまたは計算から重心を取得する
+        
+        Returns:
+            numpy.ndarray: 重心の座標 [x, y, z]
+            None: エラーが発生した場合
+        """
+        if not hasattr(self, 'stl_actor') or not self.stl_actor:
+            print("No STL model is loaded.")
+            return None
+
+        if hasattr(self, 'com_checkbox') and self.com_checkbox.isChecked():
+            try:
+                # 入力テキストから座標を取得
+                com_text = self.com_input.text().strip('()').split(',')
+                if len(com_text) != 3:
+                    raise ValueError("Invalid format: Requires 3 coordinates")
+                center_of_mass = np.array([float(x.strip()) for x in com_text])
+                print(f"Using manual Center of Mass: {center_of_mass}")
+                return center_of_mass
+            except (ValueError, IndexError) as e:
+                print(f"Error parsing Center of Mass input: {e}")
+                return None
+        
+        # チェックされていない場合やエラー時は計算値を使用
+        try:
+            poly_data = self.stl_actor.GetMapper().GetInput()
+            com_filter = vtk.vtkCenterOfMass()
+            com_filter.SetInputData(poly_data)
+            com_filter.SetUseScalarsAsWeights(False)
+            com_filter.Update()
+            center_of_mass = np.array(com_filter.GetCenter())
+            print(f"Using calculated Center of Mass: {center_of_mass}")
+            return center_of_mass
+        except Exception as e:
+            print(f"Error calculating center of mass: {e}")
+            return None
+
     def format_inertia_for_urdf(self, inertia_tensor):
+        """
+        慣性テンソルをURDFフォーマットの文字列に変換する
+        
+        Args:
+            inertia_tensor (numpy.ndarray): 3x3の慣性テンソル行列
+        
+        Returns:
+            str: URDF形式の慣性テンソル文字列
+        """
         # 値が非常に小さい場合は0とみなす閾値
         threshold = 1e-10
 
+        # 対角成分
         ixx = inertia_tensor[0][0] if abs(inertia_tensor[0][0]) > threshold else 0
         iyy = inertia_tensor[1][1] if abs(inertia_tensor[1][1]) > threshold else 0
         izz = inertia_tensor[2][2] if abs(inertia_tensor[2][2]) > threshold else 0
+        
+        # 非対角成分
         ixy = inertia_tensor[0][1] if abs(inertia_tensor[0][1]) > threshold else 0
         ixz = inertia_tensor[0][2] if abs(inertia_tensor[0][2]) > threshold else 0
         iyz = inertia_tensor[1][2] if abs(inertia_tensor[1][2]) > threshold else 0
 
         return f'<inertia ixx="{ixx:.8f}" ixy="{ixy:.8f}" ixz="{ixz:.8f}" iyy="{iyy:.8f}" iyz="{iyz:.8f}" izz="{izz:.8f}"/>'
+
 
     def apply_camera_rotation(self, camera):
         # カメラの現在の位置と焦点を取得
@@ -1815,7 +1879,9 @@ class MainWindow(QMainWindow):
         
         return os.path.join(dir_path, new_name + ext)
 
+
     def export_mirror_stl_xml(self):
+        """STLファイルをY軸でミラーリングし、対応するXMLファイルも生成する"""
         if not hasattr(self, 'stl_file_path') or not self.stl_file_path:
             print("No STL file has been loaded.")
             return
@@ -1838,9 +1904,32 @@ class MainWindow(QMainWindow):
             else:
                 new_name = 'mirrored_' + name
 
-            # ミラー化したSTLのパスを設定
+            # ミラー化したファイルのパスを設定
             mirrored_stl_path = os.path.join(original_dir, new_name + ext)
+            mirrored_xml_path = os.path.join(original_dir, new_name + '.xml')
 
+            # 既存ファイルのチェックとダイアログ表示
+            if os.path.exists(mirrored_stl_path) or os.path.exists(mirrored_xml_path):
+                existing_files = []
+                if os.path.exists(mirrored_stl_path):
+                    existing_files.append(f"STL: {mirrored_stl_path}")
+                if os.path.exists(mirrored_xml_path):
+                    existing_files.append(f"XML: {mirrored_xml_path}")
+                
+                msg = QMessageBox()
+                msg.setIcon(QMessageBox.Question)
+                msg.setText("Following files already exist:")
+                msg.setInformativeText("\n".join(existing_files) + "\n\nDo you want to overwrite them?")
+                msg.setWindowTitle("Confirm Overwrite")
+                msg.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+                
+                if msg.exec() == QMessageBox.No:
+                    print("Operation cancelled by user")
+                    return
+
+            print("\nStarting mirror export process...")
+            print(f"Source STL: {self.stl_file_path}")
+            
             # STLの読み込みとミラー化
             reader = vtk.vtkSTLReader()
             reader.SetFileName(self.stl_file_path)
@@ -1890,6 +1979,12 @@ class MainWindow(QMainWindow):
                             xyz = inertial_origin.get('xyz')
                             x, y, z = map(float, xyz.split())
                             center_of_mass = [x, -y, z]  # Y座標のみを反転
+                        else:
+                            print("Warning: No center of mass information found in XML")
+                            center_of_mass = [0, 0, 0]
+
+                    print(f"Original mass: {mass:.6f}, volume: {volume:.6f}")
+                    print(f"Original center of mass: {center_of_mass}")
 
                     # 色情報を取得
                     color_element = xml_data.find(".//material/color")
@@ -1900,24 +1995,25 @@ class MainWindow(QMainWindow):
                         rgba_str = "1.0 1.0 1.0 1.0"
                         hex_color = "#FFFFFF"
 
-                except ET.ParseError:
+                except ET.ParseError as e:
                     print(f"Error parsing XML file: {xml_path}")
+                    print(f"Error details: {str(e)}")
                     return
 
             # ミラー化したSTLを保存
+            print(f"\nSaving mirrored STL to: {mirrored_stl_path}")
             writer = vtk.vtkSTLWriter()
             writer.SetFileName(mirrored_stl_path)
             writer.SetInputData(normal_generator.GetOutput())
             writer.Write()
 
+            print("\nCalculating inertia tensor for mirrored model...")
             # イナーシャテンソルを計算
             inertia_tensor = self.calculate_inertia_tensor_for_mirrored(
                 normal_generator.GetOutput(), mass, center_of_mass)
 
-            # 新しいXMLファイルのパスを生成
-            new_xml_path = os.path.splitext(mirrored_stl_path)[0] + '.xml'
-
             # XMLファイルの内容を生成
+            print(f"\nGenerating XML content...")
             urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <urdf_part>
     <material name="{hex_color}">
@@ -1939,6 +2035,7 @@ class MainWindow(QMainWindow):
 
             # ポイントデータを反転してコピー
             if xml_data is not None:
+                print("Processing point data...")
                 points = xml_data.findall('.//point')
                 for point in points:
                     xyz_element = point.find('point_xyz')
@@ -1951,11 +2048,13 @@ class MainWindow(QMainWindow):
     <point name="{point_name}" type="fixed">
         <point_xyz>{x:.6f} {mirrored_y:.6f} {z:.6f}</point_xyz>
     </point>"""
+                            print(f"Processed point: {point_name}")
                         except ValueError:
                             print(f"Error processing point coordinates in XML")
 
             # 軸情報を取得して適用
             if xml_data is not None:
+                print("Processing axis information...")
                 axis_element = xml_data.find('.//joint/axis')
                 if axis_element is not None:
                     axis_str = axis_element.get('xyz')
@@ -1972,20 +2071,30 @@ class MainWindow(QMainWindow):
 </urdf_part>"""
 
             # XMLファイルを保存
-            with open(new_xml_path, "w") as f:
+            print(f"Saving XML to: {mirrored_xml_path}")
+            with open(mirrored_xml_path, "w") as f:
                 f.write(urdf_content)
 
-            print(f"Mirror export completed successfully:")
+            print("\nMirror export completed successfully:")
             print(f"STL file: {mirrored_stl_path}")
-            print(f"XML file: {new_xml_path}")
+            print(f"XML file: {mirrored_xml_path}")
 
         except Exception as e:
-            print(f"An error occurred during mirror export: {str(e)}")
+            print(f"\nAn error occurred during mirror export: {str(e)}")
             traceback.print_exc()
+        
 
     def calculate_inertia_tensor_for_mirrored(self, poly_data, mass, center_of_mass):
         """
         ミラーリングされたモデルの慣性テンソルを計算
+        
+        Args:
+            poly_data: vtkPolyData オブジェクト
+            mass: float 質量
+            center_of_mass: list[float] 重心座標 [x, y, z]
+        
+        Returns:
+            numpy.ndarray: 3x3 慣性テンソル行列
         """
         # 体積を計算
         mass_properties = vtk.vtkMassProperties()
@@ -1993,48 +2102,87 @@ class MainWindow(QMainWindow):
         mass_properties.Update()
         total_volume = mass_properties.GetVolume()
 
+        # 実際の質量から密度を逆算
+        density = mass / total_volume
+        print(f"Calculated density: {density:.6f} from mass: {mass:.6f} and volume: {total_volume:.6f}")
+
+        # Y軸ミラーリングの変換行列
+        mirror_matrix = np.array([[1, 0, 0],
+                                [0, -1, 0],
+                                [0, 0, 1]])
+
         inertia_tensor = np.zeros((3, 3))
         num_cells = poly_data.GetNumberOfCells()
+        print(f"Processing {num_cells} triangles for inertia tensor calculation...")
 
         for i in range(num_cells):
             cell = poly_data.GetCell(i)
             if cell.GetCellType() == vtk.VTK_TRIANGLE:
-                points = [np.array(cell.GetPoints().GetPoint(j)) for j in range(3)]
-                rel_points = [p - np.array(center_of_mass) for p in points]
+                # 三角形の頂点を取得（重心を原点とした座標系で）
+                points = [np.array(cell.GetPoints().GetPoint(j)) - np.array(center_of_mass) for j in range(3)]
                 
-                # 三角形の面積と重心を計算
-                v1 = rel_points[1] - rel_points[0]
-                v2 = rel_points[2] - rel_points[0]
-                area = 0.5 * np.linalg.norm(np.cross(v1, v2))
-                tri_com = sum(rel_points) / 3.0
+                # 三角形の面積と法線ベクトルを計算
+                v1 = points[1] - points[0]
+                v2 = points[2] - points[0]
+                normal = np.cross(v1, v2)
+                area = 0.5 * np.linalg.norm(normal)
                 
-                # 三角形の体積要素
-                thickness = 0.001
-                elem_volume = area * thickness
-                
-                for p in rel_points:
+                if area < 1e-10:  # 極小の三角形は無視
+                    continue
+
+                # 三角形の重心
+                tri_centroid = np.mean(points, axis=0)
+
+                # 三角形の局所的な慣性テンソルを計算
+                covariance = np.zeros((3, 3))
+                for p in points:
+                    # 点をミラーリング
+                    p = mirror_matrix @ p
                     r_squared = np.sum(p * p)
-                    
-                    # 対角成分
-                    inertia_tensor[0, 0] += elem_volume * (r_squared - p[0] * p[0])
-                    inertia_tensor[1, 1] += elem_volume * (r_squared - p[1] * p[1])
-                    inertia_tensor[2, 2] += elem_volume * (r_squared - p[2] * p[2])
-                    
-                    # 非対角成分（Y軸に関する反転を考慮）
-                    inertia_tensor[0, 1] -= elem_volume * p[0] * p[1]  # 符号反転
-                    inertia_tensor[0, 2] -= elem_volume * p[0] * p[2]
-                    inertia_tensor[1, 2] -= elem_volume * p[1] * p[2]  # 符号反転
+                    for a in range(3):
+                        for b in range(3):
+                            if a == b:
+                                covariance[a, a] += (r_squared - p[a] * p[a]) * area / 12.0
+                            else:
+                                covariance[a, b] -= (p[a] * p[b]) * area / 12.0
 
-        # 質量による正規化
-        scale_factor = mass / total_volume
-        inertia_tensor *= scale_factor
+                # ミラーリングされた重心
+                tri_centroid = mirror_matrix @ tri_centroid
+                
+                # 平行軸の定理を適用
+                r_squared = np.sum(tri_centroid * tri_centroid)
+                parallel_axis_term = np.zeros((3, 3))
+                for a in range(3):
+                    for b in range(3):
+                        if a == b:
+                            parallel_axis_term[a, a] = r_squared * area
+                        else:
+                            parallel_axis_term[a, b] = tri_centroid[a] * tri_centroid[b] * area
 
-        # 対称性の保証
-        inertia_tensor[1, 0] = inertia_tensor[0, 1]
-        inertia_tensor[2, 0] = inertia_tensor[0, 2]
-        inertia_tensor[2, 1] = inertia_tensor[1, 2]
+                # 局所的な慣性テンソルと平行軸の項を合成
+                local_inertia = covariance + parallel_axis_term
+                
+                # 全体の慣性テンソルに加算
+                inertia_tensor += local_inertia
 
+        # 密度を考慮して最終的な慣性テンソルを計算
+        inertia_tensor *= density
+
+        # Y軸反転による慣性テンソルの変換
+        mirror_tensor = np.array([[1, -1, -1],
+                                [-1, 1, 1],
+                                [-1, 1, 1]])
+        inertia_tensor = inertia_tensor * mirror_tensor
+
+        # 数値誤差の処理
+        threshold = 1e-10
+        inertia_tensor[np.abs(inertia_tensor) < threshold] = 0.0
+
+        print("\nCalculated Inertia Tensor:")
+        print(inertia_tensor)
         return inertia_tensor
+
+
 
     def _load_points_from_xml(self, root):
         """XMLからポイントデータを読み込む"""
@@ -2493,6 +2641,11 @@ class MainWindow(QMainWindow):
             traceback.print_exc()
 
     def bulk_convert_l_to_r(self):
+        """
+        フォルダ内の'l_'または'L_'で始まるSTLファイルを処理し、
+        対応する'r_'または'R_'ファイルを生成する。
+        既存のファイルは上書きせずスキップする。
+        """
         try:
             # フォルダ選択ダイアログを表示
             folder_path = QFileDialog.getExistingDirectory(
@@ -2504,11 +2657,25 @@ class MainWindow(QMainWindow):
 
             # 処理したファイルの数を追跡
             processed_count = 0
+            skipped_count = 0
 
             # フォルダ内のすべてのSTLファイルを検索
             for file_name in os.listdir(folder_path):
                 if file_name.lower().startswith(('l_', 'L_')) and file_name.lower().endswith('.stl'):
                     stl_path = os.path.join(folder_path, file_name)
+
+                    # 新しいファイル名を生成
+                    new_name = 'R_' + file_name[2:] if file_name.startswith('L_') else 'r_' + file_name[2:]
+                    new_name_without_ext = os.path.splitext(new_name)[0]
+                    new_stl_path = os.path.join(folder_path, new_name)
+                    new_xml_path = os.path.splitext(new_stl_path)[0] + '.xml'
+
+                    # 既存ファイルのチェック
+                    if os.path.exists(new_stl_path) or os.path.exists(new_xml_path):
+                        print(f"Skipping {file_name} - Target file(s) already exist")
+                        skipped_count += 1
+                        continue
+
                     print(f"Processing: {stl_path}")
 
                     try:
@@ -2575,11 +2742,6 @@ class MainWindow(QMainWindow):
                                 print(f"Error parsing XML file: {xml_path}")
                                 continue
 
-                        # 新しいファイル名を生成
-                        new_name = 'R_' + file_name[2:] if file_name.startswith('L_') else 'r_' + file_name[2:]
-                        new_name_without_ext = os.path.splitext(new_name)[0]
-                        new_stl_path = os.path.join(folder_path, new_name)
-
                         # ミラー化したSTLを保存
                         writer = vtk.vtkSTLWriter()
                         writer.SetFileName(new_stl_path)
@@ -2589,9 +2751,6 @@ class MainWindow(QMainWindow):
                         # イナーシャテンソルを計算
                         inertia_tensor = self.calculate_inertia_tensor_for_mirrored(
                             normal_generator.GetOutput(), mass, center_of_mass)
-
-                        # 新しいXMLファイルのパスを生成
-                        new_xml_path = os.path.splitext(new_stl_path)[0] + '.xml'
 
                         # XMLファイルの内容を生成
                         urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -2660,11 +2819,13 @@ class MainWindow(QMainWindow):
                         traceback.print_exc()
                         continue
 
-                # 処理完了メッセージ
-                if processed_count > 0:
-                    print(f"Bulk conversion completed. Processed {processed_count} files.")
-                else:
-                    print("No files were processed. Make sure there are STL files with 'l_' or 'L_' prefix in the selected folder.")
+            # 処理完了メッセージ
+            if processed_count > 0 or skipped_count > 0:
+                print(f"\nBulk conversion completed.")
+                print(f"Processed: {processed_count} files")
+                print(f"Skipped: {skipped_count} files (already exist)")
+            else:
+                print("\nNo files were processed. Make sure there are STL files with 'l_' or 'L_' prefix in the selected folder.")
 
         except Exception as e:
             print(f"Error during bulk conversion: {str(e)}")
@@ -2674,6 +2835,12 @@ class MainWindow(QMainWindow):
         """
         軸情報を左右反転する際の処理
         回転軸の向きは左右で変更しない
+        
+        Args:
+            axis_str (str): "x y z" 形式の軸情報
+        
+        Returns:
+            str: 変換後の軸情報
         """
         try:
             x, y, z = map(float, axis_str.split())
@@ -2682,6 +2849,7 @@ class MainWindow(QMainWindow):
         except ValueError:
             print(f"Error parsing axis values: {axis_str}")
             return "1 0 0"  # デフォルト値
+
 
     def start_rotation_test(self):
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
