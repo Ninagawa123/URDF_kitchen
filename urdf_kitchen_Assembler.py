@@ -4,7 +4,7 @@ Description: A Python script to assembling files configured with urdf_kitchen_Pa
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Version     : 0.0.1
+Version     : 0.0.2
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
 Copyright (c) 2024 Ninagawa123
@@ -502,13 +502,18 @@ class InspectorWindow(QtWidgets.QWidget):
         """カラーサンプルの表示を更新"""
         try:
             rgb_values = [min(255, max(0, int(float(input.text()) * 255))) 
-                         for input in self.color_inputs]
+                        for input in self.color_inputs]
             self.color_sample.setStyleSheet(
                 f"background-color: rgb({rgb_values[0]},{rgb_values[1]},{rgb_values[2]}); "
                 f"border: 1px solid black;"
             )
-        except ValueError:
-            pass
+            
+            if self.current_node:
+                self.current_node.node_color = [float(input.text()) for input in self.color_inputs]
+                
+        except ValueError as e:
+            print(f"Error updating color sample: {str(e)}")
+            traceback.print_exc()
 
     def update_port_coordinate(self, port_index, coord_index, value):
         """ポート座標の更新"""
@@ -616,15 +621,48 @@ class InspectorWindow(QtWidgets.QWidget):
     def on_axis_selection_changed(self, button):
         """回転軸の選択が変更されたときのイベントハンドラ"""
         if self.current_node:
+            # 現在のノードの変換情報を保存
+            if self.stl_viewer and self.current_node in self.stl_viewer.transforms:
+                current_transform = self.stl_viewer.transforms[self.current_node]
+                current_position = current_transform.GetPosition()
+            else:
+                current_position = [0, 0, 0]
+
+            # 回転軸の更新
             axis_id = self.axis_group.id(button)
             self.current_node.rotation_axis = axis_id
-            # 軸のリストにFIXEDを追加
-            print(f"Rotation axis changed to: {['X', 'Y', 'Z', 'FIXED'][axis_id]}")
 
-            # 必要に応じてSTLモデルの回転を更新
+            # 軸のタイプを判定して表示
+            axis_types = ['X (Roll)', 'Y (Pitch)', 'Z (Yaw)', 'Fixed']
+            if 0 <= axis_id < len(axis_types):
+                print(f"Rotation axis changed to: {axis_types[axis_id]}")
+            else:
+                print(f"Invalid rotation axis ID: {axis_id}")
+
+            # STLモデルの更新
             if self.stl_viewer:
-                self.stl_viewer.update_rotation_axis(self.current_node, axis_id)
-
+                # 変換の更新
+                if self.current_node in self.stl_viewer.transforms:
+                    transform = self.stl_viewer.transforms[self.current_node]
+                    transform.Identity()  # 変換をリセット
+                    transform.Translate(*current_position)  # 元の位置を維持
+                    
+                    # 回転軸に基づいて現在の角度を設定（必要な場合）
+                    if hasattr(self.current_node, 'current_rotation'):
+                        angle = self.current_node.current_rotation
+                        if axis_id == 0:      # X軸
+                            transform.RotateX(angle)
+                        elif axis_id == 1:    # Y軸
+                            transform.RotateY(angle)
+                        elif axis_id == 2:    # Z軸
+                            transform.RotateZ(angle)
+                    
+                    # 変換を適用
+                    if self.current_node in self.stl_viewer.stl_actors:
+                        self.stl_viewer.stl_actors[self.current_node].SetUserTransform(transform)
+                        self.stl_viewer.vtkWidget.GetRenderWindow().Render()
+                        print(f"Updated transform for node {self.current_node.name()} at position {current_position}")
+                        
     def show_color_picker(self):
         """カラーピッカーを表示"""
         try:
@@ -663,23 +701,6 @@ class InspectorWindow(QtWidgets.QWidget):
             self.apply_color_to_stl()
             
             print(f"Color picker: Selected RGB({rgb_values[0]:.3f}, {rgb_values[1]:.3f}, {rgb_values[2]:.3f})")
-
-    def update_color_sample(self):
-        """カラーサンプルの表示を更新"""
-        try:
-            rgb_values = [min(255, max(0, int(float(input.text()) * 255))) 
-                        for input in self.color_inputs]
-            self.color_sample.setStyleSheet(
-                f"background-color: rgb({rgb_values[0]},{rgb_values[1]},{rgb_values[2]}); "
-                f"border: 1px solid black;"
-            )
-            
-            if self.current_node:
-                self.current_node.node_color = [float(input.text()) for input in self.color_inputs]
-                
-        except ValueError as e:
-            print(f"Error updating color sample: {str(e)}")
-            traceback.print_exc()
 
     def update_node_name(self):
         """ノード名の更新"""
@@ -1195,23 +1216,6 @@ class InspectorWindow(QtWidgets.QWidget):
                 self.ports_layout.addWidget(port_widget)
                 self.port_widgets.append(port_widget)
 
-    def on_axis_selection_changed(self, button):
-        """回転軸の選択が変更されたときのイベントハンドラ"""
-        if self.current_node:
-            axis_id = self.axis_group.id(button)
-            self.current_node.rotation_axis = axis_id
-
-            # 軸のタイプを判定して表示
-            axis_types = ['X (Roll)', 'Y (Pitch)', 'Z (Yaw)', 'Fixed']
-            if 0 <= axis_id < len(axis_types):
-                print(f"Rotation axis changed to: {axis_types[axis_id]}")
-            else:
-                print(f"Invalid rotation axis ID: {axis_id}")
-
-            # 必要に応じてSTLモデルの回転を更新
-            if self.stl_viewer:
-                self.stl_viewer.update_rotation_axis(self.current_node, axis_id)
-
     def apply_color_to_stl(self):
         """選択された色をSTLモデルに適用"""
         if not self.current_node:
@@ -1278,6 +1282,161 @@ class InspectorWindow(QtWidgets.QWidget):
         if self.current_node and self.stl_viewer:
             # 回転停止と元の角度に戻す
             self.stl_viewer.stop_rotation_test(self.current_node)
+
+    def _calculate_base_inertia_tensor(self, poly_data, mass, center_of_mass, is_mirrored=False):
+        """
+        基本的な慣性テンソル計算のための共通実装。
+        InspectorWindowクラスのメソッド。
+
+        Args:
+            poly_data: vtkPolyData オブジェクト
+            mass: float 質量
+            center_of_mass: list[float] 重心座標 [x, y, z]
+            is_mirrored: bool ミラーリングモードかどうか
+
+        Returns:
+            numpy.ndarray: 3x3 慣性テンソル行列
+        """
+        # 体積を計算
+        mass_properties = vtk.vtkMassProperties()
+        mass_properties.SetInputData(poly_data)
+        mass_properties.Update()
+        total_volume = mass_properties.GetVolume()
+
+        # 実際の質量から密度を逆算
+        density = mass / total_volume
+        print(f"Calculated density: {density:.6f} from mass: {mass:.6f} and volume: {total_volume:.6f}")
+
+        # 慣性テンソルの初期化
+        inertia_tensor = np.zeros((3, 3))
+        num_cells = poly_data.GetNumberOfCells()
+        print(f"Processing {num_cells} triangles for inertia tensor calculation...")
+
+        for i in range(num_cells):
+            cell = poly_data.GetCell(i)
+            if cell.GetCellType() == vtk.VTK_TRIANGLE:
+                # 三角形の頂点を取得（重心を原点とした座標系で）
+                points = [np.array(cell.GetPoints().GetPoint(j)) - np.array(center_of_mass) for j in range(3)]
+
+                # ミラーリングモードの場合、Y座標を反転
+                if is_mirrored:
+                    points = [[p[0], -p[1], p[2]] for p in points]
+
+                # 三角形の面積と法線ベクトルを計算
+                v1 = np.array(points[1]) - np.array(points[0])
+                v2 = np.array(points[2]) - np.array(points[0])
+                normal = np.cross(v1, v2)
+                area = 0.5 * np.linalg.norm(normal)
+                
+                if area < 1e-10:  # 極小の三角形は無視
+                    continue
+
+                # 三角形の重心を計算
+                tri_centroid = np.mean(points, axis=0)
+                
+                # 三角形の局所的な慣性テンソルを計算
+                covariance = np.zeros((3, 3))
+                for p in points:
+                    r_squared = np.sum(p * p)
+                    for a in range(3):
+                        for b in range(3):
+                            if a == b:
+                                # 対角成分
+                                covariance[a, a] += (r_squared - p[a] * p[a]) * area / 12.0
+                            else:
+                                # 非対角成分（オフセット項）
+                                covariance[a, b] -= (p[a] * p[b]) * area / 12.0
+
+                # 平行軸の定理を適用
+                r_squared = np.sum(tri_centroid * tri_centroid)
+                parallel_axis_term = np.zeros((3, 3))
+                for a in range(3):
+                    for b in range(3):
+                        if a == b:
+                            parallel_axis_term[a, a] = r_squared * area
+                        else:
+                            parallel_axis_term[a, b] = tri_centroid[a] * tri_centroid[b] * area
+
+                # 局所的な慣性テンソルと平行軸の項を合成
+                local_inertia = covariance + parallel_axis_term
+                
+                # 全体の慣性テンソルに加算
+                inertia_tensor += local_inertia
+
+        # 密度を考慮して最終的な慣性テンソルを計算
+        inertia_tensor *= density
+
+        # 数値誤差の処理
+        threshold = 1e-10
+        inertia_tensor[np.abs(inertia_tensor) < threshold] = 0.0
+
+        # 対称性の確認と強制
+        inertia_tensor = 0.5 * (inertia_tensor + inertia_tensor.T)
+
+        # 対角成分が正であることを確認
+        for i in range(3):
+            if inertia_tensor[i, i] <= 0:
+                print(f"Warning: Non-positive diagonal element detected at position ({i},{i})")
+                inertia_tensor[i, i] = abs(inertia_tensor[i, i])
+
+        return inertia_tensor
+
+    def calculate_inertia_tensor(self):
+        """
+        通常モデルの慣性テンソルを計算。
+        InspectorWindowクラスのメソッド。
+        """
+        if not self.current_node or not hasattr(self.current_node, 'stl_file'):
+            print("No STL model is loaded.")
+            return None
+
+        try:
+            # STLデータを取得
+            if self.stl_viewer and self.current_node in self.stl_viewer.stl_actors:
+                actor = self.stl_viewer.stl_actors[self.current_node]
+                poly_data = actor.GetMapper().GetInput()
+            else:
+                print("No STL actor found for current node")
+                return None
+
+            # 体積と質量を取得
+            mass_properties = vtk.vtkMassProperties()
+            mass_properties.SetInputData(poly_data)
+            mass_properties.Update()
+            volume = mass_properties.GetVolume()
+            density = float(self.density_input.text())
+            mass = volume * density
+
+            # 重心を取得
+            com_filter = vtk.vtkCenterOfMass()
+            com_filter.SetInputData(poly_data)
+            com_filter.SetUseScalarsAsWeights(False)
+            com_filter.Update()
+            center_of_mass = np.array(com_filter.GetCenter())
+
+            print("\nCalculating inertia tensor for normal model...")
+            print(f"Volume: {volume:.6f}, Mass: {mass:.6f}")
+            print(f"Center of Mass: {center_of_mass}")
+
+            # 慣性テンソルを計算
+            inertia_tensor = self._calculate_base_inertia_tensor(
+                poly_data, mass, center_of_mass, is_mirrored=False)
+
+            # URDFフォーマットに変換してUIを更新
+            urdf_inertia = self.format_inertia_for_urdf(inertia_tensor)
+            if hasattr(self, 'inertia_tensor_input'):
+                self.inertia_tensor_input.setText(urdf_inertia)
+                print("\nInertia tensor has been updated in UI")
+            else:
+                print("Warning: inertia_tensor_input not found")
+
+            return inertia_tensor
+
+        except Exception as e:
+            print(f"Error calculating inertia tensor: {str(e)}")
+            traceback.print_exc()
+            return None
+
 
 class STLViewerWidget(QtWidgets.QWidget):
 
@@ -2340,16 +2499,9 @@ class CustomNodeGraph(NodeGraph):
                 os.getcwd()
             )
 
-
-
-
-
             if not description_dir:
                 print("URDF export cancelled")
                 return False
-
-
-
 
             # ディレクトリ名が正しいか確認
             dir_name = os.path.basename(description_dir)
@@ -2466,6 +2618,10 @@ class CustomNodeGraph(NodeGraph):
             return
         visited_nodes.add(node)
 
+        # Massless Decorationノードはスキップ（親ノードの<visual>として処理済み）
+        if hasattr(node, 'massless_decoration') and node.massless_decoration:
+            return
+
         if node.name() == "base_link":
             # base_linkの出力
             self._write_base_link(file)
@@ -2475,13 +2631,15 @@ class CustomNodeGraph(NodeGraph):
             for connected_port in port.connected_ports():
                 child_node = connected_port.node()
                 if child_node not in visited_nodes:
-                    # まずジョイントを出力
-                    self._write_joint(file, node, child_node)
-                    file.write('\n')
-                    
-                    # 次にリンクを出力
-                    self._write_link(file, child_node, materials)
-                    file.write('\n')
+                    # Massless Decorationでないノードのみジョイントとリンクを出力
+                    if not (hasattr(child_node, 'massless_decoration') and child_node.massless_decoration):
+                        # まずジョイントを出力
+                        self._write_joint(file, node, child_node)
+                        file.write('\n')
+                        
+                        # 次にリンクを出力
+                        self._write_link(file, child_node, materials)
+                        file.write('\n')
                     
                     # 再帰的に子ノードを処理
                     self._write_tree_structure(file, child_node, node, visited_nodes, materials)
@@ -2505,152 +2663,94 @@ class CustomNodeGraph(NodeGraph):
         # Massless Decorationフラグのチェック
         is_decoration = hasattr(node, 'massless_decoration') and node.massless_decoration
 
-        # 装飾パーツでない場合のみリンクとジョイントを出力
-        if not is_decoration:
-            # base_link の特別な処理
-            if node.name() == "base_link":
-                file.write('  <link name="base_link">\n')
-                file.write('    <inertial>\n')
-                file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
-                file.write('      <mass value="0.0"/>\n')
-                file.write('      <inertia ixx="0.01" ixy="0.0" ixz="0.0" iyy="0.0" iyz="0.0" izz="0.0"/>\n')
-                file.write('    </inertial>\n')
-                file.write('  </link>\n\n')
-            else:
-                # 通常のリンクの処理
-                file.write(f'  <link name="{node.name()}">\n')
-                
-                # 慣性パラメータ
-                if hasattr(node, 'mass_value') and hasattr(node, 'inertia'):
-                    file.write('    <inertial>\n')
-                    file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
-                    file.write(f'      <mass value="{node.mass_value:.6f}"/>\n')
-                    file.write('      <inertia')
-                    for key, value in node.inertia.items():
-                        file.write(f' {key}="{value:.6f}"')
-                    file.write('/>\n')
-                    file.write('    </inertial>\n')
+        if is_decoration:
+            # 親ノードに装飾ビジュアルを追加
+            if parent_node is not None:
+                mesh_dir_name = "meshes"
+                if self.meshes_dir:
+                    dir_name = os.path.basename(self.meshes_dir)
+                    if dir_name.startswith('mesh'):
+                        mesh_dir_name = dir_name
 
-                # ビジュアルとコリジョン
-                if hasattr(node, 'stl_file') and node.stl_file:
-                    try:
-                        mesh_dir_name = "meshes"
-                        if self.meshes_dir:
-                            dir_name = os.path.basename(self.meshes_dir)
-                            if dir_name.startswith('mesh'):
-                                mesh_dir_name = dir_name
+                stl_filename = os.path.basename(node.stl_file)
+                package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{stl_filename}"
 
-                        stl_filename = os.path.basename(node.stl_file)
-                        package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{stl_filename}"
+                # 親ノードにビジュアル要素を追加
+                file.write(f'''
+                <visual>
+                    <origin xyz="{node.xyz[0]} {node.xyz[1]} {node.xyz[2]}" rpy="{node.rpy[0]} {node.rpy[1]} {node.rpy[2]}" />
+                    <geometry>
+                        <mesh filename="{package_path}" />
+                    </geometry>
+                    <material name="#2e2e2e" />
+                </visual>
+                ''')
+            return  # 装飾要素はこれ以上処理しない
 
-                        # メインのビジュアル
-                        file.write('    <visual>\n')
-                        file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
-                        file.write('      <geometry>\n')
-                        file.write(f'        <mesh filename="{package_path}"/>\n')
-                        file.write('      </geometry>\n')
-                        if hasattr(node, 'node_color'):
-                            hex_color = '#{:02x}{:02x}{:02x}'.format(
-                                int(node.node_color[0] * 255),
-                                int(node.node_color[1] * 255),
-                                int(node.node_color[2] * 255)
-                            )
-                            file.write(f'      <material name="{hex_color}"/>\n')
-                        file.write('    </visual>\n')
+        # 通常ノードの処理
+        file.write(f'  <link name="{node.name()}">\n')
 
-                        # 装飾パーツの追加
-                        for port in node.output_ports():
-                            for connected_port in port.connected_ports():
-                                child = connected_port.node()
-                                if hasattr(child, 'massless_decoration') and child.massless_decoration:
-                                    if hasattr(child, 'stl_file') and child.stl_file:
-                                        child_stl = os.path.basename(child.stl_file)
-                                        child_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{child_stl}"
-                                        
-                                        # 装飾パーツのビジュアル要素
-                                        file.write('    <visual>\n')
-                                        file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
-                                        file.write('      <geometry>\n')
-                                        file.write(f'        <mesh filename="{child_path}"/>\n')
-                                        file.write('      </geometry>\n')
-                                        if hasattr(child, 'node_color'):
-                                            child_color = '#{:02x}{:02x}{:02x}'.format(
-                                                int(child.node_color[0] * 255),
-                                                int(child.node_color[1] * 255),
-                                                int(child.node_color[2] * 255)
-                                            )
-                                            file.write(f'      <material name="{child_color}"/>\n')
-                                        file.write('    </visual>\n')
+        # 慣性パラメータ
+        if hasattr(node, 'mass_value') and hasattr(node, 'inertia'):
+            file.write('    <inertial>\n')
+            file.write(f'      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+            file.write(f'      <mass value="{node.mass_value:.6f}"/>\n')
+            file.write('      <inertia')
+            for key, value in node.inertia.items():
+                file.write(f' {key}="{value:.6f}"')
+            file.write('/>\n')
+            file.write('    </inertial>\n')
 
-                        # コリジョン
-                        file.write('    <collision>\n')
-                        file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
-                        file.write('      <geometry>\n')
-                        file.write(f'        <mesh filename="{package_path}"/>\n')
-                        file.write('      </geometry>\n')
-                        file.write('    </collision>\n')
+        # ビジュアルとコリジョン
+        if hasattr(node, 'stl_file') and node.stl_file:
+            mesh_dir_name = "meshes"
+            if self.meshes_dir:
+                dir_name = os.path.basename(self.meshes_dir)
+                if dir_name.startswith('mesh'):
+                    mesh_dir_name = dir_name
 
-                    except Exception as e:
-                        print(f"Error processing STL file for node {node.name()}: {str(e)}")
-                        traceback.print_exc()
+            stl_filename = os.path.basename(node.stl_file)
+            package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{stl_filename}"
 
-                file.write('  </link>\n\n')
+            # メインのビジュアル
+            file.write('    <visual>\n')
+            file.write(f'      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+            file.write('      <geometry>\n')
+            file.write(f'        <mesh filename="{package_path}"/>\n')
+            file.write('      </geometry>\n')
+            file.write('    </visual>\n')
 
-            # ジョイントの書き出し
-            if parent_node:
-                # 親ノードのポイント情報から原点を取得
-                origin_xyz = [0, 0, 0]  # デフォルト値を設定
-                for port in parent_node.output_ports():
-                    for connected_port in port.connected_ports():
-                        if connected_port.node() == node:
-                            try:
-                                # ポート名から数値を安全に抽出
-                                port_name = port.name()
-                                if '_' in port_name:
-                                    parts = port_name.split('_')
-                                    if len(parts) > 1 and parts[1].isdigit():
-                                        port_idx = int(parts[1]) - 1
-                                        if port_idx < len(parent_node.points):
-                                            origin_xyz = parent_node.points[port_idx]['xyz']
-                                print(f"Found connection point: {origin_xyz} from port {port_name}")
-                            except Exception as e:
-                                print(f"Warning: Error processing port {port.name()}: {str(e)}")
-                            break
+            # コリジョン
+            file.write('    <collision>\n')
+            file.write(f'      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+            file.write('      <geometry>\n')
+            file.write(f'        <mesh filename="{package_path}"/>\n')
+            file.write('      </geometry>\n')
+            file.write('    </collision>\n')
 
-                joint_name = f"{parent_node.name()}_to_{node.name()}"
-                
-                # 回転軸の値に基づいてジョイントタイプを決定
-                if hasattr(node, 'rotation_axis'):
-                    if node.rotation_axis == 3:  # Fixed
-                        file.write(f'  <joint name="{joint_name}" type="fixed">\n')
-                        file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="0.0 0.0 0.0"/>\n')
-                        file.write(f'    <parent link="{parent_node.name()}"/>\n')
-                        file.write(f'    <child link="{node.name()}"/>\n')
-                        file.write('  </joint>\n\n')
-                    else:
-                        # 回転ジョイントの処理
-                        file.write(f'  <joint name="{joint_name}" type="revolute">\n')
-                        axis = [0, 0, 0]
-                        if node.rotation_axis == 0:    # X軸
-                            axis = [1, 0, 0]
-                        elif node.rotation_axis == 1:  # Y軸
-                            axis = [0, 1, 0]
-                        else:                          # Z軸
-                            axis = [0, 0, 1]
-                        
-                        file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="0.0 0.0 0.0"/>\n')
-                        file.write(f'    <axis xyz="{axis[0]} {axis[1]} {axis[2]}"/>\n')
-                        file.write(f'    <parent link="{parent_node.name()}"/>\n')
-                        file.write(f'    <child link="{node.name()}"/>\n')
-                        file.write('    <limit lower="-3.14159" upper="3.14159" effort="0" velocity="0"/>\n')
-                        file.write('  </joint>\n\n')
+        file.write('  </link>\n\n')
 
-        # 子ノードの処理（装飾パーツでないもののみ）
+        # ジョイントの書き出し
+        if parent_node and not is_decoration:
+            origin_xyz = [0, 0, 0]  # デフォルト値
+            for port in parent_node.output_ports():
+                for connected_port in port.connected_ports():
+                    if connected_port.node() == node:
+                        origin_xyz = port.get_position()  # ポートの位置を取得
+                        break
+
+            joint_name = f"{parent_node.name()}_to_{node.name()}"
+            file.write(f'  <joint name="{joint_name}" type="fixed">\n')
+            file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="0.0 0.0 0.0"/>\n')
+            file.write(f'    <parent link="{parent_node.name()}"/>\n')
+            file.write(f'    <child link="{node.name()}"/>\n')
+            file.write('  </joint>\n\n')
+
+        # 子ノードの処理
         for port in node.output_ports():
             for connected_port in port.connected_ports():
                 child_node = connected_port.node()
-                if not (hasattr(child_node, 'massless_decoration') and child_node.massless_decoration):
-                    self._write_urdf_node(file, child_node, node, visited_nodes, materials)
+                self._write_urdf_node(file, child_node, node, visited_nodes, materials)
 
     def generate_tree_text(self, node, level=0):
         tree_text = "  " * level + node.name() + "\n"
@@ -3786,7 +3886,7 @@ class CustomNodeGraph(NodeGraph):
                 file.write('/>\n')
                 file.write('    </inertial>\n')
 
-            # ビジュアルとコリジョン
+            # メインのビジュアルとコリジョン
             if hasattr(node, 'stl_file') and node.stl_file:
                 try:
                     mesh_dir_name = "meshes"
@@ -3795,10 +3895,10 @@ class CustomNodeGraph(NodeGraph):
                         if dir_name.startswith('mesh'):
                             mesh_dir_name = dir_name
 
+                    # メインのビジュアル
                     stl_filename = os.path.basename(node.stl_file)
                     package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{stl_filename}"
 
-                    # メインのビジュアル
                     file.write('    <visual>\n')
                     file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
                     file.write('      <geometry>\n')
@@ -3812,6 +3912,29 @@ class CustomNodeGraph(NodeGraph):
                         )
                         file.write(f'      <material name="{hex_color}"/>\n')
                     file.write('    </visual>\n')
+
+                    # 装飾パーツのビジュアルを追加
+                    for port in node.output_ports():
+                        for connected_port in port.connected_ports():
+                            dec_node = connected_port.node()
+                            if hasattr(dec_node, 'massless_decoration') and dec_node.massless_decoration:
+                                if hasattr(dec_node, 'stl_file') and dec_node.stl_file:
+                                    dec_stl = os.path.basename(dec_node.stl_file)
+                                    dec_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{dec_stl}"
+                                    
+                                    file.write('    <visual>\n')
+                                    file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+                                    file.write('      <geometry>\n')
+                                    file.write(f'        <mesh filename="{dec_path}"/>\n')
+                                    file.write('      </geometry>\n')
+                                    if hasattr(dec_node, 'node_color'):
+                                        dec_color = '#{:02x}{:02x}{:02x}'.format(
+                                            int(dec_node.node_color[0] * 255),
+                                            int(dec_node.node_color[1] * 255),
+                                            int(dec_node.node_color[2] * 255)
+                                        )
+                                        file.write(f'      <material name="{dec_color}"/>\n')
+                                    file.write('    </visual>\n')
 
                     # コリジョン
                     file.write('    <collision>\n')
@@ -3948,6 +4071,10 @@ class CustomNodeGraph(NodeGraph):
             return
         visited_nodes.add(node)
 
+        # Massless Decorationノードはスキップ（親ノードの<visual>として処理済み）
+        if hasattr(node, 'massless_decoration') and node.massless_decoration:
+            return
+
         if node.name() == "base_link":
             # base_linkの出力
             self._write_base_link(file)
@@ -3957,16 +4084,18 @@ class CustomNodeGraph(NodeGraph):
             for connected_port in port.connected_ports():
                 child_node = connected_port.node()
                 if child_node not in visited_nodes:
-                    # まずジョイントを出力
-                    self._write_joint(file, node, child_node)
-                    file.write('\n')
-                    
-                    # 次にリンクを出力（Unity用のパスで）
-                    self._write_link_unity(file, child_node, materials, unity_dir_name)
-                    file.write('\n')
-                    
-                    # 再帰的に子ノードを処理
-                    self._write_tree_structure_unity(file, child_node, node, visited_nodes, materials, unity_dir_name)
+                    # Massless Decorationでないノードのみジョイントとリンクを出力
+                    if not (hasattr(child_node, 'massless_decoration') and child_node.massless_decoration):
+                        # まずジョイントを出力
+                        self._write_joint(file, node, child_node)
+                        file.write('\n')
+                        
+                        # 次にリンクを出力（Unity用のパスで）
+                        self._write_link_unity(file, child_node, materials, unity_dir_name)
+                        file.write('\n')
+                        
+                        # 再帰的に子ノードを処理
+                        self._write_tree_structure_unity(file, child_node, node, visited_nodes, materials, unity_dir_name)
 
     def _write_link_unity(self, file, node, materials, unity_dir_name):
         """Unity用のリンク出力"""
@@ -3987,6 +4116,7 @@ class CustomNodeGraph(NodeGraph):
             # ビジュアルとコリジョン
             if hasattr(node, 'stl_file') and node.stl_file:
                 try:
+                    # メインのビジュアル
                     stl_filename = os.path.basename(node.stl_file)
                     # パスは直接meshesを指定
                     package_path = f"package://meshes/{stl_filename}"
@@ -4006,6 +4136,29 @@ class CustomNodeGraph(NodeGraph):
                         file.write(f'      <material name="{hex_color}"/>\n')
                     file.write('    </visual>\n')
 
+                    # 装飾パーツのビジュアルを追加
+                    for port in node.output_ports():
+                        for connected_port in port.connected_ports():
+                            dec_node = connected_port.node()
+                            if hasattr(dec_node, 'massless_decoration') and dec_node.massless_decoration:
+                                if hasattr(dec_node, 'stl_file') and dec_node.stl_file:
+                                    dec_stl = os.path.basename(dec_node.stl_file)
+                                    dec_path = f"package://meshes/{dec_stl}"
+                                    
+                                    file.write('    <visual>\n')
+                                    file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+                                    file.write('      <geometry>\n')
+                                    file.write(f'        <mesh filename="{dec_path}"/>\n')
+                                    file.write('      </geometry>\n')
+                                    if hasattr(dec_node, 'node_color'):
+                                        dec_color = '#{:02x}{:02x}{:02x}'.format(
+                                            int(dec_node.node_color[0] * 255),
+                                            int(dec_node.node_color[1] * 255),
+                                            int(dec_node.node_color[2] * 255)
+                                        )
+                                        file.write(f'      <material name="{dec_color}"/>\n')
+                                    file.write('    </visual>\n')
+
                     # コリジョン
                     file.write('    <collision>\n')
                     file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
@@ -4024,11 +4177,37 @@ class CustomNodeGraph(NodeGraph):
             print(f"Error writing link: {str(e)}")
             traceback.print_exc()
 
+    def calculate_inertia_tensor_for_mirrored(self, poly_data, mass, center_of_mass):
+        """
+        ミラーリングされたモデルの慣性テンソルを計算。
+        CustomNodeGraphクラスのメソッド。
+        """
+        try:
+            print("\nCalculating inertia tensor for mirrored model...")
+            print(f"Mass: {mass:.6f}")
+            print(f"Center of Mass (before mirroring): {center_of_mass}")
+
+            # Y座標を反転した重心を使用
+            mirrored_com = [center_of_mass[0], -center_of_mass[1], center_of_mass[2]]
+            print(f"Center of Mass (after mirroring): {mirrored_com}")
+
+            # インスペクタウィンドウのインスタンスを取得
+            if not hasattr(self, 'inspector_window') or not self.inspector_window:
+                self.inspector_window = InspectorWindow(stl_viewer=self.stl_viewer)
+
+            # 慣性テンソルを計算（ミラーリングモードで）
+            inertia_tensor = self.inspector_window._calculate_base_inertia_tensor(
+                poly_data, mass, mirrored_com, is_mirrored=True)
+
+            print("\nMirrored model inertia tensor calculated successfully")
+            return inertia_tensor
+
+        except Exception as e:
+            print(f"Error calculating mirrored inertia tensor: {str(e)}")
+            traceback.print_exc()
+            return None
 
 # ユーティリティ関数
-def shutdown():
-    QtWidgets.QApplication.quit()
-
 def signal_handler(signum, frame):
     print("\nCtrl+C pressed. Closing all windows and exiting...")
     shutdown()
