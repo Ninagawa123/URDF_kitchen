@@ -233,6 +233,7 @@ class FooNode(BaseNode):
             print("Error: graph does not have show_inspector method")
 
 class InspectorWindow(QtWidgets.QWidget):
+    
     def __init__(self, parent=None, stl_viewer=None):
         super(InspectorWindow, self).__init__(parent)
         self.setWindowTitle("Node Inspector")
@@ -311,7 +312,7 @@ class InspectorWindow(QtWidgets.QWidget):
         self.rotation_test_button = QtWidgets.QPushButton("Rotation Test")
         self.rotation_test_button.setFixedWidth(120)  # 他のボタンと同じ幅に設定
         self.rotation_test_button.pressed.connect(self.start_rotation_test)
-        self.rotation_test_button.released.connect(self.stop_rotation_test)
+        self.rotation_test_button.released.connect(self.stop_rotation_test) 
         rotation_test_layout.addWidget(self.rotation_test_button)
         content_layout.addLayout(rotation_test_layout)
 
@@ -1549,14 +1550,22 @@ class STLViewerWidget(QtWidgets.QWidget):
     def stop_rotation_test(self, node):
         """回転テスト終了"""
         self.rotation_timer.stop()
-        self.rotating_node = None
         
-        # 元の変換に戻す
-        if node in self.original_transforms and node in self.transforms:
-            self.transforms[node].DeepCopy(self.original_transforms[node])
-            self.stl_actors[node].SetUserTransform(self.transforms[node])
+        # 元の色と変換を必ず復元
+        if self.rotating_node in self.stl_actors:
+            # 元の色を復元（必ず実行）
+            if hasattr(self.rotating_node, 'node_color'):
+                self.stl_actors[self.rotating_node].GetProperty().SetColor(*self.rotating_node.node_color)
+            
+            # 元の変換を復元
+            if self.rotating_node in self.original_transforms:
+                self.transforms[self.rotating_node].DeepCopy(self.original_transforms[self.rotating_node])
+                self.stl_actors[self.rotating_node].SetUserTransform(self.transforms[self.rotating_node])
+                del self.original_transforms[self.rotating_node]
+            
             self.vtkWidget.GetRenderWindow().Render()
-            del self.original_transforms[node]
+        
+        self.rotating_node = None
 
     def update_rotation(self):
         """回転更新"""
@@ -1567,22 +1576,37 @@ class STLViewerWidget(QtWidgets.QWidget):
             # 現在の位置を保持
             position = transform.GetPosition()
             
-            # 変換をリセット
-            transform.Identity()
-            transform.Translate(position)
+            # Fixedモードかどうかをチェック
+            is_fixed = hasattr(node, 'rotation_axis') and node.rotation_axis == 3
             
-            # 回転軸に基づいて回転
-            self.current_angle += 5  # 1フレームあたりの回転角度
-            if hasattr(node, 'rotation_axis'):
-                if node.rotation_axis == 0:    # X軸
-                    transform.RotateX(self.current_angle)
-                elif node.rotation_axis == 1:  # Y軸
-                    transform.RotateY(self.current_angle)
-                else:                          # Z軸
-                    transform.RotateZ(self.current_angle)
-            
-            self.stl_actors[node].SetUserTransform(transform)
+            # Fixedモードの場合は点滅のみ
+            if is_fixed:
+                # 点滅効果（400msごとに切り替え）
+                # フレームレート60FPSとして、24フレーム（約400ms）ごとに切り替え
+                is_red = (self.current_angle // 24) % 2 == 0
+                if is_red:
+                    self.stl_actors[node].GetProperty().SetColor(1.0, 0.0, 0.0)  # 赤
+                else:
+                    self.stl_actors[node].GetProperty().SetColor(1.0, 1.0, 1.0)  # 白
+            else:
+                # 通常の回転処理
+                transform.Identity()  # 変換をリセット
+                transform.Translate(position)  # 元の位置を維持
+                
+                # 回転軸に基づいて回転
+                self.current_angle += 5  # 1フレームあたりの回転角度
+                if hasattr(node, 'rotation_axis'):
+                    if node.rotation_axis == 0:    # X軸
+                        transform.RotateX(self.current_angle)
+                    elif node.rotation_axis == 1:  # Y軸
+                        transform.RotateY(self.current_angle)
+                    elif node.rotation_axis == 2:  # Z軸
+                        transform.RotateZ(self.current_angle)
+                
+                self.stl_actors[node].SetUserTransform(transform)
+                
             self.vtkWidget.GetRenderWindow().Render()
+            self.current_angle += 1
 
     def reset_camera(self):
         """カメラビューをリセットし、すべてのSTLモデルをビューに収める"""
