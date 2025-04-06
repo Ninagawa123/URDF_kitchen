@@ -1,5 +1,5 @@
 # URDF_kitchen beta  
-<img width="600" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_beta.png">  
+<img width="600" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_banner202550406.png">  
   
 URDF_kitchenは、URDFの組み立てをサポートするPythonツールです。  
 STLファイルにジョイントポイントを設定し、ノードで接続していくことで組み立て、URDFとしてエクスポートします。  
