@@ -43,13 +43,13 @@ pip install NodeGraphQt
 ```
 
 ##### 起動できない場合
-Windows11+python3.12で起動できないという報告がありました。
-python3.12から消えたdistutilsが原因とのことで、
-NodeGraphQtのmenu.py,viewer.pyについて、
-from distutils.version import LooseVersion
-から
-from packaging.version import Version as LooseVersion
-に修正することで起動したとのことです。
+Windows11+python3.12で起動できないという報告がありました。  
+python3.12から消えたdistutilsが原因とのことで、  
+NodeGraphQtのmenu.py,viewer.pyについて、  
+from distutils.version import LooseVersion  
+から  
+from packaging.version import Version as LooseVersion  
+に修正することで起動したとのことです。  
 
 ### 実行方法  
   
