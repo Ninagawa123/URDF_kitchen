@@ -35,7 +35,7 @@ from Qt import QtWidgets, QtCore, QtGui
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QMainWindow, QVBoxLayout, QWidget, 
     QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout,
-    QTextEdit, QButtonGroup, QRadioButton, QColorDialog, QDialog
+    QTextEdit, QButtonGroup, QRadioButton, QColorDialog, QDialog, QMessageBox
 )
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QTextOption, QColor, QPalette
@@ -597,6 +597,11 @@ class MainWindow(QMainWindow):
                 # テキストボックスを作成
                 input_field = QLineEdit(str(self.point_coords[i][j]))
                 input_field.setFixedWidth(80)  # テキストボックスの幅を固定
+                
+                # 入力フィールドにイベントハンドラを接続
+                input_field.editingFinished.connect(lambda idx=i: self.update_point_from_input(idx))
+                input_field.returnPressed.connect(lambda idx=i: self.update_point_from_input(idx))
+                
                 h_layout.addWidget(input_field)
                 
                 # 水平レイアウトを伸縮させないようにする
@@ -641,6 +646,28 @@ class MainWindow(QMainWindow):
 
         self.left_layout.addLayout(points_layout)
         
+    def update_point_from_input(self, index):
+        """入力フィールドから値を読み取ってポイント座標を更新"""
+        try:
+            x = float(self.point_inputs[index][0].text())
+            y = float(self.point_inputs[index][1].text())
+            z = float(self.point_inputs[index][2].text())
+            
+            # 値が変更されているかチェック
+            new_coords = [x, y, z]
+            if new_coords != self.point_coords[index]:
+                self.point_coords[index] = new_coords
+                
+                # 3D表示のみを更新（入力フィールドは更新しない）
+                self.update_point_actor(index)
+                
+                print(f"Point {index+1} updated to: ({x:.6f}, {y:.6f}, {z:.6f})")
+        except ValueError:
+            # 無効な入力の場合は元の値に戻す
+            for j in range(3):
+                self.point_inputs[index][j].setText(f"{self.point_coords[index][j]:.6f}")
+            print(f"Invalid input for Point {index+1}. Reverting to previous value.")
+        
     def set_point(self, index):
         try:
             x = float(self.point_inputs[index][0].text())
@@ -682,8 +709,6 @@ class MainWindow(QMainWindow):
     def reset_point_to_origin(self, index):
         self.point_coords[index] = list(self.absolute_origin)
         self.update_point_display(index)
-        if self.point_checkboxes[index].isChecked():
-            self.show_point(index)
         print(f"Point {index+1} reset to origin {self.absolute_origin}")
 
     def reset_camera(self):
@@ -766,20 +791,32 @@ class MainWindow(QMainWindow):
             if prop in values:
                 input_field.setText(f"{values[prop]:.12f}")
 
-    def update_point_display(self, index):
-        """ポイントの表示を更新（チェック状態の確認を追加）"""
-        if self.point_actors[index]:
-            if self.point_checkboxes[index].isChecked():
-                self.point_actors[index].SetPosition(self.point_coords[index])
-                self.point_actors[index].VisibilityOn()
-            else:
-                self.point_actors[index].VisibilityOff()
+    def update_point_actor(self, index):
+        """ポイントの3D表示のみを更新（入力フィールドは更新しない）"""
+        # アクターが存在し、チェックボックスがオンの場合のみ位置を更新
+        if self.point_actors[index] and self.point_checkboxes[index].isChecked():
+            self.point_actors[index].SetPosition(self.point_coords[index])
+            # アクターがレンダラーに追加されているか確認
+            if not self.renderer.HasViewProp(self.point_actors[index]):
+                self.renderer.AddActor(self.point_actors[index])
+            self.point_actors[index].VisibilityOn()
+        elif self.point_actors[index] and not self.point_checkboxes[index].isChecked():
+            # チェックボックスがオフの場合は非表示
+            self.point_actors[index].VisibilityOff()
+            if self.renderer.HasViewProp(self.point_actors[index]):
                 self.renderer.RemoveActor(self.point_actors[index])
         
+        self.render_window.Render()
+    
+    def update_point_inputs(self, index):
+        """入力フィールドの値のみを更新（3D表示は更新しない）"""
         for i, coord in enumerate(self.point_coords[index]):
             self.point_inputs[index][i].setText(f"{coord:.6f}")
-        
-        self.render_window.Render()
+    
+    def update_point_display(self, index):
+        """ポイントの3D表示と入力フィールドの両方を更新"""
+        self.update_point_actor(index)
+        self.update_point_inputs(index)
 
     def update_all_points_size(self, obj=None, event=None):
         """ポイントのサイズを更新（可視性の厳密な管理を追加）"""
@@ -1595,21 +1632,6 @@ class MainWindow(QMainWindow):
             self.point_actors[index].VisibilityOff()
         self.render_window.Render()
 
-    def set_point(self, index):
-        try:
-            x = float(self.point_inputs[index][0].text())
-            y = float(self.point_inputs[index][1].text())
-            z = float(self.point_inputs[index][2].text())
-            self.point_coords[index] = [x, y, z]
-
-            if self.point_checkboxes[index].isChecked():
-                self.show_point(index)
-            else:
-                self.update_point_display(index)
-
-            print(f"Point {index+1} set to: ({x}, {y}, {z})")
-        except ValueError:
-            print(f"Invalid input for Point {index+1}. Please enter valid numbers for coordinates.")
 
     def move_point(self, index, dx, dy, dz):
         new_position = [
@@ -1632,10 +1654,6 @@ class MainWindow(QMainWindow):
         self.update_point_display(index)
         print(f"Point {index+1} moved to: ({new_position[0]:.6f}, {new_position[1]:.6f}, {new_position[2]:.6f})")
         
-    def update_all_points(self):
-        for i in range(self.num_points):
-            if self.point_actors[i]:
-                self.update_point_display(i)
 
     def fit_camera_to_model(self):
         """STLモデルが画面にフィットするようにカメラの距離のみを調整"""
@@ -2492,7 +2510,7 @@ class MainWindow(QMainWindow):
                     try:
                         # 座標テキストを分割して数値に変換
                         x, y, z = map(float, xyz_element.text.strip().split())
-                        print(f"Point {i+1}: {x}, {y}, z")
+                        print(f"Point {i+1}: {x}, {y}, {z}")
 
                         # テキストフィールドに値を設定
                         self.point_inputs[i][0].setText(f"{x:.6f}")
