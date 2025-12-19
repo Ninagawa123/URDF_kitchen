@@ -3549,6 +3549,11 @@ class CustomNodeGraph(NodeGraph):
         
         # 既存のノード(BaseLinkNode以外)をクリア
         print("Clearing existing nodes...")
+        
+        # 接続情報を保存
+        saved_connections = self._save_connections()
+        print(f"Saved {len(saved_connections)} connection(s)")
+        
         nodes_to_remove = [node for node in self.all_nodes() if not isinstance(node, BaseLinkNode)]
         for node in nodes_to_remove:
             self.remove_node(node)
@@ -3559,6 +3564,10 @@ class CustomNodeGraph(NodeGraph):
         
         # 内部メソッドを呼び出してXMLをロード
         self._load_xmls_from_path(folder_path)
+        
+        # 接続情報を復元
+        restored_count = self._restore_connections(saved_connections)
+        print(f"Restored {restored_count} connection(s)")
 
     def clear_all_nodes(self):
         """BaseLinkNode以外のすべてのノードをクリア"""
@@ -3595,6 +3604,10 @@ class CustomNodeGraph(NodeGraph):
         
         print(f"Refreshing parts from folder: {self.last_meshes_folder}")
         
+        # 接続情報を保存
+        saved_connections = self._save_connections()
+        print(f"Saved {len(saved_connections)} connection(s)")
+        
         # 既存のノードをクリア
         nodes_to_remove = [node for node in self.all_nodes() if not isinstance(node, BaseLinkNode)]
         for node in nodes_to_remove:
@@ -3603,6 +3616,100 @@ class CustomNodeGraph(NodeGraph):
         
         # フォルダから再読み込み
         self._load_xmls_from_path(self.last_meshes_folder)
+        
+        # 接続情報を復元
+        restored_count = self._restore_connections(saved_connections)
+        print(f"Restored {restored_count} connection(s)")
+
+    def _save_connections(self):
+        """現在のノード間の接続情報を保存"""
+        connections = []
+        
+        for node in self.all_nodes():
+            node_name = node.name()
+            
+            # 各出力ポートの接続を保存
+            for output_port in node.output_ports():
+                output_port_name = output_port.name()
+                
+                # 接続されている全てのポートを確認
+                for connected_port in output_port.connected_ports():
+                    connected_node = connected_port.node()
+                    connected_port_name = connected_port.name()
+                    
+                    # 接続情報を保存（ノード名とポート名）
+                    connection_info = {
+                        'source_node': node_name,
+                        'source_port': output_port_name,
+                        'target_node': connected_node.name(),
+                        'target_port': connected_port_name
+                    }
+                    connections.append(connection_info)
+                    print(f"Saved connection: {node_name}.{output_port_name} -> {connected_node.name()}.{connected_port_name}")
+        
+        return connections
+
+    def _restore_connections(self, saved_connections):
+        """保存された接続情報を復元"""
+        if not saved_connections:
+            return 0
+        
+        restored_count = 0
+        
+        # ノード名でノードを検索できるようにマッピングを作成
+        node_map = {node.name(): node for node in self.all_nodes()}
+        
+        for conn in saved_connections:
+            try:
+                source_node_name = conn['source_node']
+                source_port_name = conn['source_port']
+                target_node_name = conn['target_node']
+                target_port_name = conn['target_port']
+                
+                # ノードを取得
+                source_node = node_map.get(source_node_name)
+                target_node = node_map.get(target_node_name)
+                
+                if not source_node:
+                    print(f"Warning: Source node '{source_node_name}' not found")
+                    continue
+                
+                if not target_node:
+                    print(f"Warning: Target node '{target_node_name}' not found")
+                    continue
+                
+                # ポートを取得
+                source_port = None
+                for port in source_node.output_ports():
+                    if port.name() == source_port_name:
+                        source_port = port
+                        break
+                
+                target_port = None
+                for port in target_node.input_ports():
+                    if port.name() == target_port_name:
+                        target_port = port
+                        break
+                
+                if not source_port:
+                    print(f"Warning: Source port '{source_port_name}' not found on node '{source_node_name}'")
+                    continue
+                
+                if not target_port:
+                    print(f"Warning: Target port '{target_port_name}' not found on node '{target_node_name}'")
+                    continue
+                
+                # 接続を復元
+                source_port.connect_to(target_port)
+                restored_count += 1
+                print(f"Restored connection: {source_node_name}.{source_port_name} -> {target_node_name}.{target_port_name}")
+                
+            except Exception as e:
+                print(f"Error restoring connection: {str(e)}")
+                traceback.print_exc()
+                continue
+        
+        return restored_count
 
     def _load_xmls_from_path(self, folder_path):
         """指定されたパスからXMLファイルを読み込む(内部メソッド)"""
