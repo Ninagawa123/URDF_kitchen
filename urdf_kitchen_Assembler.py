@@ -1956,6 +1956,7 @@ class CustomNodeGraph(NodeGraph):
         self.project_dir = None
         self.meshes_dir = None
         self.last_save_dir = None
+        self.last_meshes_folder = None  # 最後に選択したmeshesフォルダを保存
 
         # ノードタイプの登録
         self.register_node(BaseLinkNode)
@@ -3545,7 +3546,66 @@ class CustomNodeGraph(NodeGraph):
             return
 
         print(f"Importing XMLs from folder: {folder_path}")
+        
+        # 既存のノード(BaseLinkNode以外)をクリア
+        print("Clearing existing nodes...")
+        nodes_to_remove = [node for node in self.all_nodes() if not isinstance(node, BaseLinkNode)]
+        for node in nodes_to_remove:
+            self.remove_node(node)
+        print(f"Removed {len(nodes_to_remove)} existing node(s)")
+        
+        # 最後に選択したフォルダを記憶
+        self.last_meshes_folder = folder_path
+        
+        # 内部メソッドを呼び出してXMLをロード
+        self._load_xmls_from_path(folder_path)
 
+    def clear_all_nodes(self):
+        """BaseLinkNode以外のすべてのノードをクリア"""
+        print("Clearing all nodes...")
+        nodes_to_remove = [node for node in self.all_nodes() if not isinstance(node, BaseLinkNode)]
+        for node in nodes_to_remove:
+            self.remove_node(node)
+        print(f"Cleared {len(nodes_to_remove)} node(s)")
+        
+        # 3Dビューもクリア
+        if self.stl_viewer:
+            self.stl_viewer.clear_all_models()
+            print("Cleared 3D view")
+
+    def refresh_parts(self):
+        """現在設定されているフォルダから部品を再読み込み"""
+        if not hasattr(self, 'last_meshes_folder') or not self.last_meshes_folder:
+            print("No folder has been set yet. Please use 'Import XMLs' first.")
+            QtWidgets.QMessageBox.warning(
+                None,
+                "No Folder Set",
+                "Please select a folder using 'Import XMLs' button first."
+            )
+            return
+        
+        if not os.path.exists(self.last_meshes_folder):
+            print(f"Previously set folder no longer exists: {self.last_meshes_folder}")
+            QtWidgets.QMessageBox.warning(
+                None,
+                "Folder Not Found",
+                f"The previously set folder no longer exists:\n{self.last_meshes_folder}"
+            )
+            return
+        
+        print(f"Refreshing parts from folder: {self.last_meshes_folder}")
+        
+        # 既存のノードをクリア
+        nodes_to_remove = [node for node in self.all_nodes() if not isinstance(node, BaseLinkNode)]
+        for node in nodes_to_remove:
+            self.remove_node(node)
+        print(f"Removed {len(nodes_to_remove)} existing node(s)")
+        
+        # フォルダから再読み込み
+        self._load_xmls_from_path(self.last_meshes_folder)
+
+    def _load_xmls_from_path(self, folder_path):
+        """指定されたパスからXMLファイルを読み込む(内部メソッド)"""
         # フォルダ名からロボット名を抽出
         try:
             # 2つ上のディレクトリのパスを取得
@@ -3727,7 +3787,7 @@ class CustomNodeGraph(NodeGraph):
                 traceback.print_exc()
                 continue
 
-        print("\nImport process completed")
+        print("\nLoad process completed")
 
     def recalculate_all_positions(self):
         """すべてのノードの位置を再計算"""
@@ -4476,6 +4536,8 @@ if __name__ == '__main__':
         buttons = {
             "--spacer1--": None,  # スペーサー用のダミーキー
             "Import XMLs": None,
+            "Refresh": None,
+            "Clear Nodes": None,
             "--spacer2--": None,  # スペーサー用のダミーキー
             "Add Node": None,
             "Delete Node": None,
@@ -4507,6 +4569,8 @@ if __name__ == '__main__':
 
         # ボタンのコネクション設定
         buttons["Import XMLs"].clicked.connect(graph.import_xmls_from_folder)
+        buttons["Refresh"].clicked.connect(graph.refresh_parts)
+        buttons["Clear Nodes"].clicked.connect(graph.clear_all_nodes)
         buttons["Add Node"].clicked.connect(
             lambda: graph.create_node(
                 'insilico.nodes.FooNode',
