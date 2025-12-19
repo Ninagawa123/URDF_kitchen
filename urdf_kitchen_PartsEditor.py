@@ -177,6 +177,7 @@ class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
     def __init__(self, parent=None):
         super(CustomInteractorStyle, self).__init__()
         self.parent = parent
+        self.last_click_time = 0  # 最後のクリック時刻を記録
         self.AddObserver("CharEvent", self.on_char_event)
         self.AddObserver("KeyPressEvent", self.on_key_press)
         self.AddObserver("LeftButtonPressEvent", self.on_left_button_press)
@@ -277,6 +278,18 @@ class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
         if self.parent:
             ctrl_pressed = self.GetInteractor().GetControlKey()
             if ctrl_pressed:
+                # import time
+                
+                # # 現在の時刻を取得
+                # current_time = time.time()
+                # time_diff = current_time - self.last_click_time
+                
+                # # 最後のクリックから0.2秒以内の場合は無視（連続呼び出しを防ぐ）
+                # if time_diff < 0.2:
+                #     return
+                
+                # self.last_click_time = current_time
+                
                 # マウスの位置を取得
                 x, y = self.GetInteractor().GetEventPosition()
                 
@@ -284,6 +297,7 @@ class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
                 for i, checkbox in enumerate(self.parent.point_checkboxes):
                     if checkbox.isChecked():
                         self.parent.set_point_from_click(i, x, y)
+                
                 return  # イベントを消費して通常のカメラ操作を防ぐ
         
         # Ctrlが押されていない場合は通常の動作
@@ -771,43 +785,75 @@ class MainWindow(QMainWindow):
 
     def set_point_from_click(self, index, x, y):
         """Ctrl + クリックで3D空間のポイントに座標を設定"""
-        # VTKのピッカーを使用してクリックした位置の3D座標を取得
-        picker = vtk.vtkPropPicker()
-        picker.Pick(x, y, 0, self.renderer)
+        # VTKのCellPickerを使用（ワイヤーフレーム表示でも動作する）
+        picker = vtk.vtkCellPicker()
+        picker.SetTolerance(0.005)  # ピック範囲を広げる（デフォルト0.001）
+        
+        # STLアクターのみをピック対象に追加（ポイントの球体を除外）
+        if self.stl_actor:
+            picker.AddPickList(self.stl_actor)
+            picker.PickFromListOn()  # リストに追加されたアクターのみをピック対象にする
+        
+        pick_result = picker.Pick(x, y, 0, self.renderer)
         
         # ピックされた位置を取得
         picked_pos = picker.GetPickPosition()
+        picked_actor = picker.GetActor()
         
-        # STLモデルがピックされたか確認
-        if picker.GetActor() == self.stl_actor:
-            # モデル上の点がピックされた場合
-            self.point_coords[index] = [picked_pos[0], picked_pos[1], picked_pos[2]]
-            self.update_point_display(index)
-            print(f"[Ctrl+Click] Point {index+1} set to: ({picked_pos[0]:.6f}, {picked_pos[1]:.6f}, {picked_pos[2]:.6f})")
+        # STLモデル上をクリックしたかどうかを確認（座標設定には使用しない）
+        on_stl_surface = (pick_result and picked_actor == self.stl_actor)
+        
+        # カメラ情報を取得
+        camera = self.renderer.GetActiveCamera()
+        camera_pos = np.array(camera.GetPosition())
+        focal_point = np.array(camera.GetFocalPoint())
+        view_direction = focal_point - camera_pos
+        view_direction /= np.linalg.norm(view_direction)
+        
+        # カメラの視線方向に最も近い軸を特定（その軸の座標を維持する）
+        abs_view = np.abs(view_direction)
+        max_axis = np.argmax(abs_view)  # 0=X, 1=Y, 2=Z
+        
+        # 現在のポイント座標を取得
+        current_coords = self.point_coords[index].copy()
+        
+        # スクリーン座標から3D空間の線（レイ）を計算
+        # near平面とfar平面の2点を取得
+        coordinate = vtk.vtkCoordinate()
+        coordinate.SetCoordinateSystemToDisplay()
+        
+        # near平面の点
+        coordinate.SetValue(x, y, 0)
+        near_point = np.array(coordinate.GetComputedWorldValue(self.renderer))
+        
+        # far平面の点
+        coordinate.SetValue(x, y, 1)
+        far_point = np.array(coordinate.GetComputedWorldValue(self.renderer))
+        
+        # レイの方向
+        ray_direction = far_point - near_point
+        ray_direction /= np.linalg.norm(ray_direction)
+        
+        # 固定軸と平面の交点を計算
+        # 平面の方程式: axis_value = current_coords[max_axis]
+        # レイの方程式: point = near_point + t * ray_direction
+        if abs(ray_direction[max_axis]) > 1e-6:
+            t = (current_coords[max_axis] - near_point[max_axis]) / ray_direction[max_axis]
+            new_pos = near_point + t * ray_direction
         else:
-            # モデル外がクリックされた場合は、カメラ平面上の点を使用
-            renderer = self.renderer
-            camera = renderer.GetActiveCamera()
-            
-            coordinate = vtk.vtkCoordinate()
-            coordinate.SetCoordinateSystemToDisplay()
-            coordinate.SetValue(x, y, 0)
-            world_pos = coordinate.GetComputedWorldValue(renderer)
-            
-            # カメラからの距離を考慮
-            camera_pos = np.array(camera.GetPosition())
-            focal_point = np.array(camera.GetFocalPoint())
-            view_direction = focal_point - camera_pos
-            view_direction /= np.linalg.norm(view_direction)
-            
-            # 現在のポイントのz座標を維持
-            current_z = self.point_coords[index][2]
-            t = (current_z - camera_pos[2]) / view_direction[2] if view_direction[2] != 0 else 1.0
-            new_pos = camera_pos + t * view_direction
-            
-            self.point_coords[index] = [new_pos[0], new_pos[1], current_z]
-            self.update_point_display(index)
-            print(f"[Ctrl+Click] Point {index+1} set to: ({new_pos[0]:.6f}, {new_pos[1]:.6f}, {current_z:.6f})")
+            # レイが平面に平行な場合は、現在位置を維持
+            new_pos = current_coords.copy()
+        
+        # 固定軸の座標を確実に維持
+        new_pos[max_axis] = current_coords[max_axis]
+        
+        self.point_coords[index] = [new_pos[0], new_pos[1], new_pos[2]]
+        self.update_point_display(index)
+        
+        # ログ出力
+        axis_names = ['X', 'Y', 'Z']
+        location = "on STL" if on_stl_surface else "off STL"
+        print(f"[Ctrl+Click] Point {index+1} set ({location}, fixed {axis_names[max_axis]}): ({new_pos[0]:.6f}, {new_pos[1]:.6f}, {new_pos[2]:.6f})")
 
     def update_inertia_from_mass(self, mass):
         # イナーシャを重さから計算する例（適宜調整してください）
