@@ -179,6 +179,7 @@ class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
         self.parent = parent
         self.AddObserver("CharEvent", self.on_char_event)
         self.AddObserver("KeyPressEvent", self.on_key_press)
+        self.AddObserver("LeftButtonPressEvent", self.on_left_button_press)
 
     def on_char_event(self, obj, event):
         key = self.GetInteractor().GetKeySym()
@@ -271,6 +272,23 @@ class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
                     self.parent.update_point_position(i, x, y)
         self.OnMouseMove()
     
+    def on_left_button_press(self, obj, event):
+        """Ctrl + 左クリックでポイントの座標を設定"""
+        if self.parent:
+            ctrl_pressed = self.GetInteractor().GetControlKey()
+            if ctrl_pressed:
+                # マウスの位置を取得
+                x, y = self.GetInteractor().GetEventPosition()
+                
+                # チェックされているポイントに座標を設定
+                for i, checkbox in enumerate(self.parent.point_checkboxes):
+                    if checkbox.isChecked():
+                        self.parent.set_point_from_click(i, x, y)
+                return  # イベントを消費して通常のカメラ操作を防ぐ
+        
+        # Ctrlが押されていない場合は通常の動作
+        self.OnLeftButtonDown()
+        
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -750,6 +768,46 @@ class MainWindow(QMainWindow):
         self.update_point_display(index)
 
         print(f"Point {index+1} moved to: ({new_pos[0]:.6f}, {new_pos[1]:.6f}, {current_z:.6f})")
+
+    def set_point_from_click(self, index, x, y):
+        """Ctrl + クリックで3D空間のポイントに座標を設定"""
+        # VTKのピッカーを使用してクリックした位置の3D座標を取得
+        picker = vtk.vtkPropPicker()
+        picker.Pick(x, y, 0, self.renderer)
+        
+        # ピックされた位置を取得
+        picked_pos = picker.GetPickPosition()
+        
+        # STLモデルがピックされたか確認
+        if picker.GetActor() == self.stl_actor:
+            # モデル上の点がピックされた場合
+            self.point_coords[index] = [picked_pos[0], picked_pos[1], picked_pos[2]]
+            self.update_point_display(index)
+            print(f"[Ctrl+Click] Point {index+1} set to: ({picked_pos[0]:.6f}, {picked_pos[1]:.6f}, {picked_pos[2]:.6f})")
+        else:
+            # モデル外がクリックされた場合は、カメラ平面上の点を使用
+            renderer = self.renderer
+            camera = renderer.GetActiveCamera()
+            
+            coordinate = vtk.vtkCoordinate()
+            coordinate.SetCoordinateSystemToDisplay()
+            coordinate.SetValue(x, y, 0)
+            world_pos = coordinate.GetComputedWorldValue(renderer)
+            
+            # カメラからの距離を考慮
+            camera_pos = np.array(camera.GetPosition())
+            focal_point = np.array(camera.GetFocalPoint())
+            view_direction = focal_point - camera_pos
+            view_direction /= np.linalg.norm(view_direction)
+            
+            # 現在のポイントのz座標を維持
+            current_z = self.point_coords[index][2]
+            t = (current_z - camera_pos[2]) / view_direction[2] if view_direction[2] != 0 else 1.0
+            new_pos = camera_pos + t * view_direction
+            
+            self.point_coords[index] = [new_pos[0], new_pos[1], current_z]
+            self.update_point_display(index)
+            print(f"[Ctrl+Click] Point {index+1} set to: ({new_pos[0]:.6f}, {new_pos[1]:.6f}, {current_z:.6f})")
 
     def update_inertia_from_mass(self, mass):
         # イナーシャを重さから計算する例（適宜調整してください）
