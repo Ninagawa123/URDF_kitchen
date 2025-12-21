@@ -4615,6 +4615,29 @@ class MainWidget(QtWidgets.QWidget):
         # クリーンアップフラグ
         self._cleaned_up = False
         
+        # ボタンのスタイルを設定
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                stop:0 #5a5a5a, stop:1 #3a3a3a);
+                color: #ffffff;
+                border: 1px solid #707070;
+                border-radius: 5px;
+                padding: 3px 8px;
+                min-height: 20px;
+            }
+            QPushButton:hover {
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                stop:0 #6a6a6a, stop:1 #4a4a4a);
+            }
+            QPushButton:pressed {
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                stop:0 #3a3a3a, stop:1 #5a5a5a);
+                padding-top: 6px;
+                padding-bottom: 4px;
+            }
+        """)
+        
         # メインレイアウトの設定
         main_layout = QtWidgets.QHBoxLayout(self)
         

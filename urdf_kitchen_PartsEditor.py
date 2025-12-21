@@ -79,20 +79,22 @@ def apply_dark_theme(self):
             background-color: #404244;
         }
         QPushButton {
-            background-color: #F0F0ED;
-            border: 1px solid #BBBBB7;
-            border-radius: 2px;
-            padding: 2px 2px;
-            color: #333333;
-            min-width: 80px;
+            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                            stop:0 #5a5a5a, stop:1 #3a3a3a);
+            color: #ffffff;
+            border: 1px solid #707070;
+            border-radius: 5px;
+            padding: 3px 8px;
+            min-height: 20px;
         }
         QPushButton:hover {
-            background-color: #E6E6E3;
-            border: 1px solid #AAAAAA;
+            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                            stop:0 #6a6a6a, stop:1 #4a4a4a);
         }
         QPushButton:pressed {
-            background-color: #DDDDD9;
-            padding-top: 4px;
+            background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                            stop:0 #3a3a3a, stop:1 #5a5a5a);
+            padding-top: 6px;
             padding-bottom: 4px;
         }
         QLineEdit {
@@ -312,6 +314,29 @@ class MainWidget(QWidget):
         super().__init__(parent)
         # タブ統合用のイベントバス
         self.event_bus = event_bus
+        
+        # ボタンのスタイルを設定
+        self.setStyleSheet("""
+            QPushButton {
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                stop:0 #5a5a5a, stop:1 #3a3a3a);
+                color: #ffffff;
+                border: 1px solid #707070;
+                border-radius: 5px;
+                padding: 3px 8px;
+                min-height: 20px;
+            }
+            QPushButton:hover {
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                stop:0 #6a6a6a, stop:1 #4a4a4a);
+            }
+            QPushButton:pressed {
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                stop:0 #3a3a3a, stop:1 #5a5a5a);
+                padding-top: 6px;
+                padding-bottom: 4px;
+            }
+        """)
         
         self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
         self.absolute_origin = [0, 0, 0]  # 大原点の設定
