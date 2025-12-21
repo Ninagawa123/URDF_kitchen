@@ -76,7 +76,20 @@ class URDFKitchenSuite(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("URDF Kitchen Suite v0.1.0")
-        self.setGeometry(0, 0, 1200, 700)
+        
+        # 画面サイズに応じた適切なウィンドウサイズを設定
+        from PySide6.QtGui import QGuiApplication
+        screen = QGuiApplication.primaryScreen().geometry()
+        # 画面の80%のサイズを使用
+        width = int(screen.width() * 0.8)
+        height = int(screen.height() * 0.8)
+        # 画面中央に配置
+        x = int((screen.width() - width) / 2)
+        y = int((screen.height() - height) / 2)
+        self.setGeometry(x, y, width, height)
+        
+        # 最小サイズを設定
+        self.setMinimumSize(1000, 600)
         
         # クリーンアップフラグ
         self._cleaned_up = False

@@ -84,8 +84,8 @@ def apply_dark_theme(self):
             color: #ffffff;
             border: 1px solid #707070;
             border-radius: 5px;
-            padding: 3px 8px;
-            min-height: 20px;
+            padding: 1px 6px;
+            min-height: 18px;
         }
         QPushButton:hover {
             background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -323,8 +323,8 @@ class MainWidget(QWidget):
                 color: #ffffff;
                 border: 1px solid #707070;
                 border-radius: 5px;
-                padding: 3px 8px;
-                min-height: 20px;
+                padding: 1px 6px;
+                min-height: 18px;
             }
             QPushButton:hover {
                 background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -369,10 +369,19 @@ class MainWidget(QWidget):
         content_layout = QHBoxLayout()
         main_layout.addLayout(content_layout)
 
-        # 左側のUI用ウィジェットとレイアウト
+        # 左側のUI用ウィジェットとレイアウト（スクロール可能に）
+        from PySide6.QtWidgets import QScrollArea
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        scroll_area.setMinimumWidth(550)  # 最小幅を設定
+        scroll_area.setMaximumWidth(600)  # 最大幅を設定
+        
         left_widget = QWidget()
         self.left_layout = QVBoxLayout(left_widget)
-        content_layout.addWidget(left_widget, 1)  # stretch factorを1に設定
+        scroll_area.setWidget(left_widget)
+        content_layout.addWidget(scroll_area, 1)  # stretch factorを1に設定
 
         # 右側のVTKウィジェット
         self.vtk_widget = QVTKRenderWindowInteractor(self)

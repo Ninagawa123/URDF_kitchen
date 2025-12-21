@@ -4623,8 +4623,8 @@ class MainWidget(QtWidgets.QWidget):
                 color: #ffffff;
                 border: 1px solid #707070;
                 border-radius: 5px;
-                padding: 3px 8px;
-                min-height: 20px;
+                padding: 1px 6px;
+                min-height: 18px;
             }
             QPushButton:hover {
                 background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
