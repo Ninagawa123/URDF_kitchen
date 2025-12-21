@@ -303,11 +303,16 @@ class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
         # Ctrlが押されていない場合は通常の動作
         self.OnLeftButtonDown()
         
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("URDF Kitchen - PartsEditor v0.0.1 -")
-        self.setGeometry(0, 0, 1200, 600)
+class MainWidget(QWidget):
+    # ファイル保存シグナル（タブ間連携用）
+    from PySide6.QtCore import Signal
+    file_saved = Signal(str, str)  # (stl_path, xml_path)
+    
+    def __init__(self, event_bus=None, parent=None):
+        super().__init__(parent)
+        # タブ統合用のイベントバス
+        self.event_bus = event_bus
+        
         self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
         self.absolute_origin = [0, 0, 0]  # 大原点の設定
         self.initial_camera_position = [10, 0, 0]  # 初期カメラ位置
@@ -324,9 +329,7 @@ class MainWindow(QMainWindow):
 
         self.com_actor = None  # 重心アクターを追跡するための新しい属性
 
-        central_widget = QWidget(self)
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)  # 垂直方向のレイアウトに変更
+        main_layout = QVBoxLayout(self)  # 垂直方向のレイアウトに変更
 
         # ファイル名表示用のラベル
         self.file_name_label = QLabel("File:")
@@ -347,7 +350,7 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(left_widget, 1)  # stretch factorを1に設定
 
         # 右側のVTKウィジェット
-        self.vtk_widget = QVTKRenderWindowInteractor(central_widget)
+        self.vtk_widget = QVTKRenderWindowInteractor(self)
         content_layout.addWidget(self.vtk_widget, 4)  # stretch factorを4に設定（UIより広いスペースを確保）
         
         self.setup_ui()
@@ -380,6 +383,18 @@ class MainWindow(QMainWindow):
         self.render_window.Render()
         self.render_window_interactor.Initialize()
         self.vtk_widget.GetRenderWindow().AddObserver("ModifiedEvent", self.update_all_points_size)
+
+    def cleanup(self):
+        """クリーンアップ処理"""
+        try:
+            if hasattr(self, 'render_window'):
+                self.render_window.Finalize()
+            if hasattr(self, 'animation_timer'):
+                self.animation_timer.stop()
+            if hasattr(self, 'rotation_timer'):
+                self.rotation_timer.stop()
+        except:
+            pass
 
     def setup_ui(self):
         self.setup_buttons()
@@ -1418,6 +1433,13 @@ class MainWindow(QMainWindow):
             with open(urdf_file_path, "w") as f:
                 f.write(urdf_content)
             print(f"URDF file saved: {urdf_file_path}")
+            
+            # タブ間連携: ファイル保存シグナルを発行
+            if hasattr(self, 'file_saved'):
+                self.file_saved.emit(self.stl_file_path, urdf_file_path)
+            if self.event_bus:
+                self.event_bus.file_saved.emit(self.stl_file_path, urdf_file_path)
+                self.event_bus.status_message.emit(f"Saved: {os.path.basename(urdf_file_path)}")
 
         except Exception as e:
             print(f"Error during URDF export: {str(e)}")
@@ -3280,8 +3302,14 @@ if __name__ == "__main__":
     app = QApplication(sys.argv)
     apply_dark_theme(app)
 
-    window = MainWindow()
-    window.show()
+    # 単体起動時はQMainWindowとして表示
+    main_window = QMainWindow()
+    main_window.setWindowTitle("URDF Kitchen - PartsEditor v0.0.1 -")
+    main_window.setGeometry(0, 0, 1200, 600)
+    
+    widget = MainWidget()
+    main_window.setCentralWidget(widget)
+    main_window.show()
 
     # タイマーを設定してシグナルを処理できるようにする
     timer = QTimer()

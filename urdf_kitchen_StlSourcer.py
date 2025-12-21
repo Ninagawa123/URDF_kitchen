@@ -1,4 +1,4 @@
-"""
+﻿"""
 File Name: urdf_kitchen_StlSourcer.py
 Description: A Python script for reconfiguring the center coordinates and axis directions of STL files.
 
@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout
 )
 from PySide6.QtCore import QTimer, Qt
+from PySide6.QtGui import QColor, QPalette
 from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
 
 class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
@@ -117,11 +118,28 @@ class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
         self.GetInteractor().GetRenderWindow().Render()
 
 
-class MainWindow(QMainWindow):
-    def __init__(self):
-        super().__init__()
-        self.setWindowTitle("URDF kitchen - StlSourcer v0.0.1 -")
-        self.setGeometry(100, 100, 700, 700)
+class MainWidget(QWidget):
+    def __init__(self, event_bus=None, parent=None):
+        super().__init__(parent)
+        # タブ統合用のイベントバス
+        self.event_bus = event_bus
+        
+        dark_palette = QPalette()
+        dark_palette.setColor(QPalette.Window, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.WindowText, QColor(255, 255, 255))
+        dark_palette.setColor(QPalette.Base, QColor(42, 42, 42))
+        dark_palette.setColor(QPalette.AlternateBase, QColor(66, 66, 66))
+        dark_palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
+        dark_palette.setColor(QPalette.ToolTipText, QColor(255, 255, 255))
+        dark_palette.setColor(QPalette.Text, QColor(255, 255, 255))
+        dark_palette.setColor(QPalette.Button, QColor(53, 53, 53))
+        dark_palette.setColor(QPalette.ButtonText, QColor(255, 255, 255))
+        dark_palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
+        dark_palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+        dark_palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
+        self.setPalette(dark_palette)
+        self.setAutoFillBackground(True)
+        
         self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
         self.absolute_origin = [0, 0, 0]  # 大原点の設定
         self.initial_camera_position = [10, 0, 0]  # 初期カメラ位置
@@ -134,10 +152,8 @@ class MainWindow(QMainWindow):
         self.point_checkboxes = []
         self.point_inputs = []
 
-        # メインウィジェットとレイアウトの設定
-        central_widget = QWidget(self)
-        self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+        # メインレイアウトの設定
+        main_layout = QVBoxLayout(self)
 
         self.set_ui_style()
 
@@ -161,7 +177,7 @@ class MainWindow(QMainWindow):
         # self.add_remove_internal_faces_button()
 
         # STL表示画面
-        self.vtk_widget = QVTKRenderWindowInteractor(central_widget)
+        self.vtk_widget = QVTKRenderWindowInteractor(self)
         main_layout.addWidget(self.vtk_widget)
 
         # Volume表示
@@ -202,14 +218,47 @@ class MainWindow(QMainWindow):
 
         self.vtk_widget.GetRenderWindow().AddObserver("ModifiedEvent", self.update_all_points_size)
 
+    def cleanup(self):
+        """クリーンアップ処理"""
+        try:
+            # アニメーションタイマーを停止
+            if hasattr(self, 'animation_timer') and self.animation_timer:
+                try:
+                    self.animation_timer.stop()
+                    self.animation_timer.deleteLater()
+                    self.animation_timer = None
+                except (RuntimeError, AttributeError):
+                    pass
+            
+            # VTKインタラクターを終了
+            if hasattr(self, 'render_window_interactor') and self.render_window_interactor:
+                try:
+                    self.render_window_interactor.TerminateApp()
+                except (RuntimeError, AttributeError):
+                    pass
+            
+            # レンダーウィンドウをFinalize
+            if hasattr(self, 'render_window') and self.render_window:
+                try:
+                    self.render_window.Finalize()
+                except (RuntimeError, AttributeError):
+                    pass
+            
+            # VTKウィジェットをFinalize
+            if hasattr(self, 'vtk_widget') and self.vtk_widget:
+                try:
+                    render_win = self.vtk_widget.GetRenderWindow()
+                    if render_win:
+                        render_win.Finalize()
+                    self.vtk_widget.Finalize()
+                except (RuntimeError, AttributeError):
+                    pass
+        except:
+            pass
+
     def set_ui_style(self):
+        """追加のスタイル設定（パレットで基本色は設定済み）"""
         self.setStyleSheet("""
-            QMainWindow {
-                background-color: #2b2b2b;
-            }
-            QLabel {
-                color: #ffffff;
-            }
             QPushButton {
                 background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
                                                 stop:0 #5a5a5a, stop:1 #3a3a3a);
@@ -228,28 +277,6 @@ class MainWindow(QMainWindow):
                                                 stop:0 #3a3a3a, stop:1 #5a5a5a);
                 padding-top: 6px;
                 padding-bottom: 4px;
-            }
-            QLineEdit {
-                background-color: #3a3a3a;
-                color: #ffffff;
-                border: 1px solid #5a5a5a;
-                border-radius: 3px;
-                padding: 2px;
-            }
-            QCheckBox {
-                color: #ffffff;
-            }
-            QCheckBox::indicator {
-                width: 13px;
-                height: 13px;
-            }
-            QCheckBox::indicator:unchecked {
-                border: 1px solid #5a5a5a;
-                background-color: #2b2b2b;
-            }
-            QCheckBox::indicator:checked {
-                border: 1px solid #5a5a5a;
-                background-color: #4a90e2;
             }
         """)
 
@@ -1241,8 +1268,14 @@ if __name__ == "__main__":
     # Ctrl+Cのシグナルハンドラを設定
     signal.signal(signal.SIGINT, signal_handler)
 
-    window = MainWindow()
-    window.show()
+    # 単体起動時はQMainWindowとして表示
+    main_window = QMainWindow()
+    main_window.setWindowTitle("URDF kitchen - StlSourcer v0.0.1 -")
+    main_window.setGeometry(100, 100, 700, 700)
+    
+    widget = MainWidget()
+    main_window.setCentralWidget(widget)
+    main_window.show()
 
     # タイマーを設定してシグナルを処理できるようにする
     timer = QTimer()
