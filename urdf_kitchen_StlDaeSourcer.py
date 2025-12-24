@@ -1,10 +1,11 @@
 """
-File Name: urdf_kitchen_StlDaeSourcer.py
+File Name: urdf_kitchen_StlSourcer.py
 Description: A Python script for reconfiguring the center coordinates and axis directions of STL and dae files.
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Updated     : Dec 24, 2025
+Created On  : Dec 25, 2025
+
 
 Version     : 0.1.0
 License     : MIT License
@@ -183,7 +184,7 @@ class GlobalKeyEventFilter(QObject):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("URDF kitchen - StlSourcer v0.0.1")
+        self.setWindowTitle("URDF kitchen - StlDaeSourcer v0.1.0")
         self.setGeometry(100, 100, 700, 700)
 
         self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
@@ -401,55 +402,19 @@ class MainWindow(QMainWindow):
             else:
                 qimage = QImage(arr.data, width, height, width * 4, QImage.Format_RGBA8888)
 
-            # AGGRESSIVE cache busting for Qt QLabel
+            # Simplified rendering without aggressive cache-busting to prevent flickering
             self._render_counter += 1
 
-            # Force Qt to disable caching
-            from PySide6.QtCore import Qt as QtCore
-            self.vtk_display.setAttribute(QtCore.WA_OpaquePaintEvent, False)
-
-            # Get parent and current geometry
-            parent = self.vtk_display.parentWidget()
-            original_geom = self.vtk_display.geometry()
-
-            # Completely clear the widget
-            self.vtk_display.clear()
-            self.vtk_display.setText("")
-
-            # Force immediate repaint of empty state
-            self.vtk_display.repaint()
-
-            # Temporarily move widget by 1 pixel to invalidate layout cache
-            self.vtk_display.move(original_geom.x() + 1, original_geom.y())
-
-            # Create brand new pixmap
+            # Create pixmap from image
             pixmap = QPixmap.fromImage(qimage.copy())
 
-            # Restore position
-            self.vtk_display.move(original_geom.x(), original_geom.y())
-
-            # NUCLEAR OPTION: Destroy and recreate pixmap to bypass ALL Qt caching
-            self.vtk_display.setPixmap(QPixmap())  # Set empty pixmap first
-            self.vtk_display.repaint()
-
-            # Set the actual new pixmap
+            # Simply set the pixmap - no clearing, no visibility toggling
             self.vtk_display.setPixmap(pixmap)
 
-            # Force widget visibility toggle for cache invalidation
-            was_visible = self.vtk_display.isVisible()
-            if was_visible:
-                self.vtk_display.setVisible(False)
-                self.vtk_display.setVisible(True)
-
-            # Force complete widget tree update
-            self.vtk_display.updateGeometry()
+            # Single update call is sufficient
             self.vtk_display.update()
-            if parent:
-                parent.update()
-            self.vtk_display.repaint()
 
             # Restore focus to vtk_display if focus is not on input widget
-            # This prevents setVisible(False)/setVisible(True) from stealing focus to QLineEdit
             from PySide6.QtWidgets import QApplication, QLineEdit, QTextEdit, QPlainTextEdit
             focus_widget = QApplication.focusWidget()
             if not isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
@@ -1243,19 +1208,11 @@ class MainWindow(QMainWindow):
 
             self.toggle_wireframe()
 
-            # Render multiple times like D key does to force Qt update
+            # Single render is sufficient - excessive renders cause flickering
             self.render_to_image()
 
-            # Schedule additional renders with stored timers
-            for i in range(1, 8):
-                timer = QTimer()
-                timer.setSingleShot(True)
-                timer.timeout.connect(self.render_to_image)
-                timer.start(i * 30)
-                self._pending_render_timers.append(timer)
-
-            # Release lock after all renders complete
-            QTimer.singleShot(250, lambda: setattr(self, '_toggling_wireframe', False))
+            # Release lock quickly to allow next toggle
+            QTimer.singleShot(100, lambda: setattr(self, '_toggling_wireframe', False))
 
         elif key in [Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right]:
             step = 0.01
@@ -1294,7 +1251,8 @@ class MainWindow(QMainWindow):
             property.SetColor(1.0, 1.0, 1.0)  # White wireframe
             property.SetLineWidth(1.0)  # Thin 1-pixel lines
             property.SetOpacity(1.0)
-            self.renderer.SetBackground(0.0, 0.0, 0.0)  # Black background
+            # Keep background consistent - don't change it
+            # self.renderer.SetBackground(0.0, 0.0, 0.0)  # Black background
             self.wireframe_mode = True
         else:
             property.SetRepresentationToSurface()
@@ -1303,7 +1261,8 @@ class MainWindow(QMainWindow):
             else:
                 property.SetColor(0.8, 0.8, 0.8)
             property.SetOpacity(1.0)
-            self.renderer.SetBackground(0.2, 0.2, 0.2)  # Gray background
+            # Keep background consistent - don't change it
+            # self.renderer.SetBackground(0.2, 0.2, 0.2)  # Gray background
             self.wireframe_mode = False
 
         self.stl_actor.Modified()
@@ -1683,6 +1642,8 @@ class MainWindow(QMainWindow):
             self.render_to_image()
         elif button_text == "Set Front as X":
             self.handle_set_front_as_x()
+            # Update display after transforming STL to camera view
+            self.render_to_image()
         else:
             for i, checkbox in enumerate(self.point_checkboxes):
                 if checkbox.isChecked():
