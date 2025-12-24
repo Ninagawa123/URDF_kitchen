@@ -215,13 +215,13 @@ class MainWindow(QMainWindow):
 
         # LOADボタンとEXPORTボタン
         button_layout = QHBoxLayout()
-        self.load_button = QPushButton("Load 3D Model File")
+        self.load_button = QPushButton("Load .stl or .dae file")
         self.load_button.setFocusPolicy(Qt.NoFocus)  # Don't steal focus from vtk_display
         self.load_button.clicked.connect(self.load_stl_file)
         self.load_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
         button_layout.addWidget(self.load_button)
 
-        self.export_stl_button = QPushButton("Save as reoriented 3D Model")
+        self.export_stl_button = QPushButton("Save as reoriented 3D model")
         self.export_stl_button.setFocusPolicy(Qt.NoFocus)  # Don't steal focus from vtk_display
         self.export_stl_button.clicked.connect(self.export_stl_with_new_origin)
         self.export_stl_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
