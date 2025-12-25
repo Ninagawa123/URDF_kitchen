@@ -7,7 +7,7 @@ STLファイルにジョイントポイントを設定し、ノードで接続�
   
 # Tools  
   
-### STEP 1 -  仕込み -  "StlSourcer"  
+### STEP 1 -  仕込み -  "MeshSourcer"  
 <img width="500" alt="urdf_kitchen_beta" src="docs/StlSourcer.png">  
 Stlの中心点や座標軸の入れ替えを行うツールです。  
 この工程は不要な場合がほとんどです。  
