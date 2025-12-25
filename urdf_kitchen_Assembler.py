@@ -32,19 +32,22 @@ import shutil
 import datetime
 import numpy as np
 import trimesh
+import math
 
 # Import URDF Kitchen utilities for M4 Mac compatibility
-from urdf_kitchen_utils import OffscreenRenderer
+from urdf_kitchen_utils import OffscreenRenderer, calculate_inertia_tensor, calculate_inertia_tetrahedral
 
 # M4 Mac (Apple Silicon) compatibility
 import platform
 IS_APPLE_SILICON = platform.machine() == 'arm64' and platform.system() == 'Darwin'
 
-# デフォルト値の定数定義
-DEFAULT_JOINT_LOWER = -3.14159
-DEFAULT_JOINT_UPPER = 3.14159
-DEFAULT_JOINT_EFFORT = 10.0
-DEFAULT_JOINT_VELOCITY = 3.0
+# デフォルト値の定数定義（Joint LimitsはDegreeで管理）
+DEFAULT_JOINT_LOWER = -180.0
+DEFAULT_JOINT_UPPER = 180.0
+DEFAULT_JOINT_EFFORT = 1.37
+DEFAULT_JOINT_VELOCITY = 7.0
+DEFAULT_JOINT_ACTUATION_LAG = 0.05
+DEFAULT_JOINT_DAMPING = 0.18
 DEFAULT_COLOR_WHITE = [1.0, 1.0, 1.0]
 DEFAULT_COORDS_ZERO = [0.0, 0.0, 0.0]
 DEFAULT_INERTIA_ZERO = {
@@ -55,6 +58,37 @@ DEFAULT_ORIGIN_ZERO = {
     'xyz': [0.0, 0.0, 0.0],
     'rpy': [0.0, 0.0, 0.0]
 }
+
+def format_float_no_exp(value, max_decimals=15):
+    """
+    浮動小数点数を指数表記なしで文字列化する。
+    末尾のゼロと不要な小数点も削除する。
+
+    Args:
+        value: float - 変換する数値
+        max_decimals: int - 最大小数点以下桁数
+
+    Returns:
+        str - 指数表記なしの文字列
+
+    Examples:
+        >>> format_float_no_exp(0.0000123456789)
+        '0.0000123456789'
+        >>> format_float_no_exp(1.5)
+        '1.5'
+        >>> format_float_no_exp(1.0)
+        '1'
+        >>> format_float_no_exp(0.0)
+        '0'
+    """
+    # 指数表記を避けて文字列化
+    formatted = f"{value:.{max_decimals}f}"
+    # 末尾のゼロを削除
+    formatted = formatted.rstrip('0')
+    # 小数点だけが残った場合は削除（例: "1." -> "1"）
+    formatted = formatted.rstrip('.')
+    # 空文字列の場合は '0' を返す
+    return formatted if formatted else '0'
 
 def init_node_properties(node):
     """ノードの共通プロパティを初期化"""
@@ -68,10 +102,12 @@ def init_node_properties(node):
     node.stl_file = None
     node.node_color = DEFAULT_COLOR_WHITE.copy()
     node.rotation_axis = 0  # 0: X, 1: Y, 2: Z
-    node.joint_lower = DEFAULT_JOINT_LOWER
-    node.joint_upper = DEFAULT_JOINT_UPPER
+    node.joint_lower = math.radians(DEFAULT_JOINT_LOWER)  # DegreeからRadianに変換して保存
+    node.joint_upper = math.radians(DEFAULT_JOINT_UPPER)  # DegreeからRadianに変換して保存
     node.joint_effort = DEFAULT_JOINT_EFFORT
     node.joint_velocity = DEFAULT_JOINT_VELOCITY
+    node.joint_actuation_lag = DEFAULT_JOINT_ACTUATION_LAG
+    node.joint_damping = DEFAULT_JOINT_DAMPING
     node.massless_decoration = False
 
 def create_point_data(index):
@@ -550,17 +586,17 @@ class InspectorWindow(QtWidgets.QWidget):
         joint_limits_layout = QtWidgets.QGridLayout()
         joint_limits_layout.setVerticalSpacing(3)
 
-        # 0行目: Lower Limit と Upper Limit
-        joint_limits_layout.addWidget(QtWidgets.QLabel("Lower Limit:"), 0, 0)
+        # 0行目: Lower Limit と Upper Limit（Degree表示）
+        joint_limits_layout.addWidget(QtWidgets.QLabel("Lower Limit (deg):"), 0, 0)
         self.lower_limit_input = QtWidgets.QLineEdit()
-        self.lower_limit_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 5))
-        self.lower_limit_input.setPlaceholderText("-3.14159")
+        self.lower_limit_input.setValidator(QDoubleValidator(-360.0, 360.0, 5))
+        self.lower_limit_input.setPlaceholderText("-180")
         joint_limits_layout.addWidget(self.lower_limit_input, 0, 1)
 
-        joint_limits_layout.addWidget(QtWidgets.QLabel("Upper Limit:"), 0, 2)
+        joint_limits_layout.addWidget(QtWidgets.QLabel("Upper Limit (deg):"), 0, 2)
         self.upper_limit_input = QtWidgets.QLineEdit()
-        self.upper_limit_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 5))
-        self.upper_limit_input.setPlaceholderText("3.14159")
+        self.upper_limit_input.setValidator(QDoubleValidator(-360.0, 360.0, 5))
+        self.upper_limit_input.setPlaceholderText("180")
         joint_limits_layout.addWidget(self.upper_limit_input, 0, 3)
 
         # 1行目: ボタン（右寄せ）
@@ -577,6 +613,11 @@ class InspectorWindow(QtWidgets.QWidget):
         look_upper_button.clicked.connect(self.look_upper_limit)
         joint_buttons_layout.addWidget(look_upper_button)
 
+        look_zero_button = QtWidgets.QPushButton("Look zero")
+        look_zero_button.setFixedWidth(90)
+        look_zero_button.clicked.connect(self.look_zero_limit)
+        joint_buttons_layout.addWidget(look_zero_button)
+
         set_limits_button = QtWidgets.QPushButton("Set Limits")
         set_limits_button.setFixedWidth(90)
         set_limits_button.clicked.connect(self.set_joint_limits)
@@ -584,18 +625,49 @@ class InspectorWindow(QtWidgets.QWidget):
 
         joint_limits_layout.addLayout(joint_buttons_layout, 1, 0, 1, 4)
 
-        # 2行目: Effort と Velocity
-        joint_limits_layout.addWidget(QtWidgets.QLabel("Effort:"), 2, 0)
+        # 2行目: Effort, Damping（コンパクト・左寄せ）
+        joint_params_row1 = QtWidgets.QHBoxLayout()
+        joint_params_row1.setSpacing(5)
+
+        joint_params_row1.addWidget(QtWidgets.QLabel("Effort:"))
         self.effort_input = QtWidgets.QLineEdit()
         self.effort_input.setValidator(QDoubleValidator(0.0, 10000.0, 2))
-        self.effort_input.setPlaceholderText("10")
-        joint_limits_layout.addWidget(self.effort_input, 2, 1)
+        self.effort_input.setPlaceholderText("1.37")
+        self.effort_input.setMaximumWidth(60)
+        joint_params_row1.addWidget(self.effort_input)
 
-        joint_limits_layout.addWidget(QtWidgets.QLabel("Velocity:"), 2, 2)
+        joint_params_row1.addWidget(QtWidgets.QLabel("Damping:"))
+        self.damping_input = QtWidgets.QLineEdit()
+        self.damping_input.setValidator(QDoubleValidator(0.0, 10000.0, 5))
+        self.damping_input.setPlaceholderText("0.18")
+        self.damping_input.setMaximumWidth(60)
+        joint_params_row1.addWidget(self.damping_input)
+
+        joint_params_row1.addStretch()
+
+        joint_limits_layout.addLayout(joint_params_row1, 2, 0, 1, 6)
+
+        # 3行目: Velocity, ActuationLag（コンパクト・左寄せ）
+        joint_params_row2 = QtWidgets.QHBoxLayout()
+        joint_params_row2.setSpacing(5)
+
+        joint_params_row2.addWidget(QtWidgets.QLabel("Velocity:"))
         self.velocity_input = QtWidgets.QLineEdit()
         self.velocity_input.setValidator(QDoubleValidator(0.0, 10000.0, 2))
-        self.velocity_input.setPlaceholderText("3")
-        joint_limits_layout.addWidget(self.velocity_input, 2, 3)
+        self.velocity_input.setPlaceholderText("7.0")
+        self.velocity_input.setMaximumWidth(60)
+        joint_params_row2.addWidget(self.velocity_input)
+
+        joint_params_row2.addWidget(QtWidgets.QLabel("ActuationLag:"))
+        self.actuation_lag_input = QtWidgets.QLineEdit()
+        self.actuation_lag_input.setValidator(QDoubleValidator(0.0, 10000.0, 5))
+        self.actuation_lag_input.setPlaceholderText("0.05")
+        self.actuation_lag_input.setMaximumWidth(60)
+        joint_params_row2.addWidget(self.actuation_lag_input)
+
+        joint_params_row2.addStretch()
+
+        joint_limits_layout.addLayout(joint_params_row2, 3, 0, 1, 6)
 
         content_layout.addLayout(joint_limits_layout)
 
@@ -670,9 +742,9 @@ class InspectorWindow(QtWidgets.QWidget):
 
         # File Controls セクション（テキストを削除して詰める）
         file_layout = QtWidgets.QHBoxLayout()
-        self.load_stl_btn = QtWidgets.QPushButton("Load STL")
+        self.load_stl_btn = QtWidgets.QPushButton("Load Mesh")
         self.load_xml_btn = QtWidgets.QPushButton("Load XML")
-        self.load_xml_with_stl_btn = QtWidgets.QPushButton("Load XML with STL")
+        self.load_xml_with_stl_btn = QtWidgets.QPushButton("Load XML with Mesh")
         file_layout.addWidget(self.load_stl_btn)
         file_layout.addWidget(self.load_xml_btn)
         file_layout.addWidget(self.load_xml_with_stl_btn)
@@ -808,22 +880,22 @@ class InspectorWindow(QtWidgets.QWidget):
             print(f"Error updating coordinate: {str(e)}")
 
     def _set_inertial_origin_ui(self, xyz, rpy):
-        """Inertial OriginのUI入力フィールドに値を設定"""
-        self.inertial_x_input.setText(str(xyz[0]))
-        self.inertial_y_input.setText(str(xyz[1]))
-        self.inertial_z_input.setText(str(xyz[2]))
-        self.inertial_r_input.setText(str(rpy[0]))
-        self.inertial_p_input.setText(str(rpy[1]))
-        self.inertial_y_rpy_input.setText(str(rpy[2]))
+        """Inertial OriginのUI入力フィールドに値を設定（指数表記を使用せず、高精度で表示）"""
+        self.inertial_x_input.setText(format_float_no_exp(xyz[0]))
+        self.inertial_y_input.setText(format_float_no_exp(xyz[1]))
+        self.inertial_z_input.setText(format_float_no_exp(xyz[2]))
+        self.inertial_r_input.setText(format_float_no_exp(rpy[0]))
+        self.inertial_p_input.setText(format_float_no_exp(rpy[1]))
+        self.inertial_y_rpy_input.setText(format_float_no_exp(rpy[2]))
 
     def _set_inertia_ui(self, inertia_dict):
-        """Inertia TensorのUI入力フィールドに値を設定"""
-        self.ixx_input.setText(str(inertia_dict.get('ixx', 0.0)))
-        self.ixy_input.setText(str(inertia_dict.get('ixy', 0.0)))
-        self.ixz_input.setText(str(inertia_dict.get('ixz', 0.0)))
-        self.iyy_input.setText(str(inertia_dict.get('iyy', 0.0)))
-        self.iyz_input.setText(str(inertia_dict.get('iyz', 0.0)))
-        self.izz_input.setText(str(inertia_dict.get('izz', 0.0)))
+        """Inertia TensorのUI入力フィールドに値を設定（指数表記を使用せず、高精度で表示）"""
+        self.ixx_input.setText(format_float_no_exp(inertia_dict.get('ixx', 0.0)))
+        self.ixy_input.setText(format_float_no_exp(inertia_dict.get('ixy', 0.0)))
+        self.ixz_input.setText(format_float_no_exp(inertia_dict.get('ixz', 0.0)))
+        self.iyy_input.setText(format_float_no_exp(inertia_dict.get('iyy', 0.0)))
+        self.iyz_input.setText(format_float_no_exp(inertia_dict.get('iyz', 0.0)))
+        self.izz_input.setText(format_float_no_exp(inertia_dict.get('izz', 0.0)))
 
     def _set_color_ui(self, rgb_values):
         """色のUI入力フィールドに値を設定"""
@@ -838,13 +910,13 @@ class InspectorWindow(QtWidgets.QWidget):
             # Node Name
             self.name_edit.setText(node.name())
 
-            # Volume & Mass
+            # Volume & Mass（高精度、指数表記なし）
             if hasattr(node, 'volume_value'):
-                self.volume_input.setText(f"{node.volume_value:.6f}")
+                self.volume_input.setText(format_float_no_exp(node.volume_value))
                 print(f"Volume set to: {node.volume_value}")
 
             if hasattr(node, 'mass_value'):
-                self.mass_input.setText(f"{node.mass_value:.6f}")
+                self.mass_input.setText(format_float_no_exp(node.mass_value))
                 print(f"Mass set to: {node.mass_value}")
 
             # Inertia の設定
@@ -907,17 +979,21 @@ class InspectorWindow(QtWidgets.QWidget):
                 # BaseLinkNode以外の場合はBlanklinkチェックボックスを非表示
                 self.blanklink_checkbox.setVisible(False)
 
-            # Joint Limits の設定
+            # Joint Limits の設定（RadianからDegreeに変換して表示）
             if hasattr(node, 'joint_lower'):
-                self.lower_limit_input.setText(str(node.joint_lower))
+                # ノードにはRadian値で保存されているのでDegreeに変換
+                self.lower_limit_input.setText(str(math.degrees(node.joint_lower)))
             else:
-                node.joint_lower = DEFAULT_JOINT_LOWER
+                # DEFAULT_JOINT_LOWERは既にDegree値
+                node.joint_lower = math.radians(DEFAULT_JOINT_LOWER)
                 self.lower_limit_input.setText(str(DEFAULT_JOINT_LOWER))
 
             if hasattr(node, 'joint_upper'):
-                self.upper_limit_input.setText(str(node.joint_upper))
+                # ノードにはRadian値で保存されているのでDegreeに変換
+                self.upper_limit_input.setText(str(math.degrees(node.joint_upper)))
             else:
-                node.joint_upper = DEFAULT_JOINT_UPPER
+                # DEFAULT_JOINT_UPPERは既にDegree値
+                node.joint_upper = math.radians(DEFAULT_JOINT_UPPER)
                 self.upper_limit_input.setText(str(DEFAULT_JOINT_UPPER))
 
             if hasattr(node, 'joint_effort'):
@@ -939,6 +1015,27 @@ class InspectorWindow(QtWidgets.QWidget):
                 else:
                     node.joint_velocity = DEFAULT_JOINT_VELOCITY
                 self.velocity_input.setText(str(node.joint_velocity))
+
+            if hasattr(node, 'joint_actuation_lag'):
+                self.actuation_lag_input.setText(str(node.joint_actuation_lag))
+            else:
+                # グラフのデフォルト値を使用
+                if hasattr(node, 'graph') and hasattr(node.graph, 'default_joint_actuation_lag'):
+                    node.joint_actuation_lag = node.graph.default_joint_actuation_lag
+                else:
+                    node.joint_actuation_lag = DEFAULT_JOINT_ACTUATION_LAG
+                self.actuation_lag_input.setText(str(node.joint_actuation_lag))
+
+            # Dampingの設定
+            if hasattr(node, 'joint_damping'):
+                self.damping_input.setText(str(node.joint_damping))
+            else:
+                # グラフのデフォルト値を使用
+                if hasattr(node, 'graph') and hasattr(node.graph, 'default_joint_damping'):
+                    node.joint_damping = node.graph.default_joint_damping
+                else:
+                    node.joint_damping = DEFAULT_JOINT_DAMPING
+                self.damping_input.setText(str(node.joint_damping))
 
             # Color settings - nodeのnode_color属性を確認して設定
             if hasattr(node, 'node_color') and node.node_color:
@@ -1164,7 +1261,7 @@ class InspectorWindow(QtWidgets.QWidget):
                     if volume_elem is not None:
                         volume = float(volume_elem.get('value', '0.0'))
                         self.current_node.volume_value = volume
-                        self.volume_input.setText(f"{volume:.6f}")
+                        self.volume_input.setText(format_float_no_exp(volume))
                         print(f"Set volume: {volume}")
 
                     # 質量の設定
@@ -1172,7 +1269,7 @@ class InspectorWindow(QtWidgets.QWidget):
                     if mass_elem is not None:
                         mass = float(mass_elem.get('value', '0.0'))
                         self.current_node.mass_value = mass
-                        self.mass_input.setText(f"{mass:.6f}")
+                        self.mass_input.setText(format_float_no_exp(mass))
                         print(f"Set mass: {mass}")
 
                     # Inertial Originの設定
@@ -1254,6 +1351,32 @@ class InspectorWindow(QtWidgets.QWidget):
                             self.axis_group.button(0).setChecked(True)
                             print("Set rotation axis to X")
                         print(f"Set rotation axis from xyz: {axis_xyz}")
+
+                # Joint limitsの処理
+                limit_elem = joint_elem.find('limit')
+                if limit_elem is not None:
+                    # XMLからはRadian値で読み込む
+                    lower_rad = float(limit_elem.get('lower', -3.14159))
+                    upper_rad = float(limit_elem.get('upper', 3.14159))
+                    effort = float(limit_elem.get('effort', 10.0))
+                    velocity = float(limit_elem.get('velocity', 3.0))
+                    actuation_lag = float(limit_elem.get('actuationLag', 0.0))
+
+                    # ノードにはRadian値で保存
+                    self.current_node.joint_lower = lower_rad
+                    self.current_node.joint_upper = upper_rad
+                    self.current_node.joint_effort = effort
+                    self.current_node.joint_velocity = velocity
+                    self.current_node.joint_actuation_lag = actuation_lag
+
+                    # UI表示はDegreeに変換
+                    self.lower_limit_input.setText(format_float_no_exp(math.degrees(lower_rad)))
+                    self.upper_limit_input.setText(format_float_no_exp(math.degrees(upper_rad)))
+                    self.effort_input.setText(format_float_no_exp(effort))
+                    self.velocity_input.setText(format_float_no_exp(velocity))
+                    self.actuation_lag_input.setText(format_float_no_exp(actuation_lag))
+
+                    print(f"Set joint limits: lower={math.degrees(lower_rad):.2f}° ({lower_rad:.5f} rad), upper={math.degrees(upper_rad):.2f}° ({upper_rad:.5f} rad), effort={effort}, velocity={velocity}")
 
             # ポイントの処理
             points = root.findall('point')
@@ -1363,14 +1486,14 @@ class InspectorWindow(QtWidgets.QWidget):
                     if volume_elem is not None:
                         volume = float(volume_elem.get('value', '0.0'))
                         self.current_node.volume_value = volume
-                        self.volume_input.setText(f"{volume:.6f}")
+                        self.volume_input.setText(format_float_no_exp(volume))
 
                     # 質量の設定
                     mass_elem = inertial_elem.find('mass')
                     if mass_elem is not None:
                         mass = float(mass_elem.get('value', '0.0'))
                         self.current_node.mass_value = mass
-                        self.mass_input.setText(f"{mass:.6f}")
+                        self.mass_input.setText(format_float_no_exp(mass))
 
                     # Inertial Originの設定
                     origin_elem = inertial_elem.find('origin')
@@ -1420,21 +1543,50 @@ class InspectorWindow(QtWidgets.QWidget):
                 self.update_color_sample()
                 print(f"Set color: RGB({rgb_values[0]:.3f}, {rgb_values[1]:.3f}, {rgb_values[2]:.3f})")
 
-            # 回転軸の処理
-            joint_elem = root.find('.//joint/axis')
+            # 回転軸とjoint limitsの処理
+            joint_elem = root.find('joint')
             if joint_elem is not None:
-                axis_xyz = joint_elem.get('xyz', '1 0 0').split()
-                axis_values = [float(x) for x in axis_xyz]
-                if axis_values[2] == 1:  # Z軸
-                    self.current_node.rotation_axis = 2
-                    self.axis_group.button(2).setChecked(True)
-                elif axis_values[1] == 1:  # Y軸
-                    self.current_node.rotation_axis = 1
-                    self.axis_group.button(1).setChecked(True)
-                else:  # X軸（デフォルト）
-                    self.current_node.rotation_axis = 0
-                    self.axis_group.button(0).setChecked(True)
-                print(f"Set rotation axis: {self.current_node.rotation_axis} from xyz: {axis_xyz}")
+                # 回転軸の処理
+                axis_elem = joint_elem.find('axis')
+                if axis_elem is not None:
+                    axis_xyz = axis_elem.get('xyz', '1 0 0').split()
+                    axis_values = [float(x) for x in axis_xyz]
+                    if axis_values[2] == 1:  # Z軸
+                        self.current_node.rotation_axis = 2
+                        self.axis_group.button(2).setChecked(True)
+                    elif axis_values[1] == 1:  # Y軸
+                        self.current_node.rotation_axis = 1
+                        self.axis_group.button(1).setChecked(True)
+                    else:  # X軸（デフォルト）
+                        self.current_node.rotation_axis = 0
+                        self.axis_group.button(0).setChecked(True)
+                    print(f"Set rotation axis: {self.current_node.rotation_axis} from xyz: {axis_xyz}")
+
+                # Joint limitsの処理
+                limit_elem = joint_elem.find('limit')
+                if limit_elem is not None:
+                    # XMLからはRadian値で読み込む
+                    lower_rad = float(limit_elem.get('lower', -3.14159))
+                    upper_rad = float(limit_elem.get('upper', 3.14159))
+                    effort = float(limit_elem.get('effort', 10.0))
+                    velocity = float(limit_elem.get('velocity', 3.0))
+                    actuation_lag = float(limit_elem.get('actuationLag', 0.0))
+
+                    # ノードにはRadian値で保存
+                    self.current_node.joint_lower = lower_rad
+                    self.current_node.joint_upper = upper_rad
+                    self.current_node.joint_effort = effort
+                    self.current_node.joint_velocity = velocity
+                    self.current_node.joint_actuation_lag = actuation_lag
+
+                    # UI表示はDegreeに変換
+                    self.lower_limit_input.setText(format_float_no_exp(math.degrees(lower_rad)))
+                    self.upper_limit_input.setText(format_float_no_exp(math.degrees(upper_rad)))
+                    self.effort_input.setText(format_float_no_exp(effort))
+                    self.velocity_input.setText(format_float_no_exp(velocity))
+                    self.actuation_lag_input.setText(format_float_no_exp(actuation_lag))
+
+                    print(f"Set joint limits: lower={math.degrees(lower_rad):.2f}° ({lower_rad:.5f} rad), upper={math.degrees(upper_rad):.2f}° ({upper_rad:.5f} rad), effort={effort}, velocity={velocity}")
 
             # ポイントの処理
             points = root.findall('point')
@@ -1478,37 +1630,44 @@ class InspectorWindow(QtWidgets.QWidget):
                     print(f"Added point {point_name}: {xyz_values}")
 
             # STLファイルの処理
+            mesh_file = None
             if os.path.exists(stl_path):
                 print(f"Found corresponding STL file: {stl_path}")
-                self.current_node.stl_file = stl_path
+                mesh_file = stl_path
+            else:
+                # STLが見つからない場合、DAEファイルを探す
+                dae_path = os.path.join(xml_dir, f"{xml_name}.dae")
+                if os.path.exists(dae_path):
+                    print(f"STL file not found, but found corresponding DAE file: {dae_path}")
+                    mesh_file = dae_path
+                else:
+                    # どちらも見つからない場合、ダイアログを表示
+                    print(f"Warning: Neither STL nor DAE file found: {stl_path}, {dae_path}")
+                    msg_box = QtWidgets.QMessageBox()
+                    msg_box.setIcon(QtWidgets.QMessageBox.Warning)
+                    msg_box.setWindowTitle("Mesh File Not Found")
+                    msg_box.setText("Neither STL nor DAE file found in the same directory.")
+                    msg_box.setInformativeText("Would you like to select the mesh file manually?")
+                    msg_box.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+                    msg_box.setDefaultButton(QtWidgets.QMessageBox.Yes)
+
+                    if msg_box.exec() == QtWidgets.QMessageBox.Yes:
+                        mesh_file, _ = QtWidgets.QFileDialog.getOpenFileName(
+                            self, "Select Mesh File", xml_dir, "Mesh Files (*.stl *.dae);;STL Files (*.stl);;COLLADA Files (*.dae)")
+                        if mesh_file:
+                            print(f"Manually selected mesh file: {mesh_file}")
+                        else:
+                            print("Mesh file selection cancelled")
+                    else:
+                        print("Mesh file loading skipped")
+
+            # メッシュファイルが見つかった、または選択された場合にロード
+            if mesh_file:
+                self.current_node.stl_file = mesh_file
                 if self.stl_viewer:
                     self.stl_viewer.load_stl_for_node(self.current_node)
                     # STLモデルに色を適用
                     self.apply_color_to_stl()
-            else:
-                print(f"Warning: STL file not found: {stl_path}")
-                msg_box = QtWidgets.QMessageBox()
-                msg_box.setIcon(QtWidgets.QMessageBox.Warning)
-                msg_box.setWindowTitle("STL File Not Found")
-                msg_box.setText("STL file not found in the same directory.")
-                msg_box.setInformativeText("Would you like to select the STL file manually?")
-                msg_box.setStandardButtons(QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
-                msg_box.setDefaultButton(QtWidgets.QMessageBox.Yes)
-
-                if msg_box.exec() == QtWidgets.QMessageBox.Yes:
-                    stl_file, _ = QtWidgets.QFileDialog.getOpenFileName(
-                        self, "Select Mesh File", xml_dir, "Mesh Files (*.stl *.dae);;STL Files (*.stl);;COLLADA Files (*.dae)")
-                    if stl_file:
-                        self.current_node.stl_file = stl_file
-                        if self.stl_viewer:
-                            self.stl_viewer.load_stl_for_node(self.current_node)
-                            # STLモデルに色を適用
-                            self.apply_color_to_stl()
-                        print(f"Manually selected STL file: {stl_file}")
-                    else:
-                        print("STL file selection cancelled")
-                else:
-                    print("STL file loading skipped")
 
             # UI更新
             self.update_info(self.current_node)
@@ -1590,17 +1749,21 @@ class InspectorWindow(QtWidgets.QWidget):
             except ValueError as e:
                 errors.append(f"Inertia: {str(e)}")
 
-            # 5. Joint Limits の保存
+            # 5. Joint Limits の保存（DegreeからRadianに変換）
             try:
                 if self.lower_limit_input.text():
-                    self.current_node.joint_lower = float(self.lower_limit_input.text())
+                    self.current_node.joint_lower = math.radians(float(self.lower_limit_input.text()))
                 if self.upper_limit_input.text():
-                    self.current_node.joint_upper = float(self.upper_limit_input.text())
+                    self.current_node.joint_upper = math.radians(float(self.upper_limit_input.text()))
                 if self.effort_input.text():
                     self.current_node.joint_effort = float(self.effort_input.text())
                 if self.velocity_input.text():
                     self.current_node.joint_velocity = float(self.velocity_input.text())
-                print(f"✓ Joint limits: lower={self.current_node.joint_lower}, upper={self.current_node.joint_upper}, effort={self.current_node.joint_effort}, velocity={self.current_node.joint_velocity}")
+                if self.actuation_lag_input.text():
+                    self.current_node.joint_actuation_lag = float(self.actuation_lag_input.text())
+                if self.damping_input.text():
+                    self.current_node.joint_damping = float(self.damping_input.text())
+                print(f"✓ Joint limits: lower={math.degrees(self.current_node.joint_lower):.2f}° ({self.current_node.joint_lower:.5f} rad), upper={math.degrees(self.current_node.joint_upper):.2f}° ({self.current_node.joint_upper:.5f} rad), effort={self.current_node.joint_effort}, velocity={self.current_node.joint_velocity}, actuation_lag={self.current_node.joint_actuation_lag}, damping={self.current_node.joint_damping}")
             except ValueError as e:
                 errors.append(f"Joint limits: {str(e)}")
 
@@ -1777,13 +1940,16 @@ class InspectorWindow(QtWidgets.QWidget):
         """選択された色をSTLモデルに適用"""
         if not self.current_node:
             return
-        
+
         try:
             rgb_values = [float(input.text()) for input in self.color_inputs]
             rgb_values = [max(0.0, min(1.0, value)) for value in rgb_values]
-            
+
             self.current_node.node_color = rgb_values
-            
+
+            # カラーサンプルボックスを更新
+            self.update_color_sample()
+
             if self.stl_viewer and hasattr(self.stl_viewer, 'stl_actors'):
                 if self.current_node in self.stl_viewer.stl_actors:
                     actor = self.stl_viewer.stl_actors[self.current_node]
@@ -1854,18 +2020,19 @@ class InspectorWindow(QtWidgets.QWidget):
         """Lower limitの角度を表示"""
         if self.current_node and self.stl_viewer:
             try:
-                # インプットフィールドから値を取得
+                # インプットフィールドから値を取得（Degree表示）
                 lower_text = self.lower_limit_input.text()
                 if not lower_text:
                     lower_text = self.lower_limit_input.placeholderText()
 
-                lower_rad = float(lower_text)
+                lower_deg = float(lower_text)
+                lower_rad = math.radians(lower_deg)
 
                 # 現在の変換を保存
                 self.stl_viewer.store_current_transform(self.current_node)
                 # 指定角度を表示
                 self.stl_viewer.show_angle(self.current_node, lower_rad)
-                print(f"Showing lower limit angle: {lower_rad} rad")
+                print(f"Showing lower limit angle: {lower_deg} deg ({lower_rad} rad)")
             except ValueError:
                 print("Invalid lower limit value")
 
@@ -1873,20 +2040,30 @@ class InspectorWindow(QtWidgets.QWidget):
         """Upper limitの角度を表示"""
         if self.current_node and self.stl_viewer:
             try:
-                # インプットフィールドから値を取得
+                # インプットフィールドから値を取得（Degree表示）
                 upper_text = self.upper_limit_input.text()
                 if not upper_text:
                     upper_text = self.upper_limit_input.placeholderText()
 
-                upper_rad = float(upper_text)
+                upper_deg = float(upper_text)
+                upper_rad = math.radians(upper_deg)
 
                 # 現在の変換を保存
                 self.stl_viewer.store_current_transform(self.current_node)
                 # 指定角度を表示
                 self.stl_viewer.show_angle(self.current_node, upper_rad)
-                print(f"Showing upper limit angle: {upper_rad} rad")
+                print(f"Showing upper limit angle: {upper_deg} deg ({upper_rad} rad)")
             except ValueError:
                 print("Invalid upper limit value")
+
+    def look_zero_limit(self):
+        """0度の角度を表示"""
+        if self.current_node and self.stl_viewer:
+            # 現在の変換を保存
+            self.stl_viewer.store_current_transform(self.current_node)
+            # 0ラジアンを表示
+            self.stl_viewer.show_angle(self.current_node, 0.0)
+            print("Showing zero angle: 0.0 rad")
 
     def toggle_inertial_origin_view(self, checked):
         """Inertial Originの表示/非表示を切り替え"""
@@ -1916,15 +2093,15 @@ class InspectorWindow(QtWidgets.QWidget):
             return
 
         try:
-            # Lower limitの保存
+            # Lower limitの保存（DegreeからRadianに変換）
             lower_text = self.lower_limit_input.text()
             if lower_text:
-                self.current_node.joint_lower = float(lower_text)
+                self.current_node.joint_lower = math.radians(float(lower_text))
 
-            # Upper limitの保存
+            # Upper limitの保存（DegreeからRadianに変換）
             upper_text = self.upper_limit_input.text()
             if upper_text:
-                self.current_node.joint_upper = float(upper_text)
+                self.current_node.joint_upper = math.radians(float(upper_text))
 
             # Effortの保存
             effort_text = self.effort_input.text()
@@ -1936,16 +2113,28 @@ class InspectorWindow(QtWidgets.QWidget):
             if velocity_text:
                 self.current_node.joint_velocity = float(velocity_text)
 
-            print(f"Joint limits set: lower={self.current_node.joint_lower}, upper={self.current_node.joint_upper}, effort={self.current_node.joint_effort}, velocity={self.current_node.joint_velocity}")
+            # ActuationLagの保存
+            actuation_lag_text = self.actuation_lag_input.text()
+            if actuation_lag_text:
+                self.current_node.joint_actuation_lag = float(actuation_lag_text)
+
+            # Dampingの保存
+            damping_text = self.damping_input.text()
+            if damping_text:
+                self.current_node.joint_damping = float(damping_text)
+
+            print(f"Joint limits set: lower={math.degrees(self.current_node.joint_lower):.2f}° ({self.current_node.joint_lower:.5f} rad), upper={math.degrees(self.current_node.joint_upper):.2f}° ({self.current_node.joint_upper:.5f} rad), effort={self.current_node.joint_effort}, velocity={self.current_node.joint_velocity}, actuation_lag={self.current_node.joint_actuation_lag}, damping={self.current_node.joint_damping}")
 
             QtWidgets.QMessageBox.information(
                 self,
                 "Joint Limits Set",
                 f"Joint limits have been set successfully.\n\n"
-                f"Lower: {self.current_node.joint_lower}\n"
-                f"Upper: {self.current_node.joint_upper}\n"
+                f"Lower: {math.degrees(self.current_node.joint_lower):.2f}° ({self.current_node.joint_lower:.5f} rad)\n"
+                f"Upper: {math.degrees(self.current_node.joint_upper):.2f}° ({self.current_node.joint_upper:.5f} rad)\n"
                 f"Effort: {self.current_node.joint_effort}\n"
-                f"Velocity: {self.current_node.joint_velocity}"
+                f"Damping: {self.current_node.joint_damping}\n"
+                f"Velocity: {self.current_node.joint_velocity}\n"
+                f"ActuationLag: {self.current_node.joint_actuation_lag}"
             )
         except ValueError as e:
             print(f"Error setting joint limits: {str(e)}")
@@ -2069,20 +2258,32 @@ class InspectorWindow(QtWidgets.QWidget):
                 # メモリ上でメッシュを修復（元ファイルは変更しない）
                 try:
                     # 法線の修正
-                    print("  - Fixing normals...")
-                    mesh.fix_normals()
+                    try:
+                        print("  - Fixing normals...")
+                        mesh.fix_normals()
+                    except AttributeError:
+                        print("  - Skipping normals fixing (method not available)")
 
-                    # 重複面の削除
-                    print("  - Removing duplicate faces...")
-                    mesh.remove_duplicate_faces()
+                    # 重複面の削除（trimeshの古いバージョンでは利用不可）
+                    try:
+                        print("  - Removing duplicate faces...")
+                        mesh.remove_duplicate_faces()
+                    except AttributeError:
+                        print("  - Skipping duplicate faces removal (method not available)")
 
                     # 退化面の削除
-                    print("  - Removing degenerate faces...")
-                    mesh.remove_degenerate_faces()
+                    try:
+                        print("  - Removing degenerate faces...")
+                        mesh.remove_degenerate_faces()
+                    except AttributeError:
+                        print("  - Skipping degenerate faces removal (method not available)")
 
                     # 穴の修復
-                    print("  - Filling holes...")
-                    mesh.fill_holes()
+                    try:
+                        print("  - Filling holes...")
+                        mesh.fill_holes()
+                    except AttributeError:
+                        print("  - Skipping holes filling (method not available)")
 
                     repair_performed = True
 
@@ -2113,10 +2314,10 @@ class InspectorWindow(QtWidgets.QWidget):
             center_of_mass = mesh.center_mass
             print(f"\nCalculated center of mass: {center_of_mass}")
 
-            # UIフィールドに設定
-            self.inertial_x_input.setText(f"{center_of_mass[0]:.6f}")
-            self.inertial_y_input.setText(f"{center_of_mass[1]:.6f}")
-            self.inertial_z_input.setText(f"{center_of_mass[2]:.6f}")
+            # UIフィールドに設定（高精度、指数表記なし）
+            self.inertial_x_input.setText(format_float_no_exp(center_of_mass[0]))
+            self.inertial_y_input.setText(format_float_no_exp(center_of_mass[1]))
+            self.inertial_z_input.setText(format_float_no_exp(center_of_mass[2]))
 
             # 成功メッセージ
             repair_msg = ""
@@ -2218,20 +2419,32 @@ class InspectorWindow(QtWidgets.QWidget):
                 # メモリ上でメッシュを修復（元ファイルは変更しない）
                 try:
                     # 法線の修正
-                    print("  - Fixing normals...")
-                    mesh.fix_normals()
+                    try:
+                        print("  - Fixing normals...")
+                        mesh.fix_normals()
+                    except AttributeError:
+                        print("  - Skipping normals fixing (method not available)")
 
-                    # 重複面の削除
-                    print("  - Removing duplicate faces...")
-                    mesh.remove_duplicate_faces()
+                    # 重複面の削除（trimeshの古いバージョンでは利用不可）
+                    try:
+                        print("  - Removing duplicate faces...")
+                        mesh.remove_duplicate_faces()
+                    except AttributeError:
+                        print("  - Skipping duplicate faces removal (method not available)")
 
                     # 退化面の削除
-                    print("  - Removing degenerate faces...")
-                    mesh.remove_degenerate_faces()
+                    try:
+                        print("  - Removing degenerate faces...")
+                        mesh.remove_degenerate_faces()
+                    except AttributeError:
+                        print("  - Skipping degenerate faces removal (method not available)")
 
                     # 穴の修復
-                    print("  - Filling holes...")
-                    mesh.fill_holes()
+                    try:
+                        print("  - Filling holes...")
+                        mesh.fill_holes()
+                    except AttributeError:
+                        print("  - Skipping holes filling (method not available)")
 
                     repair_performed = True
 
@@ -2263,48 +2476,61 @@ class InspectorWindow(QtWidgets.QWidget):
                     if response == QtWidgets.QMessageBox.No:
                         return
 
-            # 密度を計算
-            density = mass / mesh.volume
-            print(f"Calculated density: {density:.6f} kg/m³")
+            # VTKポリデータを取得
+            if self.stl_viewer and self.current_node in self.stl_viewer.stl_actors:
+                actor = self.stl_viewer.stl_actors[self.current_node]
+                poly_data = actor.GetMapper().GetInput()
+            else:
+                QtWidgets.QMessageBox.warning(
+                    self,
+                    "No STL Actor",
+                    "STL model is not loaded in the viewer."
+                )
+                return
+
+            # PartsEditorと同じ方法でVTKを使って体積を計算
+            mass_properties = vtk.vtkMassProperties()
+            mass_properties.SetInputData(poly_data)
+            mass_properties.Update()
+            vtk_volume = mass_properties.GetVolume()
+
+            print(f"Volume comparison:")
+            print(f"  Trimesh volume: {mesh.volume:.9f} m³")
+            print(f"  VTK volume: {vtk_volume:.9f} m³")
+
+            # PartsEditorと同じ方法でDensityを計算（VTK体積を使用）
+            density = mass / vtk_volume
+            print(f"Calculated density: {density:.6f} kg/m³ (using VTK volume)")
 
             # 既存のInertial Origin値を取得（ユーザー指定の値を使用）
+            # Center of Massは再計算せず、UIフィールドの値を使用
             try:
-                inertial_origin = [
+                center_of_mass = [
                     float(self.inertial_x_input.text()) if self.inertial_x_input.text() else 0.0,
                     float(self.inertial_y_input.text()) if self.inertial_y_input.text() else 0.0,
                     float(self.inertial_z_input.text()) if self.inertial_z_input.text() else 0.0
                 ]
             except ValueError:
-                inertial_origin = [0.0, 0.0, 0.0]
+                center_of_mass = [0.0, 0.0, 0.0]
 
-            print(f"Using inertial origin: {inertial_origin}")
+            print(f"Using center of mass from UI: {center_of_mass}")
 
-            # 参考情報として重心位置を計算（表示のみ）
-            center_of_mass = mesh.center_mass
-            print(f"Mesh center of mass (reference): {center_of_mass}")
+            # urdf_kitchen_utilsの四面体分解法を使用してInertia Tensorを計算
+            # UIで指定されたCenter of Massを使用（PartsEditorと完全に同じ方法）
+            print(f"Calculating inertia tensor using tetrahedral decomposition method...")
+            inertia_tensor, volume_integral = calculate_inertia_tetrahedral(
+                poly_data, density, center_of_mass
+            )
 
-            # 慣性テンソルを計算（trimeshの組み込み機能を使用）
-            # trimeshは重心を中心とした慣性テンソルを返す
-            inertia_tensor = mesh.moment_inertia
+            # 体積の検証
+            print(f"Volume from integration: {volume_integral:.9f} (VTK volume: {vtk_volume:.9f})")
+            volume_ratio = volume_integral / vtk_volume if vtk_volume > 0 else 0
+            if abs(volume_ratio - 1.0) > 0.01:
+                print(f"Warning: Volume mismatch! Ratio = {volume_ratio:.4f}")
+                print("This may indicate non-closed mesh or incorrect orientation")
 
-            # 密度を適用して実際の慣性テンソルに変換
-            inertia_tensor = inertia_tensor * density
-
-            print(f"Inertia tensor at center of mass:")
+            print(f"Calculated inertia tensor at specified origin:")
             print(inertia_tensor)
-
-            # 指定されたInertial Originが重心と異なる場合、平行軸の定理を適用
-            origin_offset = np.array(inertial_origin) - np.array(center_of_mass)
-            if np.linalg.norm(origin_offset) > 1e-6:
-                print(f"Applying parallel axis theorem (offset: {origin_offset})")
-                # 平行軸の定理: I_new = I_com + m * (d^2 * E - d ⊗ d)
-                # ここで d は重心からの距離ベクトル、E は単位行列
-                d = origin_offset
-                d_squared = np.dot(d, d)
-                outer_product = np.outer(d, d)
-                inertia_tensor = inertia_tensor + mass * (d_squared * np.eye(3) - outer_product)
-                print(f"Inertia tensor at specified origin:")
-                print(inertia_tensor)
 
             # 慣性テンソルの検証
             validation_result = self._validate_inertia_tensor(inertia_tensor, mass)
@@ -2318,13 +2544,13 @@ class InspectorWindow(QtWidgets.QWidget):
                     f"The values will be set anyway, but please verify them."
                 )
 
-            # UIフィールドに慣性値を設定
-            self.ixx_input.setText(f"{inertia_tensor[0, 0]:.6f}")
-            self.ixy_input.setText(f"{inertia_tensor[0, 1]:.6f}")
-            self.ixz_input.setText(f"{inertia_tensor[0, 2]:.6f}")
-            self.iyy_input.setText(f"{inertia_tensor[1, 1]:.6f}")
-            self.iyz_input.setText(f"{inertia_tensor[1, 2]:.6f}")
-            self.izz_input.setText(f"{inertia_tensor[2, 2]:.6f}")
+            # UIフィールドに慣性値を設定（高精度、指数表記なし）
+            self.ixx_input.setText(format_float_no_exp(inertia_tensor[0, 0]))
+            self.ixy_input.setText(format_float_no_exp(inertia_tensor[0, 1]))
+            self.ixz_input.setText(format_float_no_exp(inertia_tensor[0, 2]))
+            self.iyy_input.setText(format_float_no_exp(inertia_tensor[1, 1]))
+            self.iyz_input.setText(format_float_no_exp(inertia_tensor[1, 2]))
+            self.izz_input.setText(format_float_no_exp(inertia_tensor[2, 2]))
 
             # Inertial Originは既存の値を維持（変更しない）
 
@@ -2333,24 +2559,17 @@ class InspectorWindow(QtWidgets.QWidget):
             if repair_performed:
                 repair_msg = "Mesh Repair: Performed (in memory only)\n"
 
-            # 平行軸の定理が適用されたかチェック
-            parallel_axis_applied = np.linalg.norm(origin_offset) > 1e-6
-            parallel_axis_msg = ""
-            if parallel_axis_applied:
-                parallel_axis_msg = f"\nParallel Axis Theorem: Applied (offset = {np.linalg.norm(origin_offset):.4f} m)"
-
             QtWidgets.QMessageBox.information(
                 self,
                 "Inertia Calculated",
-                f"Inertia successfully calculated using trimesh!\n\n"
+                f"Inertia tensor successfully calculated!\n\n"
                 f"Mass: {mass:.6f} kg\n"
-                f"Volume: {mesh.volume:.6f} m³\n"
+                f"Volume (VTK): {vtk_volume:.9f} m³\n"
+                f"Volume (Trimesh): {mesh.volume:.9f} m³\n"
                 f"Density: {density:.6f} kg/m³\n"
                 f"Watertight: {'Yes' if mesh.is_watertight else 'No'}\n"
                 f"{repair_msg}"
-                f"\nMesh center of mass (reference): [{center_of_mass[0]:.4f}, {center_of_mass[1]:.4f}, {center_of_mass[2]:.4f}]\n"
-                f"Inertial origin (used): [{inertial_origin[0]:.4f}, {inertial_origin[1]:.4f}, {inertial_origin[2]:.4f}]"
-                f"{parallel_axis_msg}\n\n"
+                f"\nCenter of mass (from UI): [{center_of_mass[0]:.6f}, {center_of_mass[1]:.6f}, {center_of_mass[2]:.6f}]\n\n"
                 f"Inertia tensor diagonal:\n"
                 f"  Ixx: {inertia_tensor[0, 0]:.6f}\n"
                 f"  Iyy: {inertia_tensor[1, 1]:.6f}\n"
@@ -2448,89 +2667,8 @@ class InspectorWindow(QtWidgets.QWidget):
         Returns:
             numpy.ndarray: 3x3 慣性テンソル行列
         """
-        # 体積を計算
-        mass_properties = vtk.vtkMassProperties()
-        mass_properties.SetInputData(poly_data)
-        mass_properties.Update()
-        total_volume = mass_properties.GetVolume()
-
-        # 実際の質量から密度を逆算
-        density = mass / total_volume
-        print(f"Calculated density: {density:.6f} from mass: {mass:.6f} and volume: {total_volume:.6f}")
-
-        # 慣性テンソルの初期化
-        inertia_tensor = np.zeros((3, 3))
-        num_cells = poly_data.GetNumberOfCells()
-        print(f"Processing {num_cells} triangles for inertia tensor calculation...")
-
-        for i in range(num_cells):
-            cell = poly_data.GetCell(i)
-            if cell.GetCellType() == vtk.VTK_TRIANGLE:
-                # 三角形の頂点を取得（重心を原点とした座標系で）
-                points = [np.array(cell.GetPoints().GetPoint(j)) - np.array(center_of_mass) for j in range(3)]
-
-                # ミラーリングモードの場合、Y座標を反転
-                if is_mirrored:
-                    points = [[p[0], -p[1], p[2]] for p in points]
-
-                # 三角形の面積と法線ベクトルを計算
-                v1 = np.array(points[1]) - np.array(points[0])
-                v2 = np.array(points[2]) - np.array(points[0])
-                normal = np.cross(v1, v2)
-                area = 0.5 * np.linalg.norm(normal)
-                
-                if area < 1e-10:  # 極小の三角形は無視
-                    continue
-
-                # 三角形の重心を計算
-                tri_centroid = np.mean(points, axis=0)
-                
-                # 三角形の局所的な慣性テンソルを計算
-                covariance = np.zeros((3, 3))
-                for p in points:
-                    r_squared = np.sum(p * p)
-                    for a in range(3):
-                        for b in range(3):
-                            if a == b:
-                                # 対角成分
-                                covariance[a, a] += (r_squared - p[a] * p[a]) * area / 12.0
-                            else:
-                                # 非対角成分（オフセット項）
-                                covariance[a, b] -= (p[a] * p[b]) * area / 12.0
-
-                # 平行軸の定理を適用
-                r_squared = np.sum(tri_centroid * tri_centroid)
-                parallel_axis_term = np.zeros((3, 3))
-                for a in range(3):
-                    for b in range(3):
-                        if a == b:
-                            parallel_axis_term[a, a] = r_squared * area
-                        else:
-                            parallel_axis_term[a, b] = tri_centroid[a] * tri_centroid[b] * area
-
-                # 局所的な慣性テンソルと平行軸の項を合成
-                local_inertia = covariance + parallel_axis_term
-                
-                # 全体の慣性テンソルに加算
-                inertia_tensor += local_inertia
-
-        # 密度を考慮して最終的な慣性テンソルを計算
-        inertia_tensor *= density
-
-        # 数値誤差の処理
-        threshold = 1e-10
-        inertia_tensor[np.abs(inertia_tensor) < threshold] = 0.0
-
-        # 対称性の確認と強制
-        inertia_tensor = 0.5 * (inertia_tensor + inertia_tensor.T)
-
-        # 対角成分が正であることを確認
-        for i in range(3):
-            if inertia_tensor[i, i] <= 0:
-                print(f"Warning: Non-positive diagonal element detected at position ({i},{i})")
-                inertia_tensor[i, i] = abs(inertia_tensor[i, i])
-
-        return inertia_tensor
+        # Use shared triangle-based method from urdf_kitchen_utils
+        return calculate_inertia_tensor(poly_data, mass, center_of_mass, is_mirrored)
 
     def calculate_inertia_tensor(self):
         """
@@ -2620,6 +2758,20 @@ class SettingsDialog(QtWidgets.QDialog):
         self.velocity_input.setText(str(self.graph.default_joint_velocity))
         group_layout.addWidget(self.velocity_input, 1, 1)
 
+        # ActuationLag設定
+        group_layout.addWidget(QtWidgets.QLabel("Default ActuationLag:"), 2, 0)
+        self.actuation_lag_input = QtWidgets.QLineEdit()
+        self.actuation_lag_input.setValidator(QDoubleValidator(0.0, 1000.0, 5))
+        self.actuation_lag_input.setText(str(self.graph.default_joint_actuation_lag))
+        group_layout.addWidget(self.actuation_lag_input, 2, 1)
+
+        # Damping設定
+        group_layout.addWidget(QtWidgets.QLabel("Default Damping:"), 3, 0)
+        self.damping_input = QtWidgets.QLineEdit()
+        self.damping_input.setValidator(QDoubleValidator(0.0, 1000.0, 5))
+        self.damping_input.setText(str(self.graph.default_joint_damping))
+        group_layout.addWidget(self.damping_input, 3, 1)
+
         group_box.setLayout(group_layout)
         layout.addWidget(group_box)
 
@@ -2642,11 +2794,15 @@ class SettingsDialog(QtWidgets.QDialog):
         try:
             effort = float(self.effort_input.text())
             velocity = float(self.velocity_input.text())
+            actuation_lag = float(self.actuation_lag_input.text())
+            damping = float(self.damping_input.text())
 
             self.graph.default_joint_effort = effort
             self.graph.default_joint_velocity = velocity
+            self.graph.default_joint_actuation_lag = actuation_lag
+            self.graph.default_joint_damping = damping
 
-            print(f"Settings updated: effort={effort}, velocity={velocity}")
+            print(f"Settings updated: effort={effort}, velocity={velocity}, actuation_lag={actuation_lag}, damping={damping}")
             self.accept()
         except ValueError:
             QtWidgets.QMessageBox.warning(
@@ -3848,6 +4004,8 @@ class CustomNodeGraph(NodeGraph):
         # グローバルデフォルト値（ジョイント制限パラメータ）
         self.default_joint_effort = DEFAULT_JOINT_EFFORT
         self.default_joint_velocity = DEFAULT_JOINT_VELOCITY
+        self.default_joint_actuation_lag = DEFAULT_JOINT_ACTUATION_LAG
+        self.default_joint_damping = DEFAULT_JOINT_DAMPING
 
         # ポート接続/切断のシグナルを接続
         self.port_connected.connect(self.on_port_connected)
@@ -4920,7 +5078,7 @@ class CustomNodeGraph(NodeGraph):
 
                     response = QtWidgets.QMessageBox.question(
                         self.widget,
-                        "STL Files Not Found",
+                        "Mesh Files Not Found",
                         message + "Would you like to specify the meshes directory manually?",
                         QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No
                     )
@@ -4939,14 +5097,14 @@ class CustomNodeGraph(NodeGraph):
                             if found_count > 0:
                                 QtWidgets.QMessageBox.information(
                                     self.widget,
-                                    "STL Files Found",
-                                    f"Found {found_count} out of {missing_count} missing STL file(s) in the specified directory."
+                                    "Mesh Files Found",
+                                    f"Found {found_count} out of {missing_count} missing mesh file(s) in the specified directory."
                                 )
                             else:
                                 QtWidgets.QMessageBox.warning(
                                     self.widget,
-                                    "No STL Files Found",
-                                    f"Could not find any of the missing STL files in the specified directory."
+                                    "No Mesh Files Found",
+                                    f"Could not find any of the missing mesh files in the specified directory."
                                 )
 
                             # missing_stl_filesリストを更新（見つかったものを除去）
@@ -4955,12 +5113,12 @@ class CustomNodeGraph(NodeGraph):
                                 if not links_data[item['link_name']]['stl_file']
                             ]
                 else:
-                    # すべてのSTLファイルが自動検出された
+                    # すべてのメッシュファイルが自動検出された
                     if initial_missing_count > 0:
                         QtWidgets.QMessageBox.information(
                             self.widget,
-                            "STL Files Found",
-                            f"Automatically found all {initial_missing_count} missing STL file(s)!"
+                            "Mesh Files Found",
+                            f"Automatically found all {initial_missing_count} missing mesh file(s)!"
                         )
 
             # ジョイント情報を抽出
@@ -5353,8 +5511,8 @@ class CustomNodeGraph(NodeGraph):
                 elif link_name != 'base_link':  # base_linkはSTLなしでも問題ない
                     stl_missing_count += 1
 
-            # 全てのノードのSTLファイルを3Dビューに自動読み込み
-            print("\n=== Loading STL files to 3D viewer ===")
+            # 全てのノードのメッシュファイルを3Dビューに自動読み込み
+            print("\n=== Loading mesh files to 3D viewer ===")
             stl_viewer_loaded_count = 0
             if self.stl_viewer:
                 for link_name, node in nodes.items():
@@ -5366,17 +5524,17 @@ class CustomNodeGraph(NodeGraph):
 
                     if hasattr(node, 'stl_file') and node.stl_file:
                         try:
-                            print(f"Loading STL to viewer for {link_name}...")
+                            print(f"Loading mesh to viewer for {link_name}...")
                             self.stl_viewer.load_stl_for_node(node)
                             stl_viewer_loaded_count += 1
                         except Exception as e:
-                            print(f"Error loading STL to viewer for {link_name}: {str(e)}")
+                            print(f"Error loading mesh to viewer for {link_name}: {str(e)}")
                             traceback.print_exc()
 
-                print(f"Loaded {stl_viewer_loaded_count} STL files to 3D viewer")
+                print(f"Loaded {stl_viewer_loaded_count} mesh files to 3D viewer")
                 print("=" * 40 + "\n")
             else:
-                print("Warning: STL viewer not available")
+                print("Warning: Mesh viewer not available")
 
             # URDFにbase_linkがない場合、ルートリンクとbase_linkの接続を再確認
             # （Recalc Positionsの直前に実行）
@@ -5470,10 +5628,10 @@ class CustomNodeGraph(NodeGraph):
             import_summary += f"Links imported: {len(links_data)}\n"
             import_summary += f"Joints imported: {len(joints_data)}\n"
             import_summary += f"Nodes created: {len(nodes)}\n"
-            import_summary += f"STL files found: {stl_loaded_count}\n"
-            import_summary += f"STL files loaded to 3D viewer: {stl_viewer_loaded_count}\n"
+            import_summary += f"Mesh files found: {stl_loaded_count}\n"
+            import_summary += f"Mesh files loaded to 3D viewer: {stl_viewer_loaded_count}\n"
             if stl_missing_count > 0:
-                import_summary += f"⚠ Warning: {stl_missing_count} STL file(s) could not be found\n"
+                import_summary += f"⚠ Warning: {stl_missing_count} mesh file(s) could not be found\n"
 
             QtWidgets.QMessageBox.information(
                 self.widget,
@@ -5599,17 +5757,17 @@ class CustomNodeGraph(NodeGraph):
                             # STLファイルをコピー
                             shutil.copy2(source_path, dest_path)
                             stl_files_copied.append(stl_filename)
-                            print(f"Copied STL: {stl_filename}")
+                            print(f"Copied mesh: {stl_filename}")
                         except Exception as e:
                             stl_files_failed.append((stl_filename, str(e)))
-                            print(f"Failed to copy STL {stl_filename}: {str(e)}")
+                            print(f"Failed to copy mesh {stl_filename}: {str(e)}")
                     else:
                         stl_files_failed.append((os.path.basename(source_path), "Source file not found"))
-                        print(f"STL file not found: {source_path}")
+                        print(f"Mesh file not found: {source_path}")
 
-            print(f"\nSTL files copied: {len(stl_files_copied)}")
+            print(f"\nMesh files copied: {len(stl_files_copied)}")
             if stl_files_failed:
-                print(f"STL files failed: {len(stl_files_failed)}")
+                print(f"Mesh files failed: {len(stl_files_failed)}")
                 for filename, error in stl_files_failed:
                     print(f"  - {filename}: {error}")
 
@@ -5656,7 +5814,7 @@ class CustomNodeGraph(NodeGraph):
                 # 完了メッセージを作成
                 export_summary = f"URDF file has been exported to:\n{urdf_file}\n\n"
                 export_summary += f"Meshes directory: {meshes_dir}\n"
-                export_summary += f"STL files copied: {len(stl_files_copied)}\n"
+                export_summary += f"Mesh files copied: {len(stl_files_copied)}\n"
 
                 if stl_files_copied:
                     export_summary += "\nCopied files:\n"
@@ -7096,8 +7254,9 @@ class CustomNodeGraph(NodeGraph):
                     upper = getattr(child_node, 'joint_upper', 3.14159)
                     effort = getattr(child_node, 'joint_effort', 10.0)
                     velocity = getattr(child_node, 'joint_velocity', 3.0)
+                    actuation_lag = getattr(child_node, 'joint_actuation_lag', 0.0)
 
-                    file.write(f'    <limit lower="{lower}" upper="{upper}" effort="{effort}" velocity="{velocity}"/>\n')
+                    file.write(f'    <limit lower="{lower}" upper="{upper}" effort="{effort}" velocity="{velocity}" actuationLag="{actuation_lag}"/>\n')
                     file.write('  </joint>\n')
 
         except Exception as e:
@@ -7239,7 +7398,7 @@ class CustomNodeGraph(NodeGraph):
                         # ファイルをコピー
                         shutil.copy2(node.stl_file, dest_path)
                         copied_files.append(stl_filename)
-                        print(f"Copied STL file: {stl_filename}")
+                        print(f"Copied mesh file: {stl_filename}")
 
             # URDFファイルの生成
             urdf_file = os.path.join(unity_dir_path, f"{robot_name}.urdf")
@@ -7280,7 +7439,7 @@ class CustomNodeGraph(NodeGraph):
             print(f"Unity export completed successfully:")
             print(f"- Directory: {unity_dir_path}")
             print(f"- URDF file: {urdf_file}")
-            print(f"- Copied {len(copied_files)} STL files")
+            print(f"- Copied {len(copied_files)} mesh files")
 
             QtWidgets.QMessageBox.information(
                 self.widget,

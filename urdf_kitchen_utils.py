@@ -21,6 +21,8 @@ This module provides shared utilities for PartsEditor, Assembler, and STLViewerW
 5. **create_crosshair_marker** - 3D crosshair marker visualization
 6. **MouseDragState** - Mouse interaction state management
 7. **calculate_arrow_key_step** - Arrow key movement step calculation
+8. **calculate_inertia_tensor** - Inertia tensor calculation for 3D meshes
+9. **calculate_inertia_tetrahedral** - Tetrahedral decomposition method for inertia
 
 Usage Example:
 --------------
@@ -660,3 +662,251 @@ def calculate_arrow_key_step(shift_pressed, ctrl_pressed):
         return 0.001   # 1mm
     else:
         return 0.01    # 10mm
+
+
+# ============================================================================
+# INERTIA TENSOR CALCULATION UTILITIES
+# ============================================================================
+
+def calculate_inertia_tensor(poly_data, mass, center_of_mass, is_mirrored=False):
+    """
+    Calculate inertia tensor for a 3D mesh using triangle-based method.
+
+    This method is used by both PartsEditor and Assembler for consistent
+    inertia calculations. It uses a triangle-based approach with parallel
+    axis theorem.
+
+    Args:
+        poly_data: vtkPolyData object containing the mesh
+        mass: float - Total mass of the object
+        center_of_mass: array-like [x, y, z] - Center of mass coordinates
+        is_mirrored: bool - If True, applies Y-axis mirroring transformation
+
+    Returns:
+        numpy.ndarray: 3x3 inertia tensor matrix
+
+    Example:
+        >>> import vtk
+        >>> import numpy as np
+        >>> # Load mesh
+        >>> reader = vtk.vtkSTLReader()
+        >>> reader.SetFileName("model.stl")
+        >>> reader.Update()
+        >>> poly_data = reader.GetOutput()
+        >>>
+        >>> # Calculate inertia
+        >>> mass = 1.0
+        >>> com = [0, 0, 0]
+        >>> inertia = calculate_inertia_tensor(poly_data, mass, com)
+    """
+    # Calculate volume
+    mass_properties = vtk.vtkMassProperties()
+    mass_properties.SetInputData(poly_data)
+    mass_properties.Update()
+    total_volume = mass_properties.GetVolume()
+
+    # Calculate density from mass and volume
+    density = mass / total_volume if total_volume > 0 else 0
+    print(f"Calculated density: {density:.6f} from mass: {mass:.6f} and volume: {total_volume:.6f}")
+
+    # Initialize inertia tensor
+    inertia_tensor = np.zeros((3, 3))
+    num_cells = poly_data.GetNumberOfCells()
+    print(f"Processing {num_cells} triangles for inertia tensor calculation...")
+
+    for i in range(num_cells):
+        cell = poly_data.GetCell(i)
+        if cell.GetCellType() == vtk.VTK_TRIANGLE:
+            # Get triangle vertices (relative to center of mass)
+            points = [np.array(cell.GetPoints().GetPoint(j)) - np.array(center_of_mass) for j in range(3)]
+
+            # Apply Y-axis mirroring if needed
+            if is_mirrored:
+                points = [[p[0], -p[1], p[2]] for p in points]
+
+            # Calculate triangle area and normal vector
+            v1 = np.array(points[1]) - np.array(points[0])
+            v2 = np.array(points[2]) - np.array(points[0])
+            normal = np.cross(v1, v2)
+            area = 0.5 * np.linalg.norm(normal)
+
+            if area < 1e-10:  # Skip degenerate triangles
+                continue
+
+            # Calculate triangle centroid
+            tri_centroid = np.mean(points, axis=0)
+
+            # Calculate local inertia tensor for the triangle
+            covariance = np.zeros((3, 3))
+            for p in points:
+                r_squared = np.sum(p * p)
+                for a in range(3):
+                    for b in range(3):
+                        if a == b:
+                            # Diagonal components
+                            covariance[a, a] += (r_squared - p[a] * p[a]) * area / 12.0
+                        else:
+                            # Off-diagonal components
+                            covariance[a, b] -= (p[a] * p[b]) * area / 12.0
+
+            # Apply parallel axis theorem
+            r_squared = np.sum(tri_centroid * tri_centroid)
+            parallel_axis_term = np.zeros((3, 3))
+            for a in range(3):
+                for b in range(3):
+                    if a == b:
+                        parallel_axis_term[a, a] = r_squared * area
+                    else:
+                        parallel_axis_term[a, b] = tri_centroid[a] * tri_centroid[b] * area
+
+            # Combine local inertia and parallel axis term
+            local_inertia = covariance + parallel_axis_term
+
+            # Add to total inertia tensor
+            inertia_tensor += local_inertia
+
+    # Apply density to get final inertia tensor
+    inertia_tensor *= density
+
+    # Clean up numerical errors
+    threshold = 1e-10
+    inertia_tensor[np.abs(inertia_tensor) < threshold] = 0.0
+
+    # Ensure symmetry
+    inertia_tensor = 0.5 * (inertia_tensor + inertia_tensor.T)
+
+    # Ensure positive diagonal elements
+    for i in range(3):
+        if inertia_tensor[i, i] <= 0:
+            print(f"Warning: Non-positive diagonal element detected at position ({i},{i})")
+            inertia_tensor[i, i] = abs(inertia_tensor[i, i])
+
+    return inertia_tensor
+
+
+def calculate_inertia_tetrahedral(poly_data, density, center_of_mass):
+    """
+    Calculate inertia tensor using tetrahedral decomposition method.
+
+    This implementation uses the method described in:
+    "Fast and Accurate Computation of Polyhedral Mass Properties" by Brian Mirtich (1996)
+
+    This method is more accurate than triangle-based methods for closed meshes
+    and is used by PartsEditor for high-precision calculations.
+
+    Args:
+        poly_data: vtkPolyData object containing the mesh
+        density: float - Material density
+        center_of_mass: array-like [x, y, z] - Center of mass coordinates
+
+    Returns:
+        tuple: (inertia_tensor, volume_integral)
+            - inertia_tensor: numpy.ndarray - 3x3 inertia tensor matrix
+            - volume_integral: float - Total volume from integration
+
+    Example:
+        >>> import vtk
+        >>> import numpy as np
+        >>> # Load mesh
+        >>> reader = vtk.vtkSTLReader()
+        >>> reader.SetFileName("model.stl")
+        >>> reader.Update()
+        >>> poly_data = reader.GetOutput()
+        >>>
+        >>> # Calculate inertia
+        >>> density = 1000.0  # kg/m^3
+        >>> com = [0, 0, 0]
+        >>> inertia, volume = calculate_inertia_tetrahedral(poly_data, density, com)
+    """
+    com = np.array(center_of_mass)
+
+    # Initialize integrals
+    volume_integral = 0.0
+    inertia_integral = np.zeros((3, 3))
+
+    # Process all triangles
+    num_cells = poly_data.GetNumberOfCells()
+    print(f"Processing {num_cells} triangles using tetrahedral decomposition...")
+
+    for i in range(num_cells):
+        cell = poly_data.GetCell(i)
+        if cell.GetCellType() == vtk.VTK_TRIANGLE:
+            # Get triangle vertices (shifted so COM is at origin)
+            v0 = np.array(cell.GetPoints().GetPoint(0)) - com
+            v1 = np.array(cell.GetPoints().GetPoint(1)) - com
+            v2 = np.array(cell.GetPoints().GetPoint(2)) - com
+
+            # Signed volume of tetrahedron (origin, v0, v1, v2)
+            # V = (1/6) * v0 · (v1 × v2)
+            tet_volume = np.dot(v0, np.cross(v1, v2)) / 6.0
+
+            # Skip degenerate triangles
+            if abs(tet_volume) < 1e-12:
+                continue
+
+            # Accumulate volume
+            volume_integral += tet_volume
+
+            # Calculate inertia integral for tetrahedron
+            # I_ij = ∫∫∫ ρ(r²δ_ij - x_i*x_j) dV
+
+            # Vertex contributions
+            for vi in [v0, v1, v2]:
+                for vj in [v0, v1, v2]:
+                    r_squared = np.dot(vi, vi)
+                    for a in range(3):
+                        for b in range(3):
+                            if a == b:
+                                # Diagonal: I_aa = ∫(y² + z²)dm for x-axis, etc.
+                                inertia_integral[a, b] += tet_volume * (r_squared - vi[a] * vj[a]) / 20.0
+                            else:
+                                # Off-diagonal: I_ab = -∫(x*y)dm
+                                inertia_integral[a, b] -= tet_volume * vi[a] * vj[b] / 20.0
+
+            # Vertex pair contributions
+            pairs = [(v0, v1), (v1, v2), (v2, v0)]
+            for vi, vj in pairs:
+                r_squared_i = np.dot(vi, vi)
+                r_squared_j = np.dot(vj, vj)
+
+                for a in range(3):
+                    for b in range(3):
+                        if a == b:
+                            inertia_integral[a, b] += tet_volume * (r_squared_i + r_squared_j - vi[a] * vj[a]) / 60.0
+                        else:
+                            inertia_integral[a, b] -= tet_volume * (vi[a] * vj[b] + vj[a] * vi[b]) / 60.0
+
+    # Convert to inertia tensor with density scaling
+    inertia_tensor = inertia_integral * density
+
+    # Ensure symmetry
+    inertia_tensor = 0.5 * (inertia_tensor + inertia_tensor.T)
+
+    # Clean up numerical noise
+    threshold = 1e-12
+    inertia_tensor[np.abs(inertia_tensor) < threshold] = 0.0
+
+    # Ensure positive diagonal elements
+    diagonal = np.diag(inertia_tensor)
+    if np.any(diagonal <= 0):
+        print("\nWarning: Non-positive diagonal elements detected!")
+        print(f"Diagonal: [{diagonal[0]:.6e}, {diagonal[1]:.6e}, {diagonal[2]:.6e}]")
+        print("This may indicate:")
+        print("  - Mesh has inverted normals")
+        print("  - Mesh is not closed")
+        print("  - Numerical precision issues")
+
+        # Fix by taking absolute values
+        for i in range(3):
+            if inertia_tensor[i, i] <= 0:
+                inertia_tensor[i, i] = abs(inertia_tensor[i, i])
+
+    # Triangle inequality check: I_xx + I_yy >= I_zz (and cyclic permutations)
+    diagonal = np.diag(inertia_tensor)
+    if not (diagonal[0] + diagonal[1] >= diagonal[2] - 1e-6 and
+            diagonal[1] + diagonal[2] >= diagonal[0] - 1e-6 and
+            diagonal[2] + diagonal[0] >= diagonal[1] - 1e-6):
+        print("\nWarning: Triangle inequality violated!")
+        print("Inertia tensor may not be physically valid")
+
+    return inertia_tensor, volume_integral

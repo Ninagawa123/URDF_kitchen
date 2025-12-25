@@ -54,7 +54,8 @@ from PySide6.QtGui import QTextOption, QColor, QPalette
 from urdf_kitchen_utils import (
     OffscreenRenderer, CameraController, AnimatedCameraRotation,
     AdaptiveMarkerSize, create_crosshair_marker, MouseDragState,
-    calculate_arrow_key_step
+    calculate_arrow_key_step, calculate_inertia_tensor,
+    calculate_inertia_tetrahedral
 )
 
 # pip install numpy
@@ -1587,69 +1588,10 @@ class MainWindow(QMainWindow):
         com = np.array(center_of_mass)
         print(f"Center of Mass: [{com[0]:.6f}, {com[1]:.6f}, {com[2]:.6f}]")
 
-        # 慣性テンソルの初期化（重心周りで計算）
-        # Using tetrahedral decomposition method
-        # Each triangle forms a tetrahedron with the origin
-
-        # Canonical moments (for unit density)
-        volume_integral = 0.0
-        com_integral = np.zeros(3)
-        inertia_integral = np.zeros((3, 3))
-
-        # Process all triangles
-        num_cells = poly_data.GetNumberOfCells()
-        print(f"Processing {num_cells} triangles using tetrahedral decomposition...")
-
-        for i in range(num_cells):
-            cell = poly_data.GetCell(i)
-            if cell.GetCellType() == vtk.VTK_TRIANGLE:
-                # Get triangle vertices (shifted so COM is at origin)
-                v0 = np.array(cell.GetPoints().GetPoint(0)) - com
-                v1 = np.array(cell.GetPoints().GetPoint(1)) - com
-                v2 = np.array(cell.GetPoints().GetPoint(2)) - com
-
-                # Signed volume of tetrahedron (origin, v0, v1, v2)
-                # V = (1/6) * v0 · (v1 × v2)
-                tet_volume = np.dot(v0, np.cross(v1, v2)) / 6.0
-
-                # Skip degenerate triangles
-                if abs(tet_volume) < 1e-12:
-                    continue
-
-                # Accumulate volume
-                volume_integral += tet_volume
-
-                # For inertia calculation, we use the formula for a tetrahedron
-                # The inertia tensor components can be calculated using:
-                # I_ij = ∫∫∫ ρ(r²δ_ij - x_i*x_j) dV
-
-                # For a tetrahedron with vertices at origin and v0, v1, v2:
-                # We sum over all combinations of vertices
-                for vi in [v0, v1, v2]:
-                    for vj in [v0, v1, v2]:
-                        # Contribution to inertia integral
-                        r_squared = np.dot(vi, vi)
-                        for a in range(3):
-                            for b in range(3):
-                                if a == b:
-                                    # Diagonal: I_aa = ∫(y² + z²)dm for x-axis, etc.
-                                    inertia_integral[a, b] += tet_volume * (r_squared - vi[a] * vj[a]) / 20.0
-                                else:
-                                    # Off-diagonal: I_ab = -∫(x*y)dm
-                                    inertia_integral[a, b] -= tet_volume * vi[a] * vj[b] / 20.0
-
-                # Additional vertex pair contributions
-                pairs = [(v0, v1), (v1, v2), (v2, v0)]
-                for vi, vj in pairs:
-                    r_squared_i = np.dot(vi, vi)
-                    r_squared_j = np.dot(vj, vj)
-
-                    for a in range(3):
-                        for b in range(3):
-                            if a == b:
-                                inertia_integral[a, b] += tet_volume * (r_squared_i + r_squared_j - vi[a] * vj[a]) / 60.0
-                            else:
-                                inertia_integral[a, b] -= tet_volume * (vi[a] * vj[b] + vj[a] * vi[b]) / 60.0
+        # Use shared tetrahedral decomposition method from urdf_kitchen_utils
+        inertia_tensor, volume_integral = calculate_inertia_tetrahedral(
+            poly_data, density, center_of_mass
+        )
 
         # Verify volume calculation
         print(f"Volume from integration: {volume_integral:.6f} (expected: {total_volume:.6f})")
@@ -1658,43 +1600,9 @@ class MainWindow(QMainWindow):
             print(f"Warning: Volume mismatch! Ratio = {volume_ratio:.4f}")
             print("This may indicate non-closed mesh or incorrect orientation")
 
-        # Convert to inertia tensor with proper density scaling
-        # The integral gives us the second moment, multiply by density
-        inertia_tensor = inertia_integral * density
-
-        # Ensure symmetry (should already be symmetric, but numerical errors can occur)
-        inertia_tensor = 0.5 * (inertia_tensor + inertia_tensor.T)
-
-        # Clean up numerical noise
-        threshold = 1e-12
-        inertia_tensor[np.abs(inertia_tensor) < threshold] = 0.0
-
         # Display results
         print("\nCalculated Inertia Tensor (about Center of Mass):")
         print(inertia_tensor)
-
-        # Verify physical constraints
-        # Diagonal elements should be positive for a physical object
-        diagonal = np.diag(inertia_tensor)
-        if np.any(diagonal <= 0):
-            print("\nWarning: Non-positive diagonal elements detected!")
-            print(f"Diagonal: [{diagonal[0]:.6e}, {diagonal[1]:.6e}, {diagonal[2]:.6e}]")
-            print("This may indicate:")
-            print("  - Mesh has inverted normals")
-            print("  - Mesh is not closed")
-            print("  - Numerical precision issues")
-
-            # Fix by taking absolute values
-            for i in range(3):
-                if inertia_tensor[i, i] <= 0:
-                    inertia_tensor[i, i] = abs(inertia_tensor[i, i])
-
-        # Triangle inequality check: I_xx + I_yy >= I_zz (and cyclic permutations)
-        if not (diagonal[0] + diagonal[1] >= diagonal[2] - 1e-6 and
-                diagonal[1] + diagonal[2] >= diagonal[0] - 1e-6 and
-                diagonal[2] + diagonal[0] >= diagonal[1] - 1e-6):
-            print("\nWarning: Inertia tensor violates triangle inequality!")
-            print("This indicates a potential calculation error.")
 
         # URDFフォーマットに変換してUIを更新
         urdf_inertia = self.format_inertia_for_urdf(inertia_tensor)
@@ -3001,96 +2909,19 @@ class MainWindow(QMainWindow):
     def calculate_inertia_tensor_for_mirrored(self, poly_data, mass, center_of_mass):
         """
         ミラーリングされたモデルの慣性テンソルを計算
-        
+
         Args:
             poly_data: vtkPolyData オブジェクト
             mass: float 質量
             center_of_mass: list[float] 重心座標 [x, y, z]
-        
+
         Returns:
             numpy.ndarray: 3x3 慣性テンソル行列
         """
-        # 体積を計算
-        mass_properties = vtk.vtkMassProperties()
-        mass_properties.SetInputData(poly_data)
-        mass_properties.Update()
-        total_volume = mass_properties.GetVolume()
-
-        # 実際の質量から密度を逆算
-        density = mass / total_volume
-        print(f"Calculated density: {density:.6f} from mass: {mass:.6f} and volume: {total_volume:.6f}")
-
-        # Y軸ミラーリングの変換行列
-        mirror_matrix = np.array([[1, 0, 0],
-                                [0, -1, 0],
-                                [0, 0, 1]])
-
-        inertia_tensor = np.zeros((3, 3))
-        num_cells = poly_data.GetNumberOfCells()
-        print(f"Processing {num_cells} triangles for inertia tensor calculation...")
-
-        for i in range(num_cells):
-            cell = poly_data.GetCell(i)
-            if cell.GetCellType() == vtk.VTK_TRIANGLE:
-                # 三角形の頂点を取得（重心を原点とした座標系で）
-                points = [np.array(cell.GetPoints().GetPoint(j)) - np.array(center_of_mass) for j in range(3)]
-                
-                # 三角形の面積と法線ベクトルを計算
-                v1 = points[1] - points[0]
-                v2 = points[2] - points[0]
-                normal = np.cross(v1, v2)
-                area = 0.5 * np.linalg.norm(normal)
-                
-                if area < 1e-10:  # 極小の三角形は無視
-                    continue
-
-                # 三角形の重心
-                tri_centroid = np.mean(points, axis=0)
-
-                # 三角形の局所的な慣性テンソルを計算
-                covariance = np.zeros((3, 3))
-                for p in points:
-                    # 点をミラーリング
-                    p = mirror_matrix @ p
-                    r_squared = np.sum(p * p)
-                    for a in range(3):
-                        for b in range(3):
-                            if a == b:
-                                covariance[a, a] += (r_squared - p[a] * p[a]) * area / 12.0
-                            else:
-                                covariance[a, b] -= (p[a] * p[b]) * area / 12.0
-
-                # ミラーリングされた重心
-                tri_centroid = mirror_matrix @ tri_centroid
-                
-                # 平行軸の定理を適用
-                r_squared = np.sum(tri_centroid * tri_centroid)
-                parallel_axis_term = np.zeros((3, 3))
-                for a in range(3):
-                    for b in range(3):
-                        if a == b:
-                            parallel_axis_term[a, a] = r_squared * area
-                        else:
-                            parallel_axis_term[a, b] = tri_centroid[a] * tri_centroid[b] * area
-
-                # 局所的な慣性テンソルと平行軸の項を合成
-                local_inertia = covariance + parallel_axis_term
-                
-                # 全体の慣性テンソルに加算
-                inertia_tensor += local_inertia
-
-        # 密度を考慮して最終的な慣性テンソルを計算
-        inertia_tensor *= density
-
-        # Y軸反転による慣性テンソルの変換
-        mirror_tensor = np.array([[1, -1, -1],
-                                [-1, 1, 1],
-                                [-1, 1, 1]])
-        inertia_tensor = inertia_tensor * mirror_tensor
-
-        # 数値誤差の処理
-        threshold = 1e-10
-        inertia_tensor[np.abs(inertia_tensor) < threshold] = 0.0
+        # Use shared triangle-based method with mirroring from urdf_kitchen_utils
+        inertia_tensor = calculate_inertia_tensor(
+            poly_data, mass, center_of_mass, is_mirrored=True
+        )
 
         print("\nCalculated Inertia Tensor:")
         print(inertia_tensor)
