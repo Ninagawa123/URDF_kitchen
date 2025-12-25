@@ -62,6 +62,37 @@ from urdf_kitchen_utils import (
 # pip install vtk
 # pip install NodeGraphQt
 
+# ============================================================================
+# CONSTANTS
+# ============================================================================
+
+# Camera settings
+CAMERA_ROTATION_SENSITIVITY = 0.5
+CAMERA_PAN_SPEED_FACTOR = 0.001
+CAMERA_ZOOM_FACTOR = 0.1
+CAMERA_ZOOM_IN_SCALE = 0.9
+CAMERA_ZOOM_OUT_SCALE = 1.1
+MOUSE_ZOOM_PAN_SCALE = 2.0
+
+# Point marker settings
+POINT_MARKER_SIZE = 0.1
+POINT_LABEL_OFFSET_Z = 0.15
+
+# Axis colors (RGB 0-1 range)
+AXIS_COLOR_X = (1.0, 0.0, 0.0)  # Red
+AXIS_COLOR_Y = (0.0, 1.0, 0.0)  # Green
+AXIS_COLOR_Z = (0.0, 0.0, 1.0)  # Blue
+
+# UI colors (hex format for labels)
+UI_COLOR_X = '#FF6B6B'  # Light Red
+UI_COLOR_Y = '#90EE90'  # Light Green
+UI_COLOR_Z = '#00BFFF'  # Sky Blue
+
+# Default values
+DEFAULT_MASS = 1.0
+DEFAULT_DENSITY = 1000.0
+DEFAULT_POINT_NAME_PREFIX = "Point"
+
 def apply_dark_theme(app):
     """シックなダークテーマを適用"""
     # パレットの設定
@@ -680,7 +711,7 @@ class MainWindow(QMainWindow):
             
             # 座標ラベルとテキストボックスの作成
             # 軸の色定義 (X=淡い赤, Y=淡い緑, Z=明るい青)
-            axis_colors = ['#FF6B6B', '#90EE90', '#00BFFF']  # Light Red, Light Green, Sky Blue
+            axis_colors = [UI_COLOR_X, UI_COLOR_Y, UI_COLOR_Z]
 
             for j, axis in enumerate(['X', 'Y', 'Z']):
                 # 水平レイアウトを作成して、ラベルとテキストボックスをグループ化
@@ -4157,126 +4188,83 @@ class MainWindow(QMainWindow):
 
     def rotate_camera_mouse(self, dx, dy):
         """Rotate camera based on mouse drag"""
-        camera = self.renderer.GetActiveCamera()
-
-        # Horizontal drag rotates around up vector (yaw)
-        # Vertical drag rotates around right vector (pitch)
-        sensitivity = 0.5
-
-        # Yaw rotation (around Z axis)
-        camera.Azimuth(-dx * sensitivity)
-
-        # Pitch rotation
-        camera.Elevation(dy * sensitivity)
-
-        camera.OrthogonalizeViewUp()
-        self.renderer.ResetCameraClippingRange()
+        self.camera_controller.rotate_azimuth_elevation(dx, dy, sensitivity=CAMERA_ROTATION_SENSITIVITY)
         self.render_to_image()
 
     def pan_camera(self, dx, dy):
         """Pan camera based on mouse drag with Shift"""
-        camera = self.renderer.GetActiveCamera()
-        position = camera.GetPosition()
-        focal_point = camera.GetFocalPoint()
-
-        # Get camera coordinate system
-        view_up = np.array(camera.GetViewUp())
-        view_direction = np.array(focal_point) - np.array(position)
-        distance = np.linalg.norm(view_direction)
-        view_direction = view_direction / distance
-
-        # Right vector
-        right = np.cross(view_direction, view_up)
-        right = right / np.linalg.norm(right)
-
-        # Recalculate up vector
-        up = np.cross(right, view_direction)
-
-        # Pan speed based on distance to focal point
-        pan_speed = distance * 0.001
-
-        # Calculate pan offset
-        offset = -right * dx * pan_speed + up * dy * pan_speed
-
-        # Move camera and focal point
-        new_position = np.array(position) + offset
-        new_focal = np.array(focal_point) + offset
-
-        camera.SetPosition(new_position)
-        camera.SetFocalPoint(new_focal)
-
-        self.renderer.ResetCameraClippingRange()
+        self.camera_controller.pan(dx, dy, pan_speed_factor=CAMERA_PAN_SPEED_FACTOR)
         self.render_to_image()
 
     def zoom_camera(self, delta, mouse_pos=None):
         """Zoom camera based on mouse wheel, centered on mouse position"""
-        camera = self.renderer.GetActiveCamera()
+        # If mouse position not provided, use simple zoom from CameraController
+        if mouse_pos is None:
+            self.camera_controller.zoom(delta, zoom_factor=CAMERA_ZOOM_FACTOR)
+            self.render_to_image()
+            return
 
-        # For parallel projection, use SetParallelScale instead of Dolly
+        # Mouse-centered zoom implementation
+        camera = self.renderer.GetActiveCamera()
         current_scale = camera.GetParallelScale()
 
         if delta > 0:
-            # Zoom in (make objects larger by decreasing scale)
-            new_scale = current_scale * 0.9
-            zoom_factor = 0.9
+            new_scale = current_scale * CAMERA_ZOOM_IN_SCALE
+            zoom_factor = CAMERA_ZOOM_IN_SCALE
         else:
-            # Zoom out (make objects smaller by increasing scale)
-            new_scale = current_scale * 1.1
-            zoom_factor = 1.1
+            new_scale = current_scale * CAMERA_ZOOM_OUT_SCALE
+            zoom_factor = CAMERA_ZOOM_OUT_SCALE
 
-        # If mouse position is provided, zoom towards that point
-        if mouse_pos is not None:
-            # Get display size
-            display_width = self.vtk_display.width()
-            display_height = self.vtk_display.height()
+        # Get display size
+        display_width = self.vtk_display.width()
+        display_height = self.vtk_display.height()
 
-            # Convert mouse position to normalized coordinates (-1 to 1)
-            mouse_x = mouse_pos.x()
-            mouse_y = mouse_pos.y()
+        # Convert mouse position to normalized coordinates
+        mouse_x = mouse_pos.x()
+        mouse_y = mouse_pos.y()
 
-            # Calculate offset from center
-            center_x = display_width / 2.0
-            center_y = display_height / 2.0
-            offset_x = (mouse_x - center_x) / display_width
-            offset_y = (center_y - mouse_y) / display_height  # Y is inverted
+        # Calculate offset from center
+        center_x = display_width / 2.0
+        center_y = display_height / 2.0
+        offset_x = (mouse_x - center_x) / display_width
+        offset_y = (center_y - mouse_y) / display_height  # Y is inverted
 
-            # Get camera orientation vectors
-            focal_point = camera.GetFocalPoint()
-            position = camera.GetPosition()
-            view_up = camera.GetViewUp()
+        # Get camera orientation vectors
+        focal_point = camera.GetFocalPoint()
+        position = camera.GetPosition()
+        view_up = camera.GetViewUp()
 
-            # Calculate right vector (cross product of view direction and up)
-            import numpy as np
-            view_dir = np.array([focal_point[i] - position[i] for i in range(3)])
-            view_dir = view_dir / np.linalg.norm(view_dir)
-            up_vec = np.array(view_up)
-            right_vec = np.cross(view_dir, up_vec)
-            right_vec = right_vec / np.linalg.norm(right_vec)
+        # Calculate right and up vectors (camera coordinate system)
+        view_dir = np.array([focal_point[i] - position[i] for i in range(3)])
+        view_dir = view_dir / np.linalg.norm(view_dir)
+        up_vec = np.array(view_up)
+        right_vec = np.cross(view_dir, up_vec)
+        right_vec = right_vec / np.linalg.norm(right_vec)
 
-            # Recalculate up vector to ensure orthogonality
-            up_vec = np.cross(right_vec, view_dir)
-            up_vec = up_vec / np.linalg.norm(up_vec)
+        # Recalculate up vector to ensure orthogonality
+        up_vec = np.cross(right_vec, view_dir)
+        up_vec = up_vec / np.linalg.norm(up_vec)
 
-            # Calculate pan offset based on current scale and mouse offset
-            pan_scale = current_scale * 2.0  # Adjust multiplier as needed
-            pan_offset_x = offset_x * pan_scale * (1.0 - zoom_factor)
-            pan_offset_y = offset_y * pan_scale * (1.0 - zoom_factor)
+        # Calculate pan offset based on current scale and mouse offset
+        pan_scale = current_scale * MOUSE_ZOOM_PAN_SCALE
+        pan_offset_x = offset_x * pan_scale * (1.0 - zoom_factor)
+        pan_offset_y = offset_y * pan_scale * (1.0 - zoom_factor)
 
-            # Move focal point towards mouse cursor
-            new_focal = [
-                focal_point[0] + right_vec[0] * pan_offset_x + up_vec[0] * pan_offset_y,
-                focal_point[1] + right_vec[1] * pan_offset_x + up_vec[1] * pan_offset_y,
-                focal_point[2] + right_vec[2] * pan_offset_x + up_vec[2] * pan_offset_y
-            ]
+        # Move focal point and position towards mouse cursor
+        new_focal = [
+            focal_point[0] + right_vec[0] * pan_offset_x + up_vec[0] * pan_offset_y,
+            focal_point[1] + right_vec[1] * pan_offset_x + up_vec[1] * pan_offset_y,
+            focal_point[2] + right_vec[2] * pan_offset_x + up_vec[2] * pan_offset_y
+        ]
 
-            new_position = [
-                position[0] + right_vec[0] * pan_offset_x + up_vec[0] * pan_offset_y,
-                position[1] + right_vec[1] * pan_offset_x + up_vec[1] * pan_offset_y,
-                position[2] + right_vec[2] * pan_offset_x + up_vec[2] * pan_offset_y
-            ]
+        new_position = [
+            position[0] + right_vec[0] * pan_offset_x + up_vec[0] * pan_offset_y,
+            position[1] + right_vec[1] * pan_offset_x + up_vec[1] * pan_offset_y,
+            position[2] + right_vec[2] * pan_offset_x + up_vec[2] * pan_offset_y
+        ]
 
-            camera.SetFocalPoint(new_focal)
-            camera.SetPosition(new_position)
+        camera.SetFocalPoint(new_focal)
+        camera.SetPosition(new_position)
 
         camera.SetParallelScale(new_scale)
         self.renderer.ResetCameraClippingRange()
