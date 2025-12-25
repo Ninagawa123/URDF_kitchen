@@ -4114,17 +4114,13 @@ class MainWindow(QMainWindow):
                         return True
 
             elif event.type() == QEvent.Wheel:
-                # Handle trackpad/mouse wheel
+                # Handle trackpad/mouse wheel - ZOOM ONLY
                 delta_y = event.angleDelta().y()
-                delta_x = event.angleDelta().x()
 
-                # Vertical scroll = Zoom
-                if abs(delta_y) > abs(delta_x):
+                # Only handle vertical scroll for zoom
+                # Ignore horizontal scroll to prevent unwanted rotation
+                if delta_y != 0:
                     self.zoom_camera(delta_y)
-                # Horizontal scroll = Rotate around Z axis
-                elif abs(delta_x) > 0:
-                    # Small rotation based on horizontal scroll
-                    self.rotate_camera_mouse(delta_x * 0.2, 0)
 
                 return True
 
