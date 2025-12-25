@@ -679,20 +679,28 @@ class MainWindow(QMainWindow):
             inputs = []
             
             # 座標ラベルとテキストボックスの作成
+            # 軸の色定義 (X=淡い赤, Y=淡い緑, Z=明るい青)
+            axis_colors = ['#FF6B6B', '#90EE90', '#00BFFF']  # Light Red, Light Green, Sky Blue
+
             for j, axis in enumerate(['X', 'Y', 'Z']):
                 # 水平レイアウトを作成して、ラベルとテキストボックスをグループ化
                 h_layout = QHBoxLayout()
                 h_layout.setSpacing(2)  # ラベルとテキストボックス間の間隔を最小に
                 h_layout.setContentsMargins(0, 0, 0, 0)  # マージンを0に
-                
-                # ラベルを作成
+
+                # ラベルを作成（軸と同じ色）
                 label = QLabel(f"{axis}:")
                 label.setFixedWidth(15)  # ラベルの幅を固定
+                label.setStyleSheet(f"QLabel {{ color: {axis_colors[j]}; font-weight: bold; }}")
                 h_layout.addWidget(label)
                 
                 # テキストボックスを作成
                 input_field = QLineEdit(str(self.point_coords[i][j]))
                 input_field.setFixedWidth(80)  # テキストボックスの幅を固定
+
+                # リターンキーで3Dビューを更新
+                input_field.returnPressed.connect(lambda idx=i: self.set_point(idx))
+
                 h_layout.addWidget(input_field)
                 
                 # 水平レイアウトを伸縮させないようにする
@@ -3531,6 +3539,9 @@ class MainWindow(QMainWindow):
                 # 表示を更新
                 self.refresh_view()
 
+                # カメラをリセット（Rキーと同等の処理）
+                self.reset_camera()
+
             except ET.ParseError:
                 print(f"Error parsing XML file: {xml_path}")
             except Exception as e:
@@ -4120,7 +4131,9 @@ class MainWindow(QMainWindow):
                 # Only handle vertical scroll for zoom
                 # Ignore horizontal scroll to prevent unwanted rotation
                 if delta_y != 0:
-                    self.zoom_camera(delta_y)
+                    # Get mouse position for zoom center
+                    mouse_pos = event.position() if hasattr(event, 'position') else event.pos()
+                    self.zoom_camera(delta_y, mouse_pos)
 
                 return True
 
@@ -4179,8 +4192,8 @@ class MainWindow(QMainWindow):
         self.renderer.ResetCameraClippingRange()
         self.render_to_image()
 
-    def zoom_camera(self, delta):
-        """Zoom camera based on mouse wheel"""
+    def zoom_camera(self, delta, mouse_pos=None):
+        """Zoom camera based on mouse wheel, centered on mouse position"""
         camera = self.renderer.GetActiveCamera()
 
         # For parallel projection, use SetParallelScale instead of Dolly
@@ -4189,9 +4202,65 @@ class MainWindow(QMainWindow):
         if delta > 0:
             # Zoom in (make objects larger by decreasing scale)
             new_scale = current_scale * 0.9
+            zoom_factor = 0.9
         else:
             # Zoom out (make objects smaller by increasing scale)
             new_scale = current_scale * 1.1
+            zoom_factor = 1.1
+
+        # If mouse position is provided, zoom towards that point
+        if mouse_pos is not None:
+            # Get display size
+            display_width = self.vtk_display.width()
+            display_height = self.vtk_display.height()
+
+            # Convert mouse position to normalized coordinates (-1 to 1)
+            mouse_x = mouse_pos.x()
+            mouse_y = mouse_pos.y()
+
+            # Calculate offset from center
+            center_x = display_width / 2.0
+            center_y = display_height / 2.0
+            offset_x = (mouse_x - center_x) / display_width
+            offset_y = (center_y - mouse_y) / display_height  # Y is inverted
+
+            # Get camera orientation vectors
+            focal_point = camera.GetFocalPoint()
+            position = camera.GetPosition()
+            view_up = camera.GetViewUp()
+
+            # Calculate right vector (cross product of view direction and up)
+            import numpy as np
+            view_dir = np.array([focal_point[i] - position[i] for i in range(3)])
+            view_dir = view_dir / np.linalg.norm(view_dir)
+            up_vec = np.array(view_up)
+            right_vec = np.cross(view_dir, up_vec)
+            right_vec = right_vec / np.linalg.norm(right_vec)
+
+            # Recalculate up vector to ensure orthogonality
+            up_vec = np.cross(right_vec, view_dir)
+            up_vec = up_vec / np.linalg.norm(up_vec)
+
+            # Calculate pan offset based on current scale and mouse offset
+            pan_scale = current_scale * 2.0  # Adjust multiplier as needed
+            pan_offset_x = offset_x * pan_scale * (1.0 - zoom_factor)
+            pan_offset_y = offset_y * pan_scale * (1.0 - zoom_factor)
+
+            # Move focal point towards mouse cursor
+            new_focal = [
+                focal_point[0] + right_vec[0] * pan_offset_x + up_vec[0] * pan_offset_y,
+                focal_point[1] + right_vec[1] * pan_offset_x + up_vec[1] * pan_offset_y,
+                focal_point[2] + right_vec[2] * pan_offset_x + up_vec[2] * pan_offset_y
+            ]
+
+            new_position = [
+                position[0] + right_vec[0] * pan_offset_x + up_vec[0] * pan_offset_y,
+                position[1] + right_vec[1] * pan_offset_x + up_vec[1] * pan_offset_y,
+                position[2] + right_vec[2] * pan_offset_x + up_vec[2] * pan_offset_y
+            ]
+
+            camera.SetFocalPoint(new_focal)
+            camera.SetPosition(new_position)
 
         camera.SetParallelScale(new_scale)
         self.renderer.ResetCameraClippingRange()
