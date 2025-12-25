@@ -1370,7 +1370,7 @@ class MainWindow(QMainWindow):
             center_of_mass: List/tuple of [x, y, z] coordinates
         """
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
-            print("No STL model has been loaded.")
+            print("No 3D model has been loaded.")
             return
 
         # Update com_coords
@@ -1411,7 +1411,7 @@ class MainWindow(QMainWindow):
         Uses tetrahedral decomposition for accurate volumetric center of mass calculation.
         """
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
-            print("No STL model has been loaded.")
+            print("No 3D model has been loaded.")
             return
 
         # 重心の座標を取得（チェックボックスの状態に応じて）
@@ -1525,7 +1525,7 @@ class MainWindow(QMainWindow):
             None: エラーが発生した場合
         """
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
-            print("No STL model is loaded.")
+            print("No 3D model is loaded.")
             return None
 
         # ポリデータを取得
@@ -1677,7 +1677,7 @@ class MainWindow(QMainWindow):
 
     def export_urdf(self):
         if not hasattr(self, 'stl_file_path'):
-            print("No STL file has been loaded.")
+            print("No 3D model file has been loaded.")
             return
 
         # STLファイルのパスとファイル名を取得
@@ -1775,7 +1775,7 @@ class MainWindow(QMainWindow):
             None: エラーが発生した場合
         """
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
-            print("No STL model is loaded.")
+            print("No 3D model is loaded.")
             return None
 
         if hasattr(self, 'com_checkbox') and self.com_checkbox.isChecked():
@@ -2478,9 +2478,15 @@ class MainWindow(QMainWindow):
         if not file_path:
             return
 
-        # Add default extension if not present
+        # Add appropriate extension if not present, based on selected filter
         if not os.path.splitext(file_path)[1]:
-            file_path += default_ext
+            # Check which format was selected
+            if "COLLADA" in selected_filter:
+                file_path += '.dae'
+            elif "STL" in selected_filter:
+                file_path += '.stl'
+            else:
+                file_path += default_ext
 
         try:
             # 現在のSTLモデルのポリデータを取得
@@ -2689,9 +2695,9 @@ class MainWindow(QMainWindow):
 
 
     def export_mirror_stl_xml(self):
-        """STLファイルをY軸でミラーリングし、対応するXMLファイルも生成する"""
+        """3DモデルファイルをY軸でミラーリングし、対応するXMLファイルも生成する（STL/DAE対応）"""
         if not hasattr(self, 'stl_file_path') or not self.stl_file_path:
-            print("No STL file has been loaded.")
+            print("No 3D model file has been loaded.")
             return
 
         try:
@@ -2720,7 +2726,7 @@ class MainWindow(QMainWindow):
             if os.path.exists(mirrored_stl_path) or os.path.exists(mirrored_xml_path):
                 existing_files = []
                 if os.path.exists(mirrored_stl_path):
-                    existing_files.append(f"STL: {mirrored_stl_path}")
+                    existing_files.append(f"Mesh: {mirrored_stl_path}")
                 if os.path.exists(mirrored_xml_path):
                     existing_files.append(f"XML: {mirrored_xml_path}")
                 
@@ -3501,13 +3507,15 @@ class MainWindow(QMainWindow):
             self.render_to_image()
 
     def load_stl_with_xml(self):
-        """STLファイルとXMLファイルを一緒に読み込む"""
+        """3Dモデルファイル（STL/DAE）とXMLファイルを一緒に読み込む"""
         try:
-            stl_path, _ = QFileDialog.getOpenFileName(self, "Open STL File", "", "STL Files (*.stl)")
+            # Support both STL and DAE (COLLADA) files
+            file_filter = "3D Model Files (*.stl *.dae);;STL Files (*.stl);;COLLADA Files (*.dae);;All Files (*)"
+            stl_path, _ = QFileDialog.getOpenFileName(self, "Open 3D Model File", "", file_filter)
             if not stl_path:
                 return
 
-            # STLファイルを読み込む
+            # 3Dモデルファイルを読み込む
             self.show_stl(stl_path)
 
             # 対応するXMLファイルのパスを生成
@@ -3569,7 +3577,8 @@ class MainWindow(QMainWindow):
 
             # 処理したファイルの数を追跡
             processed_count = 0
-            skipped_count = 0
+            # 生成されたファイルのリストを保存
+            generated_files = []
 
             # フォルダ内のすべてのSTL/DAEファイルを検索
             for file_name in os.listdir(folder_path):
@@ -3582,11 +3591,9 @@ class MainWindow(QMainWindow):
                     new_stl_path = os.path.join(folder_path, new_name)
                     new_xml_path = os.path.splitext(new_stl_path)[0] + '.xml'
 
-                    # 既存ファイルのチェック
+                    # 既存ファイルがある場合は上書き
                     if os.path.exists(new_stl_path) or os.path.exists(new_xml_path):
-                        print(f"Skipping {file_name} - Target file(s) already exist")
-                        skipped_count += 1
-                        continue
+                        print(f"Overwriting existing file: {file_name}")
 
                     print(f"Processing: {stl_path}")
 
@@ -3786,6 +3793,11 @@ class MainWindow(QMainWindow):
                             f.write(urdf_content)
 
                         processed_count += 1
+                        # 生成されたファイルをリストに追加
+                        generated_files.append({
+                            'mesh': new_stl_path,
+                            'xml': new_xml_path
+                        })
                         print(f"Converted: {file_name} -> {new_name}")
                         print(f"Created XML: {new_xml_path}")
 
@@ -3795,12 +3807,16 @@ class MainWindow(QMainWindow):
                         continue
 
             # 処理完了メッセージ
-            if processed_count > 0 or skipped_count > 0:
+            if processed_count > 0:
                 print(f"\nBulk conversion completed.")
                 print(f"Processed: {processed_count} files")
-                print(f"Skipped: {skipped_count} files (already exist)")
+                # ダイアログボックスで生成されたファイルのリストを表示
+                dialog = BulkConversionCompleteDialog(generated_files, folder_path, self)
+                dialog.exec()
             else:
-                print("\nNo files were processed. Make sure there are STL files with 'l_' or 'L_' prefix in the selected folder.")
+                print("\nNo files were processed. Make sure there are STL/DAE files with 'l_' or 'L_' prefix in the selected folder.")
+                QMessageBox.information(self, "No Files Found",
+                    "No files were processed.\nMake sure there are STL/DAE files with 'l_' or 'L_' prefix in the selected folder.")
 
         except Exception as e:
             print(f"Error during bulk conversion: {str(e)}")
@@ -3922,9 +3938,9 @@ class MainWindow(QMainWindow):
                 self.apply_color_to_stl()
 
     def apply_color_to_stl(self):
-        """選択された色をSTLモデルに適用"""
+        """選択された色を3Dモデルに適用"""
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
-            print("No STL model has been loaded.")
+            print("No 3D model has been loaded.")
             return
         
         try:
@@ -4295,8 +4311,8 @@ class ResultDialog(QDialog):
         title_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(title_label)
 
-        # STLファイルパスを表示
-        stl_label = QLabel(f"STL: {stl_path}")
+        # 3Dモデルファイルパスを表示
+        stl_label = QLabel(f"Mesh: {stl_path}")
         stl_label.setWordWrap(True)  # 長いパスの折り返しを有効化
         layout.addWidget(stl_label)
 
@@ -4307,6 +4323,68 @@ class ResultDialog(QDialog):
 
         # スペーサーを追加
         layout.addSpacing(20)
+
+        # Closeボタンを作成
+        close_button = QPushButton("Close")
+        close_button.clicked.connect(self.accept)
+        close_button.setFixedWidth(100)
+
+        # ボタンを中央に配置するための水平レイアウト
+        button_layout = QHBoxLayout()
+        button_layout.addStretch()
+        button_layout.addWidget(close_button)
+        button_layout.addStretch()
+
+        layout.addLayout(button_layout)
+
+        self.setLayout(layout)
+
+        # Enterキーでダイアログを閉じられるようにする
+        close_button.setDefault(True)
+
+class BulkConversionCompleteDialog(QDialog):
+    """Batch Mirror処理完了後に生成されたファイルのリストを表示するダイアログ"""
+    def __init__(self, generated_files: list, folder_path: str, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Batch Conversion Complete")
+        self.setModal(True)
+
+        # ウィンドウサイズを設定
+        self.resize(600, 400)
+
+        # レイアウトを作成
+        layout = QVBoxLayout()
+        layout.setSpacing(10)
+
+        # メッセージラベルを作成
+        title_label = QLabel(f"Batch conversion completed! {len(generated_files)} file(s) processed:")
+        title_label.setStyleSheet("font-weight: bold; font-size: 12pt;")
+        layout.addWidget(title_label)
+
+        # ディレクトリパスを表示
+        dir_label = QLabel(f"Directory: {folder_path}")
+        dir_label.setStyleSheet("font-size: 10pt;")
+        dir_label.setWordWrap(True)
+        layout.addWidget(dir_label)
+
+        # スクロール可能なテキストエリアを作成
+        text_edit = QTextEdit()
+        text_edit.setReadOnly(True)
+        text_edit.setStyleSheet("QTextEdit { font-family: monospace; }")
+
+        # 生成されたファイルのリストをテキストとして構築（ファイル名のみ）
+        file_list_text = ""
+        for i, file_pair in enumerate(generated_files, 1):
+            mesh_filename = os.path.basename(file_pair['mesh'])
+            xml_filename = os.path.basename(file_pair['xml'])
+            file_list_text += f"{mesh_filename}\n"
+            file_list_text += f"{xml_filename}\n"
+            # ファイルペア間に空行を追加（最後のセット以外）
+            if i < len(generated_files):
+                file_list_text += "\n"
+
+        text_edit.setPlainText(file_list_text)
+        layout.addWidget(text_edit)
 
         # Closeボタンを作成
         close_button = QPushButton("Close")
