@@ -4,7 +4,7 @@ Description: A Python script for configuring connection points of parts for urdf
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Dec 25, 2025
+Update.     : Dec 28, 2025
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -325,6 +325,10 @@ class MainWindow(QMainWindow):
         self.com_sphere_actor = None  # 赤い球（チェックなし時）
         self.com_cursor_actor = None  # 十字付き円（チェックあり時、赤色）
 
+        # 色の手動変更フラグ（Falseの場合は元の色を保持）
+        self.color_manually_changed = False
+        self.mesh_color = None  # メッシュの色情報
+
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)  # 垂直方向のレイアウトに変更
@@ -473,6 +477,11 @@ class MainWindow(QMainWindow):
         self.load_xml_button = QPushButton("Import XML")
         self.load_xml_button.clicked.connect(self.load_xml_file)
         first_row.addWidget(self.load_xml_button)
+
+        # Reloadボタン
+        self.reload_button = QPushButton("Reload")
+        self.reload_button.clicked.connect(self.reload_files)
+        first_row.addWidget(self.reload_button)
 
         # first_row_layout を first_row_widget にセット
         first_row_widget.setLayout(first_row_layout)
@@ -1854,6 +1863,25 @@ class MainWindow(QMainWindow):
             # Load COLLADA file using trimesh
             mesh = trimesh.load(file_path, force='mesh')
 
+            # Extract color information from .dae file
+            extracted_color = None
+            if hasattr(mesh, 'visual') and mesh.visual is not None:
+                if hasattr(mesh.visual, 'material') and mesh.visual.material is not None:
+                    if hasattr(mesh.visual.material, 'diffuse'):
+                        diffuse = mesh.visual.material.diffuse
+                        if diffuse is not None and len(diffuse) >= 3:
+                            # RGBAを0-1の範囲に正規化
+                            extracted_color = [diffuse[0]/255.0, diffuse[1]/255.0, diffuse[2]/255.0, diffuse[3]/255.0 if len(diffuse) > 3 else 1.0]
+                            print(f"Extracted color from .dae file: RGBA({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f}, {extracted_color[3]:.3f})")
+                            # メッシュカラーとして保存
+                            self.mesh_color = extracted_color
+                            # 色が手動で変更されたフラグをリセット（ファイルから読み込んだ色）
+                            self.color_manually_changed = False
+                            # UIのカラーボタンも更新
+                            if hasattr(self, 'color_button'):
+                                color = QtGui.QColor(int(extracted_color[0]*255), int(extracted_color[1]*255), int(extracted_color[2]*255))
+                                self.color_button.setStyleSheet(f"background-color: {color.name()};")
+
             # Convert trimesh to VTK PolyData
             vertices = mesh.vertices
             faces = mesh.faces
@@ -1890,6 +1918,12 @@ class MainWindow(QMainWindow):
             mapper.SetInputData(clean.GetOutput())
             self.stl_actor = vtk.vtkActor()
             self.stl_actor.SetMapper(mapper)
+
+            # Apply extracted color to the actor
+            if extracted_color is not None:
+                self.stl_actor.GetProperty().SetColor(extracted_color[0], extracted_color[1], extracted_color[2])
+                self.stl_actor.GetProperty().SetOpacity(extracted_color[3])
+                print(f"Applied color to 3D view: RGB({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f})")
 
             self.model_bounds = clean.GetOutput().GetBounds()
             self.renderer.AddActor(self.stl_actor)
@@ -2435,67 +2469,28 @@ class MainWindow(QMainWindow):
             origin_index = next(i for i, actor in enumerate(self.point_actors) if actor and actor.GetVisibility())
             origin_point = self.point_coords[origin_index]
 
-            # Step 1: 選択されたポイントを原点とする平行移動
-            translation = vtk.vtkTransform()
-            translation.Translate(-origin_point[0], -origin_point[1], -origin_point[2])
-
-            # Step 2: カメラの向きに基づいて座標系を変更
-            camera = self.renderer.GetActiveCamera()
-            camera_direction = np.array(camera.GetDirectionOfProjection())
-            camera_up = np.array(camera.GetViewUp())
-            camera_right = np.cross(camera_direction, camera_up)
-
-            # 座標軸の設定
-            new_x = -camera_direction  # カメラの向きの逆方向をX軸に
-            new_y = camera_right      # カメラの右方向をY軸に
-            new_z = camera_up         # カメラの上方向をZ軸に
-
-            # 正規直交基底を確保
-            new_x = new_x / np.linalg.norm(new_x)
-            new_y = new_y / np.linalg.norm(new_y)
-            new_z = new_z / np.linalg.norm(new_z)
-
-            # 変換行列の作成
-            rotation_matrix = np.column_stack((new_x, new_y, new_z))
-            
-            # 直交性を確保
-            U, _, Vh = np.linalg.svd(rotation_matrix)
-            rotation_matrix = U @ Vh
-
-            # VTKの回転行列に変換
-            vtk_matrix = vtk.vtkMatrix4x4()
-            for i in range(3):
-                for j in range(3):
-                    vtk_matrix.SetElement(i, j, rotation_matrix[i, j])
-            vtk_matrix.SetElement(3, 3, 1.0)
-
-            # 回転変換を作成
-            rotation = vtk.vtkTransform()
-            rotation.SetMatrix(vtk_matrix)
-
-            # Step 3: 変換を組み合わせる
+            # Step 1: 選択されたポイントを原点とする平行移動のみを適用
+            # XYZ軸は元のメッシュのまま変更しない
             transform = vtk.vtkTransform()
-            transform.PostMultiply()
-            transform.Concatenate(translation)
-            transform.Concatenate(rotation)
+            transform.Translate(-origin_point[0], -origin_point[1], -origin_point[2])
 
-            # Step 4: 変換を適用
+            # Step 2: 変換を適用
             transform_filter = vtk.vtkTransformPolyDataFilter()
             transform_filter.SetInputData(poly_data)
             transform_filter.SetTransform(transform)
             transform_filter.Update()
 
-            # Step 5: トライアングルフィルタを適用して面の向きを統一
+            # Step 3: トライアングルフィルタを適用して面の向きを統一
             triangle_filter = vtk.vtkTriangleFilter()
             triangle_filter.SetInputData(transform_filter.GetOutput())
             triangle_filter.Update()
 
-            # Step 6: クリーンフィルタを適用
+            # Step 4: クリーンフィルタを適用
             clean_filter = vtk.vtkCleanPolyData()
             clean_filter.SetInputData(triangle_filter.GetOutput())
             clean_filter.Update()
 
-            # Step 7: 法線の再計算
+            # Step 5: 法線の再計算
             normal_generator = vtk.vtkPolyDataNormals()
             normal_generator.SetInputData(clean_filter.GetOutput())
             
@@ -2512,10 +2507,10 @@ class MainWindow(QMainWindow):
             # 法線の計算を実行
             normal_generator.Update()
 
-            # Step 8: 変換後のデータを取得
+            # Step 6: 変換後のデータを取得
             transformed_poly_data = normal_generator.GetOutput()
 
-            # Step 9: 出力の品質チェック
+            # Step 7: 出力の品質チェック
             if transformed_poly_data.GetNumberOfPoints() == 0:
                 raise ValueError("The transformed model has no vertices.")
 
@@ -2542,6 +2537,28 @@ class MainWindow(QMainWindow):
 
                 # Create trimesh object and export
                 mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+
+                # Apply color to the mesh only if manually changed by user
+                if hasattr(self, 'color_manually_changed') and self.color_manually_changed:
+                    if hasattr(self, 'mesh_color') and self.mesh_color is not None:
+                        # Convert color from 0-1 range to 0-255 range for trimesh
+                        color_rgba = [
+                            int(self.mesh_color[0] * 255),
+                            int(self.mesh_color[1] * 255),
+                            int(self.mesh_color[2] * 255),
+                            int(self.mesh_color[3] * 255) if len(self.mesh_color) > 3 else 255
+                        ]
+                        # Create a single material for the entire mesh
+                        mesh.visual = trimesh.visual.ColorVisuals(mesh)
+                        mesh.visual.material = trimesh.visual.material.SimpleMaterial(
+                            diffuse=color_rgba,
+                            ambient=color_rgba,
+                            specular=[50, 50, 50, 255]
+                        )
+                        print(f"Applied manually set color to .dae file: RGBA({self.mesh_color[0]:.3f}, {self.mesh_color[1]:.3f}, {self.mesh_color[2]:.3f}, {self.mesh_color[3] if len(self.mesh_color) > 3 else 1.0:.3f})")
+                else:
+                    print("Preserving original .dae file color (no manual color change)")
+
                 mesh.export(file_path)
 
                 print(f"COLLADA file has been saved: {file_path}")
@@ -2819,6 +2836,28 @@ class MainWindow(QMainWindow):
 
                 # Create trimesh object and export
                 mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+
+                # Apply color to the mesh only if manually changed by user
+                if hasattr(self, 'color_manually_changed') and self.color_manually_changed:
+                    if hasattr(self, 'mesh_color') and self.mesh_color is not None:
+                        # Convert color from 0-1 range to 0-255 range for trimesh
+                        color_rgba = [
+                            int(self.mesh_color[0] * 255),
+                            int(self.mesh_color[1] * 255),
+                            int(self.mesh_color[2] * 255),
+                            int(self.mesh_color[3] * 255) if len(self.mesh_color) > 3 else 255
+                        ]
+                        # Create a single material for the entire mesh
+                        mesh.visual = trimesh.visual.ColorVisuals(mesh)
+                        mesh.visual.material = trimesh.visual.material.SimpleMaterial(
+                            diffuse=color_rgba,
+                            ambient=color_rgba,
+                            specular=[50, 50, 50, 255]
+                        )
+                        print(f"Applied manually set color to mirrored .dae file: RGBA({self.mesh_color[0]:.3f}, {self.mesh_color[1]:.3f}, {self.mesh_color[2]:.3f}, {self.mesh_color[3] if len(self.mesh_color) > 3 else 1.0:.3f})")
+                else:
+                    print("Preserving original .dae file color in mirrored file (no manual color change)")
+
                 mesh.export(mirrored_stl_path)
 
             else:
@@ -3221,6 +3260,9 @@ class MainWindow(QMainWindow):
             if not xml_path:
                 return
 
+            # XMLファイルパスを保存
+            self.xml_file_path = xml_path
+
             # XMLファイルを解析
             tree = ET.parse(xml_path)
             root = tree.getroot()
@@ -3355,6 +3397,178 @@ class MainWindow(QMainWindow):
 
         except Exception as e:
             print(f"An error occurred while loading the XML file: {str(e)}")
+            traceback.print_exc()
+
+    def reload_files(self):
+        """現在読み込まれているMeshファイルとXMLファイルを再読み込みする"""
+        try:
+            reload_count = 0
+
+            # Meshファイルの再読み込み
+            if hasattr(self, 'stl_file_path') and self.stl_file_path:
+                if os.path.exists(self.stl_file_path):
+                    print(f"Reloading mesh file: {self.stl_file_path}")
+                    self.show_stl(self.stl_file_path)
+                    reload_count += 1
+                else:
+                    print(f"Warning: Mesh file not found: {self.stl_file_path}")
+            else:
+                print("No mesh file to reload")
+
+            # XMLファイルの再読み込み
+            if hasattr(self, 'xml_file_path') and self.xml_file_path:
+                if os.path.exists(self.xml_file_path):
+                    print(f"Reloading XML file: {self.xml_file_path}")
+
+                    # XMLファイルを解析
+                    tree = ET.parse(self.xml_file_path)
+                    root = tree.getroot()
+
+                    print("Processing XML file...")
+
+                    # XMLからパラメータを読み込む
+                    has_parameters = self.load_parameters_from_xml(root)
+
+                    # パラメータがXMLに含まれていない場合のみ再計算を行う
+                    if not has_parameters:
+                        self.calculate_and_update_properties()
+
+                    # 全てのポイントをリセット
+                    print("Resetting all points...")
+                    for i in range(self.num_points):
+                        # テキストフィールドをクリア
+                        self.point_inputs[i][0].setText("0.000000")
+                        self.point_inputs[i][1].setText("0.000000")
+                        self.point_inputs[i][2].setText("0.000000")
+
+                        # 内部座標データをリセット
+                        self.point_coords[i] = [0, 0, 0]
+
+                        # チェックボックスを解除
+                        self.point_checkboxes[i].setChecked(False)
+
+                        # 3Dビューのポイントを非表示にし、アクターを削除
+                        if self.point_actors[i]:
+                            self.point_actors[i].VisibilityOff()
+                            self.renderer.RemoveActor(self.point_actors[i])
+                            self.point_actors[i] = None
+
+                    print("All points have been reset")
+
+                    # データが設定されたポイントを追跡
+                    points_with_data = set()
+
+                    # 各ポイントの座標を読み込む
+                    points = root.findall('./point')
+                    print(f"Found {len(points)} points in XML")
+
+                    for i, point in enumerate(points):
+                        xyz_element = point.find('point_xyz')
+                        if xyz_element is not None and xyz_element.text:
+                            try:
+                                # 座標テキストを分割して数値に変換
+                                x, y, z = map(float, xyz_element.text.strip().split())
+                                print(f"Point {i+1}: {x}, {y}, {z}")
+
+                                # テキストフィールドに値を設定
+                                self.point_inputs[i][0].setText(f"{x:.6f}")
+                                self.point_inputs[i][1].setText(f"{y:.6f}")
+                                self.point_inputs[i][2].setText(f"{z:.6f}")
+
+                                # 内部の座標データを更新
+                                self.point_coords[i] = [x, y, z]
+
+                                # チェックボックスを有効化
+                                self.point_checkboxes[i].setChecked(True)
+
+                                # ポイントの表示を設定
+                                if self.point_actors[i] is None:
+                                    self.point_actors[i] = vtk.vtkAssembly()
+                                    self.create_point_coordinate(self.point_actors[i], [0, 0, 0])
+
+                                self.point_actors[i].SetPosition(self.point_coords[i])
+                                self.renderer.AddActor(self.point_actors[i])
+                                self.point_actors[i].VisibilityOn()
+
+                                points_with_data.add(i)
+                                print(f"Set point {i+1} coordinates: x={x:.6f}, y={y:.6f}, z={z:.6f}")
+                            except Exception as e:
+                                print(f"Error loading point {i+1}: {str(e)}")
+                                traceback.print_exc()
+
+                    # ポイント名の読み込み
+                    for i, point in enumerate(points):
+                        name_element = point.find('name')
+                        if name_element is not None and name_element.text:
+                            self.point_names[i].setText(name_element.text)
+                            print(f"Set point {i+1} name: {name_element.text}")
+
+                    # ポイントタイプの読み込み
+                    for i, point in enumerate(points):
+                        type_element = point.find('type')
+                        if type_element is not None and type_element.text:
+                            self.point_types[i].setCurrentText(type_element.text)
+                            print(f"Set point {i+1} type: {type_element.text}")
+
+                    # カラー情報の処理
+                    color_element = root.find(".//color")
+                    if color_element is not None:
+                        rgba_str = color_element.get('rgba')
+                        if rgba_str:
+                            try:
+                                r, g, b, a = map(float, rgba_str.split())
+                                self.mesh_color = [r, g, b, a]
+                                if hasattr(self, 'stl_actor') and self.stl_actor:
+                                    self.stl_actor.GetProperty().SetColor(r, g, b)
+                                    self.stl_actor.GetProperty().SetOpacity(a)
+                                    self.render_to_image()
+                            except (ValueError, IndexError) as e:
+                                print(f"Warning: Invalid color format in XML: {rgba_str}")
+                                print(f"Error details: {e}")
+
+                    # 軸情報の処理
+                    axis_element = root.find(".//axis")
+                    if axis_element is not None:
+                        xyz_str = axis_element.get('xyz')
+                        if xyz_str:
+                            try:
+                                x, y, z = map(float, xyz_str.split())
+                                if x == 1:
+                                    self.radio_buttons[0].setChecked(True)
+                                elif y == 1:
+                                    self.radio_buttons[1].setChecked(True)
+                                elif z == 1:
+                                    self.radio_buttons[2].setChecked(True)
+                            except ValueError:
+                                print(f"Warning: Invalid axis format in XML: {xyz_str}")
+
+                    # 表示の更新
+                    if hasattr(self, 'renderer'):
+                        self.renderer.ResetCamera()
+                        self.update_all_points()
+
+                        # STLモデルが存在する場合、カメラをフィット
+                        if hasattr(self, 'stl_actor') and self.stl_actor:
+                            self.fit_camera_to_model()
+
+                        self.renderer.ResetCameraClippingRange()
+                        self.render_to_image()
+
+                    print(f"XML file has been reloaded: {self.xml_file_path}")
+                    print(f"Number of set points: {len(points_with_data)}")
+                    reload_count += 1
+                else:
+                    print(f"Warning: XML file not found: {self.xml_file_path}")
+            else:
+                print("No XML file to reload")
+
+            if reload_count > 0:
+                print(f"Reload completed: {reload_count} file(s) reloaded")
+            else:
+                print("No files were reloaded. Please load files first.")
+
+        except Exception as e:
+            print(f"An error occurred while reloading files: {str(e)}")
             traceback.print_exc()
 
     def refresh_view(self):
@@ -3804,19 +4018,25 @@ class MainWindow(QMainWindow):
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
             print("No 3D model has been loaded.")
             return
-        
+
         try:
             # RGB値を取得（0-1の範囲）
             rgb_values = [float(input.text()) for input in self.color_inputs]
-            
+
             # 値の範囲チェック
             rgb_values = [max(0.0, min(1.0, value)) for value in rgb_values]
-            
+
+            # メッシュカラーとして保存（アルファ値も含む）
+            self.mesh_color = rgb_values + [1.0]  # RGBAとして保存
+
+            # 色が手動で変更されたことをマーク
+            self.color_manually_changed = True
+
             # STLモデルの色を変更
             self.stl_actor.GetProperty().SetColor(*rgb_values)
             self.render_to_image()
             print(f"Applied color: RGB({rgb_values[0]:.3f}, {rgb_values[1]:.3f}, {rgb_values[2]:.3f})")
-            
+
         except ValueError as e:
             print(f"Error: Invalid color value - {str(e)}")
         except Exception as e:
