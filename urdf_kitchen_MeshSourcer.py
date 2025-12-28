@@ -4,9 +4,7 @@ Description: A Python script for reconfiguring the center coordinates and axis d
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Created On  : Dec 27, 2025
-
-
+Created On  : Dec 28, 2025
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -45,7 +43,8 @@ from PySide6.QtCore import QTimer, Qt, QObject
 # Import URDF Kitchen utilities
 from urdf_kitchen_utils import (
     OffscreenRenderer, CameraController, AnimatedCameraRotation,
-    AdaptiveMarkerSize, MouseDragState, calculate_arrow_key_step
+    AdaptiveMarkerSize, MouseDragState, calculate_arrow_key_step,
+    get_mesh_file_filter, load_mesh_to_polydata, save_polydata_to_mesh
 )
 
 # M4 Mac (Apple Silicon) compatibility
@@ -796,11 +795,8 @@ class MainWindow(QMainWindow):
 
     def load_stl_file(self):
         print("Opening file dialog...")
-        # Support both STL and DAE (COLLADA) files
-        if TRIMESH_AVAILABLE:
-            file_filter = "3D Model Files (*.stl *.dae);;STL Files (*.stl);;COLLADA Files (*.dae);;All Files (*)"
-        else:
-            file_filter = "STL Files (*.stl);;All Files (*)"
+        # Use common utility function for file filter
+        file_filter = get_mesh_file_filter(TRIMESH_AVAILABLE)
 
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Open 3D Model File", "", file_filter)
@@ -840,62 +836,12 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'stl_actor') and self.stl_actor:
             self.renderer.RemoveActor(self.stl_actor)
 
-        # Check file extension to determine loader
-        import os
-        file_ext = os.path.splitext(file_path)[1].lower()
+        # Use common utility function to load mesh
+        poly_data, volume, extracted_color = load_mesh_to_polydata(file_path)
 
-        if file_ext == '.dae' and TRIMESH_AVAILABLE:
-            # Load COLLADA file using trimesh
-            mesh = trimesh.load(file_path, force='mesh')
-
-            # Convert trimesh to VTK PolyData
-            vertices = mesh.vertices
-            faces = mesh.faces
-
-            # Create VTK points
-            points = vtk.vtkPoints()
-            for vertex in vertices:
-                points.InsertNextPoint(vertex)
-
-            # Create VTK cells (triangles)
-            triangles = vtk.vtkCellArray()
-            for face in faces:
-                triangle = vtk.vtkTriangle()
-                triangle.GetPointIds().SetId(0, int(face[0]))
-                triangle.GetPointIds().SetId(1, int(face[1]))
-                triangle.GetPointIds().SetId(2, int(face[2]))
-                triangles.InsertNextCell(triangle)
-
-            # Create VTK PolyData
-            poly_data = vtk.vtkPolyData()
-            poly_data.SetPoints(points)
-            poly_data.SetPolys(triangles)
-
-            # Create clean filter
-            clean = vtk.vtkCleanPolyData()
-            clean.SetInputData(poly_data)
-            clean.SetTolerance(1e-5)
-            clean.ConvertPolysToLinesOff()
-            clean.ConvertStripsToPolysOff()
-            clean.PointMergingOn()
-            clean.Update()
-
-        else:
-            # Load STL file using VTK
-            reader = vtk.vtkSTLReader()
-            reader.SetFileName(file_path)
-            reader.Update()
-
-            clean = vtk.vtkCleanPolyData()
-            clean.SetInputConnection(reader.GetOutputPort())
-            clean.SetTolerance(1e-5)
-            clean.ConvertPolysToLinesOff()
-            clean.ConvertStripsToPolysOff()
-            clean.PointMergingOn()
-            clean.Update()
-
+        # Apply additional filters
         remover = vtk.vtkDecimatePro()
-        remover.SetInputConnection(clean.GetOutputPort())
+        remover.SetInputData(poly_data)
         remover.SetTargetReduction(0.0)
         remover.PreserveTopologyOn()
         remover.Update()
@@ -912,9 +858,6 @@ class MainWindow(QMainWindow):
         self.model_bounds = triangulate.GetOutput().GetBounds()
         self.renderer.AddActor(self.stl_actor)
 
-        mass_properties = vtk.vtkMassProperties()
-        mass_properties.SetInputConnection(triangulate.GetOutputPort())
-        volume = mass_properties.GetVolume()
         self.volume_label.setText(f"Volume (m^3): {volume:.6f}")
 
         self.fit_camera_to_model()
@@ -1339,11 +1282,8 @@ class MainWindow(QMainWindow):
         # Use the loaded file path as default (same directory and filename)
         default_path = self.current_stl_path if self.current_stl_path else ""
 
-        # Support both STL and DAE (COLLADA) files for export
-        if TRIMESH_AVAILABLE:
-            file_filter = "STL Files (*.stl);;COLLADA Files (*.dae);;All Files (*)"
-        else:
-            file_filter = "STL Files (*.stl);;All Files (*)"
+        # Use common utility function for file filter
+        file_filter = get_mesh_file_filter(TRIMESH_AVAILABLE)
 
         file_path, selected_filter = QFileDialog.getSaveFileName(
             self, "Save 3D Model File", default_path, file_filter)
@@ -1364,58 +1304,12 @@ class MainWindow(QMainWindow):
             transform_filter.SetTransform(transform)
             transform_filter.Update()
 
-            # Determine file format from extension
-            file_ext = os.path.splitext(file_path)[1].lower()
+            # Use common utility function to save mesh
+            save_polydata_to_mesh(file_path, transform_filter.GetOutput())
 
-            # Remove any existing .stl or .dae extensions to prevent duplication
-            base_name = file_path
-            while base_name.lower().endswith('.stl') or base_name.lower().endswith('.dae'):
-                base_name = os.path.splitext(base_name)[0]
-
-            if file_ext == '.dae' and TRIMESH_AVAILABLE:
-                # Export as COLLADA using trimesh
-                # Ensure .dae extension
-                file_path = base_name + '.dae'
-
-                transformed_poly = transform_filter.GetOutput()
-
-                # Convert VTK PolyData to numpy arrays
-                num_points = transformed_poly.GetNumberOfPoints()
-                num_cells = transformed_poly.GetNumberOfCells()
-
-                vertices = np.zeros((num_points, 3))
-                for i in range(num_points):
-                    vertices[i] = transformed_poly.GetPoint(i)
-
-                faces = []
-                for i in range(num_cells):
-                    cell = transformed_poly.GetCell(i)
-                    if cell.GetNumberOfPoints() == 3:
-                        faces.append([cell.GetPointId(0), cell.GetPointId(1), cell.GetPointId(2)])
-
-                faces = np.array(faces)
-
-                # Create trimesh object and export
-                mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-                mesh.export(file_path)
-
-                print(f"COLLADA file has been saved: {file_path}")
-                # Update current path for next save
-                self.current_stl_path = file_path
-
-            else:
-                # Export as STL using VTK
-                # Ensure .stl extension (no duplication)
-                file_path = base_name + '.stl'
-
-                stl_writer = vtk.vtkSTLWriter()
-                stl_writer.SetFileName(file_path)
-                stl_writer.SetInputData(transform_filter.GetOutput())
-                stl_writer.Write()
-
-                print(f"STL file has been saved: {file_path}")
-                # Update current path for next save
-                self.current_stl_path = file_path
+            print(f"Mesh file has been saved: {file_path}")
+            # Update current path for next save
+            self.current_stl_path = file_path
 
         except Exception as e:
             print(f"An error occurred: {str(e)}")
