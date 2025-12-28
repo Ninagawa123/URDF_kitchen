@@ -3,7 +3,7 @@ File Name: vtk_utils.py
 Description: Shared VTK utilities for URDF Kitchen tools (PartsEditor, Assembler, STLViewerWidget)
 
 Author      : Ninagawa123
-Created On  : Dec 25, 2025
+Created On  : Dec 28, 2025
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -269,12 +269,12 @@ class CameraController:
 
     def pan(self, dx, dy, pan_speed_factor=0.001):
         """
-        Pan camera (Shift + drag).
+        Pan camera (Shift + drag) with 1:1 mouse-to-view mapping.
 
         Args:
-            dx: Horizontal mouse movement delta
-            dy: Vertical mouse movement delta
-            pan_speed_factor: Pan speed multiplier
+            dx: Horizontal mouse movement delta in pixels
+            dy: Vertical mouse movement delta in pixels
+            pan_speed_factor: Pan speed multiplier (deprecated, kept for compatibility)
         """
         camera = self.renderer.GetActiveCamera()
         position = camera.GetPosition()
@@ -291,9 +291,19 @@ class CameraController:
         right = right / np.linalg.norm(right)
         up = np.cross(right, view_direction)
 
-        # Calculate pan offset
-        pan_speed = distance * pan_speed_factor
-        offset = -right * dx * pan_speed + up * dy * pan_speed
+        # Calculate 1:1 mapping between mouse pixels and world space
+        # Get viewport size in pixels
+        render_window = self.renderer.GetRenderWindow()
+        window_size = render_window.GetSize()
+        viewport_height = window_size[1]
+
+        # For parallel projection, parallel_scale is half the view height in world units
+        # Convert pixel movement to world space for 1:1 visual mapping
+        parallel_scale = camera.GetParallelScale()
+        world_per_pixel = (2.0 * parallel_scale) / viewport_height
+
+        # Calculate pan offset with 1:1 mapping
+        offset = -right * dx * world_per_pixel + up * dy * world_per_pixel
 
         # Move camera and focal point
         new_position = np.array(position) + offset
@@ -722,7 +732,7 @@ def calculate_inertia_tensor(poly_data, mass, center_of_mass, is_mirrored=False)
 
             # Apply Y-axis mirroring if needed
             if is_mirrored:
-                points = [[p[0], -p[1], p[2]] for p in points]
+                points = [np.array([p[0], -p[1], p[2]]) for p in points]
 
             # Calculate triangle area and normal vector
             v1 = np.array(points[1]) - np.array(points[0])
@@ -910,3 +920,258 @@ def calculate_inertia_tetrahedral(poly_data, density, center_of_mass):
         print("Inertia tensor may not be physically valid")
 
     return inertia_tensor, volume_integral
+
+
+# ============================================================================
+# MESH FILE I/O UTILITIES
+# ============================================================================
+
+def get_mesh_file_filter(trimesh_available=True):
+    """
+    Get file filter string for mesh file dialogs.
+
+    Supports STL, OBJ, and DAE (COLLADA) formats.
+    DAE support requires trimesh library.
+
+    Args:
+        trimesh_available: bool - Whether trimesh library is available
+
+    Returns:
+        str: File filter string for QFileDialog
+
+    Example:
+        >>> from PySide6.QtWidgets import QFileDialog
+        >>> filter_str = get_mesh_file_filter(trimesh_available=True)
+        >>> file_path, _ = QFileDialog.getOpenFileName(self, "Open Mesh", "", filter_str)
+    """
+    if trimesh_available:
+        return "3D Model Files (*.stl *.obj *.dae);;STL Files (*.stl);;OBJ Files (*.obj);;COLLADA Files (*.dae);;All Files (*)"
+    else:
+        return "3D Model Files (*.stl *.obj);;STL Files (*.stl);;OBJ Files (*.obj);;All Files (*)"
+
+
+def load_mesh_to_polydata(file_path):
+    """
+    Load mesh file (STL/OBJ/DAE) and return VTK PolyData.
+
+    Supports:
+    - STL: VTK native reader
+    - OBJ: VTK native reader
+    - DAE: trimesh library (with color extraction)
+
+    Args:
+        file_path: str - Path to mesh file
+
+    Returns:
+        tuple: (poly_data, volume, extracted_color)
+            - poly_data: vtkPolyData - Loaded mesh
+            - volume: float - Mesh volume (m^3)
+            - extracted_color: list or None - RGBA color [r, g, b, a] (0-1 range) for DAE files
+
+    Raises:
+        ImportError: If DAE file is loaded but trimesh is not available
+        FileNotFoundError: If file does not exist
+
+    Example:
+        >>> poly_data, volume, color = load_mesh_to_polydata("model.stl")
+        >>> print(f"Volume: {volume:.6f} m^3")
+    """
+    import os
+    import vtk
+
+    if not os.path.exists(file_path):
+        raise FileNotFoundError(f"Mesh file not found: {file_path}")
+
+    file_ext = os.path.splitext(file_path)[1].lower()
+    extracted_color = None
+
+    if file_ext == '.dae':
+        # Load COLLADA file using trimesh
+        try:
+            import trimesh
+        except ImportError:
+            raise ImportError("trimesh library is required for loading DAE files. Install with: pip install trimesh")
+
+        mesh = trimesh.load(file_path, force='mesh')
+
+        # Extract color information from .dae file
+        if hasattr(mesh, 'visual') and mesh.visual is not None:
+            if hasattr(mesh.visual, 'material') and mesh.visual.material is not None:
+                if hasattr(mesh.visual.material, 'diffuse'):
+                    diffuse = mesh.visual.material.diffuse
+                    if diffuse is not None and len(diffuse) >= 3:
+                        # Normalize RGBA to 0-1 range
+                        extracted_color = [
+                            diffuse[0] / 255.0,
+                            diffuse[1] / 255.0,
+                            diffuse[2] / 255.0,
+                            diffuse[3] / 255.0 if len(diffuse) > 3 else 1.0
+                        ]
+
+        # Convert trimesh to VTK PolyData
+        vertices = mesh.vertices
+        faces = mesh.faces
+
+        points = vtk.vtkPoints()
+        for vertex in vertices:
+            points.InsertNextPoint(vertex)
+
+        triangles = vtk.vtkCellArray()
+        for face in faces:
+            triangle = vtk.vtkTriangle()
+            triangle.GetPointIds().SetId(0, int(face[0]))
+            triangle.GetPointIds().SetId(1, int(face[1]))
+            triangle.GetPointIds().SetId(2, int(face[2]))
+            triangles.InsertNextCell(triangle)
+
+        poly_data = vtk.vtkPolyData()
+        poly_data.SetPoints(points)
+        poly_data.SetPolys(triangles)
+
+        # Clean the mesh
+        clean = vtk.vtkCleanPolyData()
+        clean.SetInputData(poly_data)
+        clean.SetTolerance(1e-5)
+        clean.ConvertPolysToLinesOff()
+        clean.ConvertStripsToPolysOff()
+        clean.PointMergingOn()
+        clean.Update()
+
+        poly_data = clean.GetOutput()
+
+    elif file_ext == '.obj':
+        # Load OBJ file using VTK
+        reader = vtk.vtkOBJReader()
+        reader.SetFileName(file_path)
+        reader.Update()
+
+        clean = vtk.vtkCleanPolyData()
+        clean.SetInputConnection(reader.GetOutputPort())
+        clean.SetTolerance(1e-5)
+        clean.ConvertPolysToLinesOff()
+        clean.ConvertStripsToPolysOff()
+        clean.PointMergingOn()
+        clean.Update()
+
+        poly_data = clean.GetOutput()
+
+    else:
+        # Load STL file using VTK (default)
+        reader = vtk.vtkSTLReader()
+        reader.SetFileName(file_path)
+        reader.Update()
+
+        clean = vtk.vtkCleanPolyData()
+        clean.SetInputConnection(reader.GetOutputPort())
+        clean.SetTolerance(1e-5)
+        clean.ConvertPolysToLinesOff()
+        clean.ConvertStripsToPolysOff()
+        clean.PointMergingOn()
+        clean.Update()
+
+        poly_data = clean.GetOutput()
+
+    # Calculate volume
+    mass_properties = vtk.vtkMassProperties()
+    mass_properties.SetInputData(poly_data)
+    volume = mass_properties.GetVolume()
+
+    return poly_data, volume, extracted_color
+
+
+def save_polydata_to_mesh(file_path, poly_data, mesh_color=None, color_manually_changed=False):
+    """
+    Save VTK PolyData to mesh file (STL/OBJ/DAE).
+
+    Supports:
+    - STL: Binary format
+    - OBJ: Standard format
+    - DAE: With color preservation (requires trimesh)
+
+    Args:
+        file_path: str - Output file path
+        poly_data: vtkPolyData - Mesh data to save
+        mesh_color: list or None - RGBA color [r, g, b, a] (0-1 range) for DAE export
+        color_manually_changed: bool - If True, apply mesh_color to DAE file
+
+    Raises:
+        ImportError: If DAE file is requested but trimesh is not available
+
+    Example:
+        >>> import vtk
+        >>> # Create or load poly_data
+        >>> save_polydata_to_mesh("output.stl", poly_data)
+        >>> # Save DAE with color
+        >>> save_polydata_to_mesh("output.dae", poly_data,
+        ...                       mesh_color=[1.0, 0.0, 0.0, 1.0],
+        ...                       color_manually_changed=True)
+    """
+    import os
+    import vtk
+
+    file_ext = os.path.splitext(file_path)[1].lower()
+
+    # Ensure file has an extension
+    if not file_ext:
+        file_path += '.stl'
+        file_ext = '.stl'
+
+    if file_ext == '.dae':
+        # Export as COLLADA using trimesh
+        try:
+            import trimesh
+            import numpy as np
+        except ImportError:
+            raise ImportError("trimesh and numpy are required for DAE export. Install with: pip install trimesh numpy")
+
+        # Convert VTK PolyData to numpy arrays
+        num_points = poly_data.GetNumberOfPoints()
+        num_cells = poly_data.GetNumberOfCells()
+
+        vertices = np.zeros((num_points, 3))
+        for i in range(num_points):
+            vertices[i] = poly_data.GetPoint(i)
+
+        faces = []
+        for i in range(num_cells):
+            cell = poly_data.GetCell(i)
+            if cell.GetNumberOfPoints() == 3:
+                faces.append([cell.GetPointId(0), cell.GetPointId(1), cell.GetPointId(2)])
+
+        faces = np.array(faces)
+
+        # Create trimesh object
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
+
+        # Apply color if manually changed
+        if color_manually_changed and mesh_color is not None:
+            # Convert color from 0-1 range to 0-255 range for trimesh
+            color_rgba = [
+                int(mesh_color[0] * 255),
+                int(mesh_color[1] * 255),
+                int(mesh_color[2] * 255),
+                int(mesh_color[3] * 255) if len(mesh_color) > 3 else 255
+            ]
+            mesh.visual = trimesh.visual.ColorVisuals(mesh)
+            mesh.visual.material = trimesh.visual.material.SimpleMaterial(
+                diffuse=color_rgba,
+                ambient=color_rgba,
+                specular=[50, 50, 50, 255]
+            )
+
+        mesh.export(file_path)
+
+    elif file_ext == '.obj':
+        # Export as OBJ using VTK
+        obj_writer = vtk.vtkOBJWriter()
+        obj_writer.SetFileName(file_path)
+        obj_writer.SetInputData(poly_data)
+        obj_writer.Write()
+
+    else:
+        # Export as STL using VTK (default)
+        stl_writer = vtk.vtkSTLWriter()
+        stl_writer.SetFileName(file_path)
+        stl_writer.SetInputData(poly_data)
+        stl_writer.SetFileTypeToBinary()
+        stl_writer.Write()
