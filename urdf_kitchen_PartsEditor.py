@@ -55,7 +55,8 @@ from urdf_kitchen_utils import (
     OffscreenRenderer, CameraController, AnimatedCameraRotation,
     AdaptiveMarkerSize, create_crosshair_marker, MouseDragState,
     calculate_arrow_key_step, calculate_inertia_tensor,
-    calculate_inertia_tetrahedral
+    calculate_inertia_tetrahedral, get_mesh_file_filter,
+    load_mesh_to_polydata, save_polydata_to_mesh
 )
 
 # pip install numpy
@@ -1832,8 +1833,8 @@ class MainWindow(QMainWindow):
         self.render_to_image()
 
     def load_stl_file(self):
-        # Support both STL and DAE (COLLADA) files
-        file_filter = "3D Model Files (*.stl *.dae);;STL Files (*.stl);;COLLADA Files (*.dae);;All Files (*)"
+        # Use common utility function for file filter
+        file_filter = get_mesh_file_filter(trimesh_available=True)
 
         file_path, _ = QFileDialog.getOpenFileName(self, "Open 3D Model File", "", file_filter)
         if file_path:
@@ -1856,101 +1857,35 @@ class MainWindow(QMainWindow):
 
         self.stl_file_path = file_path
 
-        # Check file extension to determine loader
-        file_ext = os.path.splitext(file_path)[1].lower()
+        # Use common utility function to load mesh
+        poly_data, volume, extracted_color = load_mesh_to_polydata(file_path)
 
-        if file_ext == '.dae':
-            # Load COLLADA file using trimesh
-            mesh = trimesh.load(file_path, force='mesh')
+        # Handle color extraction for DAE files
+        if extracted_color is not None:
+            print(f"Extracted color from .dae file: RGBA({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f}, {extracted_color[3]:.3f})")
+            # メッシュカラーとして保存
+            self.mesh_color = extracted_color
+            # 色が手動で変更されたフラグをリセット（ファイルから読み込んだ色）
+            self.color_manually_changed = False
+            # UIのカラーボタンも更新
+            if hasattr(self, 'color_button'):
+                color = QtGui.QColor(int(extracted_color[0]*255), int(extracted_color[1]*255), int(extracted_color[2]*255))
+                self.color_button.setStyleSheet(f"background-color: {color.name()};")
 
-            # Extract color information from .dae file
-            extracted_color = None
-            if hasattr(mesh, 'visual') and mesh.visual is not None:
-                if hasattr(mesh.visual, 'material') and mesh.visual.material is not None:
-                    if hasattr(mesh.visual.material, 'diffuse'):
-                        diffuse = mesh.visual.material.diffuse
-                        if diffuse is not None and len(diffuse) >= 3:
-                            # RGBAを0-1の範囲に正規化
-                            extracted_color = [diffuse[0]/255.0, diffuse[1]/255.0, diffuse[2]/255.0, diffuse[3]/255.0 if len(diffuse) > 3 else 1.0]
-                            print(f"Extracted color from .dae file: RGBA({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f}, {extracted_color[3]:.3f})")
-                            # メッシュカラーとして保存
-                            self.mesh_color = extracted_color
-                            # 色が手動で変更されたフラグをリセット（ファイルから読み込んだ色）
-                            self.color_manually_changed = False
-                            # UIのカラーボタンも更新
-                            if hasattr(self, 'color_button'):
-                                color = QtGui.QColor(int(extracted_color[0]*255), int(extracted_color[1]*255), int(extracted_color[2]*255))
-                                self.color_button.setStyleSheet(f"background-color: {color.name()};")
+        # Create mapper and actor
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(poly_data)
+        self.stl_actor = vtk.vtkActor()
+        self.stl_actor.SetMapper(mapper)
 
-            # Convert trimesh to VTK PolyData
-            vertices = mesh.vertices
-            faces = mesh.faces
+        # Apply extracted color to the actor
+        if extracted_color is not None:
+            self.stl_actor.GetProperty().SetColor(extracted_color[0], extracted_color[1], extracted_color[2])
+            self.stl_actor.GetProperty().SetOpacity(extracted_color[3])
+            print(f"Applied color to 3D view: RGB({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f})")
 
-            # Create VTK points
-            points = vtk.vtkPoints()
-            for vertex in vertices:
-                points.InsertNextPoint(vertex)
-
-            # Create VTK cells (triangles)
-            triangles = vtk.vtkCellArray()
-            for face in faces:
-                triangle = vtk.vtkTriangle()
-                triangle.GetPointIds().SetId(0, int(face[0]))
-                triangle.GetPointIds().SetId(1, int(face[1]))
-                triangle.GetPointIds().SetId(2, int(face[2]))
-                triangles.InsertNextCell(triangle)
-
-            # Create VTK PolyData
-            poly_data = vtk.vtkPolyData()
-            poly_data.SetPoints(points)
-            poly_data.SetPolys(triangles)
-
-            # Create clean filter
-            clean = vtk.vtkCleanPolyData()
-            clean.SetInputData(poly_data)
-            clean.SetTolerance(1e-5)
-            clean.ConvertPolysToLinesOff()
-            clean.ConvertStripsToPolysOff()
-            clean.PointMergingOn()
-            clean.Update()
-
-            mapper = vtk.vtkPolyDataMapper()
-            mapper.SetInputData(clean.GetOutput())
-            self.stl_actor = vtk.vtkActor()
-            self.stl_actor.SetMapper(mapper)
-
-            # Apply extracted color to the actor
-            if extracted_color is not None:
-                self.stl_actor.GetProperty().SetColor(extracted_color[0], extracted_color[1], extracted_color[2])
-                self.stl_actor.GetProperty().SetOpacity(extracted_color[3])
-                print(f"Applied color to 3D view: RGB({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f})")
-
-            self.model_bounds = clean.GetOutput().GetBounds()
-            self.renderer.AddActor(self.stl_actor)
-
-            # Get volume
-            mass_properties = vtk.vtkMassProperties()
-            mass_properties.SetInputData(clean.GetOutput())
-            volume = mass_properties.GetVolume()
-
-        else:
-            # Load STL file using VTK
-            reader = vtk.vtkSTLReader()
-            reader.SetFileName(file_path)
-            reader.Update()
-
-            mapper = vtk.vtkPolyDataMapper()
-            mapper.SetInputConnection(reader.GetOutputPort())
-            self.stl_actor = vtk.vtkActor()
-            self.stl_actor.SetMapper(mapper)
-
-            self.model_bounds = reader.GetOutput().GetBounds()
-            self.renderer.AddActor(self.stl_actor)
-
-            # STLの体積を取得
-            mass_properties = vtk.vtkMassProperties()
-            mass_properties.SetInputConnection(reader.GetOutputPort())
-            volume = mass_properties.GetVolume()
+        self.model_bounds = poly_data.GetBounds()
+        self.renderer.AddActor(self.stl_actor)
         
         # 体積をUIに反映（小数点以下12桁）
         self.volume_input.setText(f"{volume:.12f}")
@@ -2440,10 +2375,13 @@ class MainWindow(QMainWindow):
 
         # Set file filter based on original file extension
         if original_ext == '.dae':
-            file_filter = "COLLADA Files (*.dae);;STL Files (*.stl);;All Files (*)"
+            file_filter = "COLLADA Files (*.dae);;STL Files (*.stl);;OBJ Files (*.obj);;All Files (*)"
             default_ext = '.dae'
+        elif original_ext == '.obj':
+            file_filter = "OBJ Files (*.obj);;STL Files (*.stl);;COLLADA Files (*.dae);;All Files (*)"
+            default_ext = '.obj'
         else:
-            file_filter = "STL Files (*.stl);;COLLADA Files (*.dae);;All Files (*)"
+            file_filter = "STL Files (*.stl);;OBJ Files (*.obj);;COLLADA Files (*.dae);;All Files (*)"
             default_ext = '.stl'
 
         file_path, selected_filter = QFileDialog.getSaveFileName(
@@ -2456,6 +2394,8 @@ class MainWindow(QMainWindow):
             # Check which format was selected
             if "COLLADA" in selected_filter:
                 file_path += '.dae'
+            elif "OBJ" in selected_filter:
+                file_path += '.obj'
             elif "STL" in selected_filter:
                 file_path += '.stl'
             else:
@@ -2517,64 +2457,29 @@ class MainWindow(QMainWindow):
             # Determine file format from extension
             file_ext = os.path.splitext(file_path)[1].lower()
 
+            # Use common utility function to save mesh
+            mesh_color = getattr(self, 'mesh_color', None)
+            color_manually_changed = getattr(self, 'color_manually_changed', False)
+
+            # Save using common function
+            save_polydata_to_mesh(
+                file_path,
+                transformed_poly_data,
+                mesh_color=mesh_color,
+                color_manually_changed=color_manually_changed
+            )
+
+            # Determine file extension for logging
+            file_ext = os.path.splitext(file_path)[1].lower()
             if file_ext == '.dae':
-                # Export as COLLADA using trimesh
-                # Convert VTK PolyData to numpy arrays
-                num_points = transformed_poly_data.GetNumberOfPoints()
-                num_cells = transformed_poly_data.GetNumberOfCells()
-
-                vertices = np.zeros((num_points, 3))
-                for i in range(num_points):
-                    vertices[i] = transformed_poly_data.GetPoint(i)
-
-                faces = []
-                for i in range(num_cells):
-                    cell = transformed_poly_data.GetCell(i)
-                    if cell.GetNumberOfPoints() == 3:
-                        faces.append([cell.GetPointId(0), cell.GetPointId(1), cell.GetPointId(2)])
-
-                faces = np.array(faces)
-
-                # Create trimesh object and export
-                mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-
-                # Apply color to the mesh only if manually changed by user
-                if hasattr(self, 'color_manually_changed') and self.color_manually_changed:
-                    if hasattr(self, 'mesh_color') and self.mesh_color is not None:
-                        # Convert color from 0-1 range to 0-255 range for trimesh
-                        color_rgba = [
-                            int(self.mesh_color[0] * 255),
-                            int(self.mesh_color[1] * 255),
-                            int(self.mesh_color[2] * 255),
-                            int(self.mesh_color[3] * 255) if len(self.mesh_color) > 3 else 255
-                        ]
-                        # Create a single material for the entire mesh
-                        mesh.visual = trimesh.visual.ColorVisuals(mesh)
-                        mesh.visual.material = trimesh.visual.material.SimpleMaterial(
-                            diffuse=color_rgba,
-                            ambient=color_rgba,
-                            specular=[50, 50, 50, 255]
-                        )
-                        print(f"Applied manually set color to .dae file: RGBA({self.mesh_color[0]:.3f}, {self.mesh_color[1]:.3f}, {self.mesh_color[2]:.3f}, {self.mesh_color[3] if len(self.mesh_color) > 3 else 1.0:.3f})")
+                if color_manually_changed and mesh_color is not None:
+                    print(f"Applied manually set color to .dae file: RGBA({mesh_color[0]:.3f}, {mesh_color[1]:.3f}, {mesh_color[2]:.3f}, {mesh_color[3] if len(mesh_color) > 3 else 1.0:.3f})")
                 else:
                     print("Preserving original .dae file color (no manual color change)")
-
-                mesh.export(file_path)
-
                 print(f"COLLADA file has been saved: {file_path}")
-
+            elif file_ext == '.obj':
+                print(f"OBJ file with corrected normals in the new coordinate system has been saved: {file_path}")
             else:
-                # Export as STL using VTK
-                # Add .stl extension if not present
-                if not file_ext:
-                    file_path += '.stl'
-
-                stl_writer = vtk.vtkSTLWriter()
-                stl_writer.SetFileName(file_path)
-                stl_writer.SetInputData(transformed_poly_data)
-                stl_writer.SetFileTypeToBinary()  # バイナリ形式で保存
-                stl_writer.Write()
-
                 print(f"STL file with corrected normals in the new coordinate system has been saved: {file_path}")
 
             # メッシュの品質情報を出力
@@ -3583,10 +3488,10 @@ class MainWindow(QMainWindow):
             self.render_to_image()
 
     def load_stl_with_xml(self):
-        """3Dモデルファイル（STL/DAE）とXMLファイルを一緒に読み込む"""
+        """3Dモデルファイル（STL/OBJ/DAE）とXMLファイルを一緒に読み込む"""
         try:
-            # Support both STL and DAE (COLLADA) files
-            file_filter = "3D Model Files (*.stl *.dae);;STL Files (*.stl);;COLLADA Files (*.dae);;All Files (*)"
+            # Use common utility function for file filter
+            file_filter = get_mesh_file_filter(trimesh_available=True)
             stl_path, _ = QFileDialog.getOpenFileName(self, "Open 3D Model File", "", file_filter)
             if not stl_path:
                 return
@@ -3638,7 +3543,7 @@ class MainWindow(QMainWindow):
 
     def bulk_convert_l_to_r(self):
         """
-        フォルダ内の'l_'または'L_'で始まるSTL/DAEファイルを処理し、
+        フォルダ内の'l_'または'L_'で始まるSTL/OBJ/DAEファイルを処理し、
         対応する'r_'または'R_'ファイルを生成する。
         既存のファイルは上書きせずスキップする。
         """
@@ -3656,9 +3561,9 @@ class MainWindow(QMainWindow):
             # 生成されたファイルのリストを保存
             generated_files = []
 
-            # フォルダ内のすべてのSTL/DAEファイルを検索
+            # フォルダ内のすべてのSTL/OBJ/DAEファイルを検索
             for file_name in os.listdir(folder_path):
-                if file_name.lower().startswith(('l_', 'L_')) and file_name.lower().endswith(('.stl', '.dae')):
+                if file_name.lower().startswith(('l_', 'L_')) and file_name.lower().endswith(('.stl', '.obj', '.dae')):
                     stl_path = os.path.join(folder_path, file_name)
 
                     # 新しいファイル名を生成
@@ -3674,58 +3579,18 @@ class MainWindow(QMainWindow):
                     print(f"Processing: {stl_path}")
 
                     try:
-                        # ファイル拡張子を確認
-                        file_ext = os.path.splitext(stl_path)[1].lower()
+                        # Use common utility function to load mesh
+                        poly_data, volume_unused, extracted_color = load_mesh_to_polydata(stl_path)
 
-                        if file_ext == '.dae':
-                            # DAEファイルをtrimeshで読み込む
-                            mesh = trimesh.load(stl_path, force='mesh')
+                        # Y軸反転の変換を設定
+                        transform = vtk.vtkTransform()
+                        transform.Scale(1, -1, 1)
 
-                            # trimeshをVTK PolyDataに変換
-                            vertices = mesh.vertices
-                            faces = mesh.faces
-
-                            points = vtk.vtkPoints()
-                            for vertex in vertices:
-                                points.InsertNextPoint(vertex)
-
-                            triangles = vtk.vtkCellArray()
-                            for face in faces:
-                                triangle = vtk.vtkTriangle()
-                                triangle.GetPointIds().SetId(0, int(face[0]))
-                                triangle.GetPointIds().SetId(1, int(face[1]))
-                                triangle.GetPointIds().SetId(2, int(face[2]))
-                                triangles.InsertNextCell(triangle)
-
-                            poly_data = vtk.vtkPolyData()
-                            poly_data.SetPoints(points)
-                            poly_data.SetPolys(triangles)
-
-                            # Y軸反転の変換を設定
-                            transform = vtk.vtkTransform()
-                            transform.Scale(1, -1, 1)
-
-                            # 頂点を変換
-                            transformer = vtk.vtkTransformPolyDataFilter()
-                            transformer.SetInputData(poly_data)
-                            transformer.SetTransform(transform)
-                            transformer.Update()
-
-                        else:
-                            # STLファイルを読み込む
-                            reader = vtk.vtkSTLReader()
-                            reader.SetFileName(stl_path)
-                            reader.Update()
-
-                            # Y軸反転の変換を設定
-                            transform = vtk.vtkTransform()
-                            transform.Scale(1, -1, 1)
-
-                            # 頂点を変換
-                            transformer = vtk.vtkTransformPolyDataFilter()
-                            transformer.SetInputConnection(reader.GetOutputPort())
-                            transformer.SetTransform(transform)
-                            transformer.Update()
+                        # 頂点を変換
+                        transformer = vtk.vtkTransformPolyDataFilter()
+                        transformer.SetInputData(poly_data)
+                        transformer.SetTransform(transform)
+                        transformer.Update()
 
                         # 法線の修正
                         normal_generator = vtk.vtkPolyDataNormals()
@@ -3775,36 +3640,8 @@ class MainWindow(QMainWindow):
                                 print(f"Error parsing XML file: {xml_path}")
                                 continue
 
-                        # ミラー化したファイルを保存
-                        output_ext = os.path.splitext(new_stl_path)[1].lower()
-
-                        if output_ext == '.dae':
-                            # DAEファイルとして保存
-                            num_points = normal_generator.GetOutput().GetNumberOfPoints()
-                            num_cells = normal_generator.GetOutput().GetNumberOfCells()
-
-                            vertices = np.zeros((num_points, 3))
-                            for i in range(num_points):
-                                vertices[i] = normal_generator.GetOutput().GetPoint(i)
-
-                            faces = []
-                            for i in range(num_cells):
-                                cell = normal_generator.GetOutput().GetCell(i)
-                                if cell.GetNumberOfPoints() == 3:
-                                    faces.append([cell.GetPointId(0), cell.GetPointId(1), cell.GetPointId(2)])
-
-                            faces = np.array(faces)
-
-                            # trimeshオブジェクトを作成してエクスポート
-                            mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-                            mesh.export(new_stl_path)
-
-                        else:
-                            # STLファイルとして保存
-                            writer = vtk.vtkSTLWriter()
-                            writer.SetFileName(new_stl_path)
-                            writer.SetInputData(normal_generator.GetOutput())
-                            writer.Write()
+                        # Use common utility function to save mesh
+                        save_polydata_to_mesh(new_stl_path, normal_generator.GetOutput())
 
                         # イナーシャテンソルを計算
                         inertia_tensor = self.calculate_inertia_tensor_for_mirrored(
