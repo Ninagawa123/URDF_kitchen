@@ -1,4 +1,4 @@
-# URDF_kitchen beta  
+# URDF_kitchen beta2!  
 <img width="600" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_banner202550406.png">  
   
 URDF_kitchenは、URDFの組み立てをサポートするPythonツールです。  
