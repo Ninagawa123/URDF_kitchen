@@ -40,7 +40,8 @@ from urdf_kitchen_utils import (
     OffscreenRenderer, CameraController, MouseDragState,
     setup_signal_handlers, setup_signal_processing_timer, setup_dark_theme,
     calculate_inertia_tensor, calculate_inertia_tetrahedral,
-    get_mesh_file_filter, load_mesh_to_polydata
+    get_mesh_file_filter, load_mesh_to_polydata,
+    mirror_physical_properties_y_axis, calculate_mirrored_physical_properties_from_mesh
 )
 
 # M4 Mac (Apple Silicon) compatibility
@@ -10192,32 +10193,45 @@ class CustomNodeGraph(NodeGraph):
                 if hasattr(l_node, 'mass_value'):
                     r_node.mass_value = l_node.mass_value
 
-                # 慣性テンソルをミラーリング（Y軸反転）
-                if hasattr(l_node, 'inertia'):
-                    if isinstance(l_node.inertia, dict):
-                        r_node.inertia = l_node.inertia.copy()
-                        # Y軸ミラーリング: ixyとiyzの符号を反転
-                        if 'ixy' in r_node.inertia:
-                            r_node.inertia['ixy'] = -l_node.inertia['ixy']
-                        if 'iyz' in r_node.inertia:
-                            r_node.inertia['iyz'] = -l_node.inertia['iyz']
-                        # ixx, iyy, izz, ixzはそのまま
-                        print(f"  Mirrored inertia tensor (negated ixy, iyz)")
-                    else:
-                        r_node.inertia = l_node.inertia
+                # 慣性プロパティのミラーリング
+                # 方法1: メッシュファイルから再計算（最も正確）
+                use_mesh_recalculation = False
+                if hasattr(l_node, 'stl_file') and l_node.stl_file and os.path.exists(l_node.stl_file):
+                    if hasattr(l_node, 'mass_value') and l_node.mass_value > 0:
+                        print(f"  Attempting to recalculate mirrored properties from mesh...")
+                        mirrored_props = calculate_mirrored_physical_properties_from_mesh(
+                            l_node.stl_file, l_node.mass_value
+                        )
+                        if mirrored_props is not None:
+                            # メッシュから計算成功
+                            r_node.volume_value = mirrored_props['volume']
+                            r_node.mass_value = mirrored_props['mass']
+                            r_node.inertia = mirrored_props['inertia']
+                            if not hasattr(r_node, 'inertial_origin'):
+                                r_node.inertial_origin = {}
+                            r_node.inertial_origin['xyz'] = mirrored_props['center_of_mass']
+                            if 'rpy' not in r_node.inertial_origin:
+                                r_node.inertial_origin['rpy'] = [0.0, 0.0, 0.0]
+                            use_mesh_recalculation = True
+                            print(f"  ✓ Recalculated from mirrored mesh (most accurate)")
+                            print(f"    COM: {mirrored_props['center_of_mass']}")
 
-                # 慣性中心（COM）をミラーリング（Y座標を反転）
-                if hasattr(l_node, 'inertial_origin'):
-                    if isinstance(l_node.inertial_origin, dict):
-                        r_node.inertial_origin = l_node.inertial_origin.copy()
-                        if 'xyz' in r_node.inertial_origin and len(r_node.inertial_origin['xyz']) >= 3:
-                            # Y座標（インデックス1）を反転
-                            xyz = r_node.inertial_origin['xyz']
-                            r_node.inertial_origin['xyz'] = [xyz[0], -xyz[1], xyz[2]]
-                            print(f"  Mirrored COM: [{xyz[0]}, {xyz[1]}, {xyz[2]}] -> [{xyz[0]}, {-xyz[1]}, {xyz[2]}]")
-                        # RPYはそのまま（回転の扱いは複雑なため、必要に応じて後で調整）
-                    else:
-                        r_node.inertial_origin = l_node.inertial_origin
+                # 方法2: 既存のプロパティを変換（フォールバック）
+                if not use_mesh_recalculation:
+                    print(f"  Using property transformation (fallback method)")
+                    # 共通関数を使用してミラーリング
+                    mirrored_inertia, mirrored_origin = mirror_physical_properties_y_axis(
+                        l_node.inertia if hasattr(l_node, 'inertia') else None,
+                        l_node.inertial_origin if hasattr(l_node, 'inertial_origin') else None
+                    )
+                    if mirrored_inertia:
+                        r_node.inertia = mirrored_inertia
+                        print(f"  ✓ Mirrored inertia tensor (negated ixy, iyz)")
+                    if mirrored_origin:
+                        r_node.inertial_origin = mirrored_origin
+                        if 'xyz' in mirrored_origin:
+                            xyz = mirrored_origin['xyz']
+                            print(f"  ✓ Mirrored COM: Y={xyz[1]:.6f}")
                 if hasattr(l_node, 'node_color'):
                     r_node.node_color = l_node.node_color
                 if hasattr(l_node, 'rotation_axis'):
