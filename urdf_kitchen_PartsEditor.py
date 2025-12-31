@@ -4,7 +4,7 @@ Description: A Python script for configuring connection points of parts for urdf
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Dec 28, 2025
+Update.     : Dec 31, 2025
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -45,10 +45,11 @@ from Qt import QtWidgets, QtCore, QtGui
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QMainWindow, QVBoxLayout, QWidget,
     QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout,
-    QTextEdit, QButtonGroup, QRadioButton, QColorDialog, QDialog, QMessageBox
+    QTextEdit, QButtonGroup, QRadioButton, QColorDialog, QDialog, QMessageBox, QFrame
 )
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QTextOption, QColor, QPalette
+from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 # Import URDF Kitchen utilities
 from urdf_kitchen_utils import (
@@ -56,7 +57,8 @@ from urdf_kitchen_utils import (
     AdaptiveMarkerSize, create_crosshair_marker, MouseDragState,
     calculate_arrow_key_step, calculate_inertia_tensor,
     calculate_inertia_tetrahedral, get_mesh_file_filter,
-    load_mesh_to_polydata, save_polydata_to_mesh
+    load_mesh_to_polydata, save_polydata_to_mesh,
+    setup_signal_handlers, setup_signal_processing_timer, setup_dark_theme
 )
 
 # pip install numpy
@@ -96,7 +98,11 @@ DEFAULT_DENSITY = 1000.0
 DEFAULT_POINT_NAME_PREFIX = "Point"
 
 def apply_dark_theme(app):
-    """シックなダークテーマを適用"""
+    """シックなダークテーマを適用
+
+    Note: Base theme available in urdf_kitchen_utils.setup_dark_theme(app, 'parts_editor')
+    This function extends the base with additional custom widget styling.
+    """
     # パレットの設定
     palette = app.palette()
     # メインウィンドウ背景：柔らかいダークグレー
@@ -330,6 +336,9 @@ class MainWindow(QMainWindow):
         self.color_manually_changed = False
         self.mesh_color = None  # メッシュの色情報
 
+        # コマンドライン引数から渡されたファイルパスを保持
+        self.pending_stl_file = None
+
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
         main_layout = QVBoxLayout(central_widget)  # 垂直方向のレイアウトに変更
@@ -402,6 +411,105 @@ class MainWindow(QMainWindow):
         self.vtk_display.installEventFilter(self)
         self.vtk_display.setMouseTracking(True)
 
+        # Setup IPC server for receiving file load requests from Assembler
+        self.ipc_server = QLocalServer(self)
+        server_name = "URDFKitchen_PartsEditor"
+        # Remove any previous server instance
+        QLocalServer.removeServer(server_name)
+        if self.ipc_server.listen(server_name):
+            print(f"IPC Server started: {server_name}")
+            self.ipc_server.newConnection.connect(self._handle_ipc_connection)
+        else:
+            print(f"Failed to start IPC server: {self.ipc_server.errorString()}")
+
+    def _handle_ipc_connection(self):
+        """Handle incoming IPC connection from Assembler"""
+        socket = self.ipc_server.nextPendingConnection()
+        if socket:
+            socket.readyRead.connect(lambda: self._handle_ipc_data(socket))
+            socket.disconnected.connect(socket.deleteLater)
+
+    def _handle_ipc_data(self, socket):
+        """Handle IPC data received from Assembler"""
+        try:
+            data = socket.readAll().data().decode('utf-8')
+            print(f"Received IPC request: {data}")
+
+            # Parse the file path from the request
+            if data.startswith("LOAD:"):
+                file_path = data[5:].strip()
+                if os.path.exists(file_path):
+                    # Load the file
+                    self.load_file_from_external(file_path)
+                    # Bring window to front and focus
+                    self.raise_()
+                    self.activateWindow()
+                    socket.write(b"OK")
+                else:
+                    socket.write(b"ERROR: File not found")
+            else:
+                socket.write(b"ERROR: Unknown command")
+
+            socket.flush()
+        except Exception as e:
+            print(f"Error handling IPC data: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def load_file_from_external(self, stl_path):
+        """Load 3D model and XML file from external request (Assembler)"""
+        try:
+            print(f"Loading file from external request: {stl_path}")
+
+            # Load the 3D model file
+            self.file_name_label.setText(f"File: {stl_path}")
+            self.show_stl(stl_path)
+
+            # Try to load corresponding XML file
+            xml_path = os.path.splitext(stl_path)[0] + '.xml'
+
+            if os.path.exists(xml_path):
+                try:
+                    tree = ET.parse(xml_path)
+                    root = tree.getroot()
+
+                    # Load parameters from XML
+                    has_parameters = self.load_parameters_from_xml(root)
+
+                    # Recalculate if no parameters in XML
+                    if not has_parameters:
+                        self.calculate_and_update_properties()
+
+                    # Load point data
+                    points_with_data = self._load_points_from_xml(root)
+
+                    print(f"XML file loaded: {xml_path}")
+                    if points_with_data:
+                        print(f"Loaded {len(points_with_data)} points")
+
+                    # Refresh view
+                    self.refresh_view()
+
+                    # Reset camera
+                    self.reset_camera()
+
+                except ET.ParseError as e:
+                    print(f"Error parsing XML file: {xml_path} - {e}")
+                except Exception as e:
+                    print(f"Error processing XML file: {str(e)}")
+                    traceback.print_exc()
+            else:
+                print(f"No corresponding XML file found: {xml_path}")
+                # Just load the mesh without XML
+                self.calculate_and_update_properties()
+                self.refresh_view()
+                self.reset_camera()
+
+        except Exception as e:
+            print(f"Error loading file from external request: {e}")
+            import traceback
+            traceback.print_exc()
+
     def showEvent(self, event):
         super().showEvent(event)
         # VTKの初期化は最初のshowEvent時に遅延実行（StlDaeSourcerパターン）
@@ -443,6 +551,10 @@ class MainWindow(QMainWindow):
         try:
             QTimer.singleShot(200, self.render_to_image)
             QTimer.singleShot(300, lambda: self.vtk_display.setFocus())
+
+            # コマンドライン引数からのファイルロードがある場合、VTK初期化後にロード
+            if self.pending_stl_file:
+                QTimer.singleShot(400, self._load_pending_stl)
         except Exception as e:
             print(f"ERROR in VTK final step: {e}")
             import traceback
@@ -492,32 +604,73 @@ class MainWindow(QMainWindow):
         self.load_stl_xml_button.clicked.connect(self.load_stl_with_xml)
         button_layout.addWidget(self.load_stl_xml_button)
 
-        # スペーサーを追加
-        spacer = QWidget()
-        spacer.setFixedHeight(0)  # 20ピクセルの空間を作る
-        button_layout.addWidget(spacer)
-        
-        # Export用のボタンを縦に配置
-        self.export_urdf_button = QPushButton("Export XML")
-        self.export_urdf_button.clicked.connect(self.export_urdf)
-        button_layout.addWidget(self.export_urdf_button)
-        
-        # ミラーボタン
-        self.export_mirror_button = QPushButton("Export Mirror Mesh with XML")
-        self.export_mirror_button.clicked.connect(self.export_mirror_stl_xml)
-        button_layout.addWidget(self.export_mirror_button)
+        # 間隔を1.5倍にし、中央に罫線を配置
+        # 上部スペース
+        spacer_top = QWidget()
+        #spacer_top.setFixedHeight(4)  # 元の間隔の半分程度
+        button_layout.addWidget(spacer_top)
 
-        # 一括変換ボタン
-        self.bulk_convert_button = QPushButton("Batch Mirror \"l_\" to \"r_\" Meshes")
-        self.bulk_convert_button.clicked.connect(self.bulk_convert_l_to_r)
-        button_layout.addWidget(self.bulk_convert_button)
+        # 罫線
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        separator.setStyleSheet("QFrame { color: #707070; }")
+        button_layout.addWidget(separator)
 
-        # Export STLボタン
-        self.export_stl_button = QPushButton("Save Mesh with Point1 as Origin")
-        self.export_stl_button.clicked.connect(self.export_stl_with_new_origin)
-        button_layout.addWidget(self.export_stl_button)
+        # 下部スペース
+        spacer_bottom = QWidget()
+        #spacer_bottom.setFixedHeight(4)  # 元の間隔の半分程度
+        button_layout.addWidget(spacer_bottom)
+
+        # MeshSourcer ボタン
+        self.mesh_sourcer_button = QPushButton("MeshSourcer")
+        self.mesh_sourcer_button.clicked.connect(self.open_mesh_sourcer)
+        button_layout.addWidget(self.mesh_sourcer_button)
 
         self.left_layout.addLayout(button_layout)
+
+    def open_mesh_sourcer(self):
+        """現在のメッシュファイルを読み込んだ状態でMeshSourcerを開く"""
+        import subprocess
+
+        # 現在開いているメッシュファイルのパスを確認
+        if not hasattr(self, 'stl_file_path') or not self.stl_file_path:
+            QMessageBox.warning(
+                self,
+                "No Mesh Loaded",
+                "Please load a mesh file first before opening MeshSourcer."
+            )
+            return
+
+        if not os.path.exists(self.stl_file_path):
+            QMessageBox.warning(
+                self,
+                "File Not Found",
+                f"The mesh file does not exist:\n{self.stl_file_path}"
+            )
+            return
+
+        # MeshSourcerのスクリプトパスを取得
+        mesh_sourcer_path = os.path.join(os.path.dirname(__file__), "urdf_kitchen_MeshSourcer.py")
+
+        if not os.path.exists(mesh_sourcer_path):
+            QMessageBox.warning(
+                self,
+                "MeshSourcer Not Found",
+                f"MeshSourcer script not found:\n{mesh_sourcer_path}"
+            )
+            return
+
+        try:
+            # MeshSourcerを起動し、現在のメッシュファイルをコマンドライン引数として渡す
+            subprocess.Popen([sys.executable, mesh_sourcer_path, self.stl_file_path])
+            print(f"Launched MeshSourcer with file: {self.stl_file_path}")
+        except Exception as e:
+            QMessageBox.critical(
+                self,
+                "Launch Error",
+                f"Failed to launch MeshSourcer:\n{str(e)}"
+            )
 
     def setup_stl_properties_ui(self):
         grid_layout = QGridLayout()
@@ -622,7 +775,7 @@ class MainWindow(QMainWindow):
 
         # スペーサーを追加（小さな空間）
         spacer = QWidget()
-        spacer.setFixedHeight(2)  # 8ピクセルの空間
+        spacer.setFixedHeight(16)  # 4ピクセルの空間
         grid_layout.addWidget(spacer, current_row, 0, 1, 3)
         current_row += 1
 
@@ -670,6 +823,7 @@ class MainWindow(QMainWindow):
             color_input = QLineEdit("1.0")
             color_input.setFixedWidth(50)
             color_input.textChanged.connect(self.update_color_sample)
+            color_input.returnPressed.connect(self.apply_color_to_stl)  # リターンキーで即座に色を適用
             self.color_inputs.append(color_input)
             color_layout.addWidget(color_input)
         
@@ -681,11 +835,7 @@ class MainWindow(QMainWindow):
         pick_button = QPushButton("Pick")
         pick_button.clicked.connect(self.show_color_picker)
         color_layout.addWidget(pick_button)
-        
-        apply_button = QPushButton("Apply")
-        apply_button.clicked.connect(self.apply_color_to_stl)
-        color_layout.addWidget(apply_button)
-        
+
         color_layout.addStretch()
         
         # カラーレイアウトを追加
@@ -765,27 +915,48 @@ class MainWindow(QMainWindow):
         points_layout.setColumnStretch(2, 1)  # Y座標の列
         points_layout.setColumnStretch(3, 1)  # Z座標の列
 
-        # SET/RESETボタンの行
-        button_row = self.num_points
-        # ボタン用の水平レイアウト
-        button_layout = QHBoxLayout()
-        
-        # SET ボタン
-        set_button = QPushButton("Set Point")
-        set_button.clicked.connect(self.handle_set_reset)
-        button_layout.addWidget(set_button)
-
-        # RESET ボタン
+        # RESET ボタン（Point 8の下に配置、テキスト幅サイズ、右寄せ）
+        button_row = self.num_points  # Point 8の次の行
         reset_button = QPushButton("Reset Point")
-        reset_button.clicked.connect(self.handle_set_reset)
-        button_layout.addWidget(reset_button)
-
-        # ボタンレイアウトをグリッドに追加
-        button_container = QWidget()
-        button_container.setLayout(button_layout)
-        points_layout.addWidget(button_container, button_row, 0, 1, 4)
+        reset_button.clicked.connect(self.handle_reset_only)
+        # 2文字分ずつ左右に広げる（約4文字分の幅を追加）
+        char_width = reset_button.fontMetrics().averageCharWidth()
+        reset_button.setFixedWidth(reset_button.fontMetrics().boundingRect("Reset Point").width() + 20 + char_width * 4)
+        points_layout.addWidget(reset_button, button_row, 0, 1, 4, Qt.AlignRight)  # 全列にまたがって右寄せ
 
         self.left_layout.addLayout(points_layout)
+
+        # 罫線（Reset PointとExportボタンの間）
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        separator.setStyleSheet("QFrame { color: #707070; }")
+        self.left_layout.addWidget(separator)
+
+        # Export用のボタン配置
+        export_layout = QVBoxLayout()
+        export_layout.setSpacing(5)
+
+        # 1行目：Export XML と Export Mirror Mesh with XML を横並び
+        export_row1 = QHBoxLayout()
+        export_row1.setSpacing(5)
+
+        self.export_urdf_button = QPushButton("Export XML")
+        self.export_urdf_button.clicked.connect(self.export_urdf)
+        export_row1.addWidget(self.export_urdf_button)
+
+        self.export_mirror_button = QPushButton("Export Mirror Mesh with XML")
+        self.export_mirror_button.clicked.connect(self.export_mirror_stl_xml)
+        export_row1.addWidget(self.export_mirror_button)
+
+        export_layout.addLayout(export_row1)
+
+        # 2行目：Batch Mirror ボタン
+        self.bulk_convert_button = QPushButton("Batch Mirror \"l_\" to \"r_\" Meshes & XMLs")
+        self.bulk_convert_button.clicked.connect(self.bulk_convert_l_to_r)
+        export_layout.addWidget(self.bulk_convert_button)
+
+        self.left_layout.addLayout(export_layout)
         
     def set_point(self, index):
         try:
@@ -853,6 +1024,53 @@ class MainWindow(QMainWindow):
 
         self.render_to_image()
         self.update_all_points()
+
+    def _load_pending_stl(self):
+        """VTK初期化完了後にコマンドライン引数から渡されたSTLファイルをロード"""
+        if not self.pending_stl_file or not os.path.exists(self.pending_stl_file):
+            return
+
+        try:
+            # STLファイルを読み込む
+            self.show_stl(self.pending_stl_file)
+
+            # 対応するXMLファイルがあれば読み込む
+            xml_path = os.path.splitext(self.pending_stl_file)[0] + '.xml'
+            if os.path.exists(xml_path):
+                try:
+                    import xml.etree.ElementTree as ET
+                    tree = ET.parse(xml_path)
+                    root = tree.getroot()
+
+                    # XMLからパラメータを読み込む
+                    has_parameters = self.load_parameters_from_xml(root)
+
+                    # パラメータがXMLに含まれていない場合のみ再計算を行う
+                    if not has_parameters:
+                        self.calculate_and_update_properties()
+
+                    # ポイントデータを読み込む
+                    self._load_points_from_xml(root)
+
+                    # 表示を更新
+                    self.refresh_view()
+
+                    # カメラをリセット
+                    self.reset_camera()
+
+                    print(f"Loaded: {self.pending_stl_file}")
+                    print(f"Loaded: {xml_path}")
+                except Exception as e:
+                    print(f"Error loading XML: {str(e)}")
+            else:
+                print(f"Loaded: {self.pending_stl_file}")
+        except Exception as e:
+            print(f"Error loading STL file: {str(e)}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # ロード完了後はクリア
+            self.pending_stl_file = None
 
     def toggle_wireframe(self):
         """Toggle wireframe mode for STL actor"""
@@ -2356,160 +2574,6 @@ class MainWindow(QMainWindow):
 
         return horizontal_axis, vertical_axis, screen_right, screen_up
 
-    def export_stl_with_new_origin(self):
-        """
-        点1を原点として、3Dモデルファイルを新しい座標系で保存する。
-        法線の計算を改善し、品質を保証する。
-        """
-        if not self.stl_actor or not any(self.point_actors):
-            print("STL model or points are not set.")
-            return
-
-        # Get the original file extension and path
-        if hasattr(self, 'stl_file_path') and self.stl_file_path:
-            original_ext = os.path.splitext(self.stl_file_path)[1].lower()
-            default_name = self.stl_file_path  # Use same name for overwrite
-        else:
-            original_ext = '.stl'
-            default_name = ""
-
-        # Set file filter based on original file extension
-        if original_ext == '.dae':
-            file_filter = "COLLADA Files (*.dae);;STL Files (*.stl);;OBJ Files (*.obj);;All Files (*)"
-            default_ext = '.dae'
-        elif original_ext == '.obj':
-            file_filter = "OBJ Files (*.obj);;STL Files (*.stl);;COLLADA Files (*.dae);;All Files (*)"
-            default_ext = '.obj'
-        else:
-            file_filter = "STL Files (*.stl);;OBJ Files (*.obj);;COLLADA Files (*.dae);;All Files (*)"
-            default_ext = '.stl'
-
-        file_path, selected_filter = QFileDialog.getSaveFileName(
-            self, "Save 3D Model File", default_name, file_filter)
-        if not file_path:
-            return
-
-        # Add appropriate extension if not present, based on selected filter
-        if not os.path.splitext(file_path)[1]:
-            # Check which format was selected
-            if "COLLADA" in selected_filter:
-                file_path += '.dae'
-            elif "OBJ" in selected_filter:
-                file_path += '.obj'
-            elif "STL" in selected_filter:
-                file_path += '.stl'
-            else:
-                file_path += default_ext
-
-        try:
-            # 現在のSTLモデルのポリデータを取得
-            poly_data = self.stl_actor.GetMapper().GetInput()
-
-            # 最初に選択されているポイントを新しい原点として使用
-            origin_index = next(i for i, actor in enumerate(self.point_actors) if actor and actor.GetVisibility())
-            origin_point = self.point_coords[origin_index]
-
-            # Step 1: 選択されたポイントを原点とする平行移動のみを適用
-            # XYZ軸は元のメッシュのまま変更しない
-            transform = vtk.vtkTransform()
-            transform.Translate(-origin_point[0], -origin_point[1], -origin_point[2])
-
-            # Step 2: 変換を適用
-            transform_filter = vtk.vtkTransformPolyDataFilter()
-            transform_filter.SetInputData(poly_data)
-            transform_filter.SetTransform(transform)
-            transform_filter.Update()
-
-            # Step 3: トライアングルフィルタを適用して面の向きを統一
-            triangle_filter = vtk.vtkTriangleFilter()
-            triangle_filter.SetInputData(transform_filter.GetOutput())
-            triangle_filter.Update()
-
-            # Step 4: クリーンフィルタを適用
-            clean_filter = vtk.vtkCleanPolyData()
-            clean_filter.SetInputData(triangle_filter.GetOutput())
-            clean_filter.Update()
-
-            # Step 5: 法線の再計算
-            normal_generator = vtk.vtkPolyDataNormals()
-            normal_generator.SetInputData(clean_filter.GetOutput())
-            
-            # 法線計算の設定
-            normal_generator.SetFeatureAngle(60.0)  # 特徴エッジの角度閾値
-            normal_generator.SetSplitting(False)    # エッジでの分割を無効化
-            normal_generator.SetConsistency(True)   # 法線の一貫性を確保
-            normal_generator.SetAutoOrientNormals(True)  # 法線の自動配向
-            normal_generator.SetComputePointNormals(True)  # 頂点法線の計算
-            normal_generator.SetComputeCellNormals(True)   # 面法線の計算
-            normal_generator.SetFlipNormals(False)  # 法線の反転を無効化
-            normal_generator.NonManifoldTraversalOn()  # 非マニフォールドの処理を有効化
-            
-            # 法線の計算を実行
-            normal_generator.Update()
-
-            # Step 6: 変換後のデータを取得
-            transformed_poly_data = normal_generator.GetOutput()
-
-            # Step 7: 出力の品質チェック
-            if transformed_poly_data.GetNumberOfPoints() == 0:
-                raise ValueError("The transformed model has no vertices.")
-
-            # Determine file format from extension
-            file_ext = os.path.splitext(file_path)[1].lower()
-
-            # Use common utility function to save mesh
-            mesh_color = getattr(self, 'mesh_color', None)
-            color_manually_changed = getattr(self, 'color_manually_changed', False)
-
-            # Save using common function
-            save_polydata_to_mesh(
-                file_path,
-                transformed_poly_data,
-                mesh_color=mesh_color,
-                color_manually_changed=color_manually_changed
-            )
-
-            # Determine file extension for logging
-            file_ext = os.path.splitext(file_path)[1].lower()
-            if file_ext == '.dae':
-                if color_manually_changed and mesh_color is not None:
-                    print(f"Applied manually set color to .dae file: RGBA({mesh_color[0]:.3f}, {mesh_color[1]:.3f}, {mesh_color[2]:.3f}, {mesh_color[3] if len(mesh_color) > 3 else 1.0:.3f})")
-                else:
-                    print("Preserving original .dae file color (no manual color change)")
-                print(f"COLLADA file has been saved: {file_path}")
-            elif file_ext == '.obj':
-                print(f"OBJ file with corrected normals in the new coordinate system has been saved: {file_path}")
-            else:
-                print(f"STL file with corrected normals in the new coordinate system has been saved: {file_path}")
-
-            # メッシュの品質情報を出力
-            print(f"Number of vertices: {transformed_poly_data.GetNumberOfPoints()}")
-            print(f"Number of faces: {transformed_poly_data.GetNumberOfCells()}")
-
-            # Show success dialog
-            file_name = os.path.basename(file_path)
-            dir_path = os.path.dirname(file_path)
-
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Information)
-            msg.setWindowTitle("File Saved")
-            msg.setText(f"Saved as {file_name} in {dir_path}")
-            msg.setStandardButtons(QMessageBox.Close)
-            msg.exec()
-
-        except Exception as e:
-            print(f"An error occurred: {str(e)}")
-            import traceback
-            traceback.print_exc()
-
-            # Show error dialog
-            msg = QMessageBox(self)
-            msg.setIcon(QMessageBox.Critical)
-            msg.setWindowTitle("Error")
-            msg.setText(f"An error occurred: {str(e)}")
-            msg.setStandardButtons(QMessageBox.Close)
-            msg.exec()
-
     def handle_set_reset(self):
         sender = self.sender()
         is_set = sender.text() == "Set Point"
@@ -2533,6 +2597,15 @@ class MainWindow(QMainWindow):
         if not is_set:
             self.update_all_points_size()
 
+        self.render_to_image()
+
+    def handle_reset_only(self):
+        """チェックされたポイントを原点にリセット"""
+        for i, checkbox in enumerate(self.point_checkboxes):
+            if checkbox.isChecked():
+                self.reset_point_to_origin(i)
+
+        self.update_all_points_size()
         self.render_to_image()
 
     def get_mirrored_filename(self, original_path):
@@ -2829,9 +2902,41 @@ class MainWindow(QMainWindow):
             else:
                 mirrored_axis = "1 0 0"
 
+            # 関節角度制限を取得（ロール/ヨー軸の場合は入れ替え）
+            joint_limit_str = ""
+            if xml_data is not None:
+                limit_element = xml_data.find('.//joint/limit')
+                if limit_element is not None:
+                    lower = limit_element.get('lower')
+                    upper = limit_element.get('upper')
+                    effort = limit_element.get('effort')
+                    velocity = limit_element.get('velocity')
+
+                    if lower is not None and upper is not None:
+                        # 軸の種類を判定（1 0 0 = Roll, 0 1 0 = Pitch, 0 0 1 = Yaw）
+                        axis_xyz = [float(x) for x in mirrored_axis.split()]
+                        is_roll = abs(axis_xyz[0]) > 0.5  # X軸成分が大きい = Roll
+                        is_yaw = abs(axis_xyz[2]) > 0.5   # Z軸成分が大きい = Yaw
+
+                        if is_roll or is_yaw:
+                            # Roll/Yaw軸の場合は最小・最大を入れ替え、かつ符号を反転
+                            # 例：lower=-10, upper=190 -> lower=-190, upper=10
+                            lower_val = float(lower)
+                            upper_val = float(upper)
+                            lower = str(-upper_val)
+                            upper = str(-lower_val)
+                            print(f"Swapped and negated joint limits for {'Roll' if is_roll else 'Yaw'} axis: lower={lower}, upper={upper}")
+
+                        joint_limit_str = f'\n        <limit lower="{lower}" upper="{upper}"'
+                        if effort is not None:
+                            joint_limit_str += f' effort="{effort}"'
+                        if velocity is not None:
+                            joint_limit_str += f' velocity="{velocity}"'
+                        joint_limit_str += ' />'
+
             urdf_content += f"""
     <joint>
-        <axis xyz="{mirrored_axis}" />
+        <axis xyz="{mirrored_axis}" />{joint_limit_str}
     </joint>
 </urdf_part>"""
 
@@ -4280,25 +4385,31 @@ class BulkConversionCompleteDialog(QDialog):
         # Enterキーでダイアログを閉じられるようにする
         close_button.setDefault(True)
 
-def signal_handler(sig, frame):
-    print("Ctrl+C detected, closing application...")
-    QApplication.instance().quit()
+# signal_handler moved to urdf_kitchen_utils.py
+# Now using setup_signal_handlers()
 
 if __name__ == "__main__":
 
-    # Ctrl+Cのシグナルハンドラを設定
-    signal.signal(signal.SIGINT, signal_handler)
+    # Ctrl+Cのシグナルハンドラを設定（utils関数使用）
+    setup_signal_handlers()
 
     app = QApplication(sys.argv)
-    apply_dark_theme(app)
+    apply_dark_theme(app)  # Custom theme with extensive widget styling
 
     window = MainWindow()
     window.show()
 
-    # タイマーを設定してシグナルを処理できるようにする
-    timer = QTimer()
-    timer.start(500)  # 500ミリ秒ごとにイベントループを中断
-    timer.timeout.connect(lambda: None)  # ダミー関数を接続
+    # コマンドライン引数からSTLファイルのパスを取得
+    # VTK初期化前なので、pending_stl_fileに保存してVTK初期化後にロード
+    if len(sys.argv) > 1:
+        stl_file_path = sys.argv[1]
+        if os.path.exists(stl_file_path):
+            window.pending_stl_file = stl_file_path
+        else:
+            print(f"File not found: {stl_file_path}")
+
+    # シグナル処理用タイマー（utils関数使用）
+    timer = setup_signal_processing_timer(app)
 
     try:
         sys.exit(app.exec())
