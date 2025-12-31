@@ -4,7 +4,9 @@ Description: A Python script for reconfiguring the center coordinates and axis d
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Created On  : Dec 28, 2025
+Created On  : Dec 31, 2025
+
+
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -21,6 +23,7 @@ pip install pycollada
 """
 
 import sys
+import os
 import signal
 import vtk
 import numpy as np
@@ -44,12 +47,13 @@ from PySide6.QtCore import QTimer, Qt, QObject
 from urdf_kitchen_utils import (
     OffscreenRenderer, CameraController, AnimatedCameraRotation,
     AdaptiveMarkerSize, MouseDragState, calculate_arrow_key_step,
-    get_mesh_file_filter, load_mesh_to_polydata, save_polydata_to_mesh
+    get_mesh_file_filter, load_mesh_to_polydata, save_polydata_to_mesh,
+    is_apple_silicon, setup_qt_environment_for_apple_silicon,
+    setup_signal_handlers, setup_signal_processing_timer
 )
 
 # M4 Mac (Apple Silicon) compatibility
-import platform
-IS_APPLE_SILICON = platform.machine() == 'arm64' and platform.system() == 'Darwin'
+IS_APPLE_SILICON = is_apple_silicon()
 
 # Always use QVTKRenderWindowInteractor (QVTKOpenGLNativeWidget not available in this VTK build)
 USE_NATIVE_WIDGET = False
@@ -275,6 +279,8 @@ class MainWindow(QMainWindow):
 
         # DON'T setup VTK yet - delay it until after window is shown
         self.vtk_initialized = False
+        self.vtk_fully_ready = False  # VTK初期化完了フラグ
+        self.pending_file_to_load = None  # 初期化後に読み込むファイル
 
         self.model_bounds = None
         self.stl_actor = None
@@ -354,10 +360,25 @@ class MainWindow(QMainWindow):
         try:
             QTimer.singleShot(200, self.render_to_image)
             QTimer.singleShot(300, lambda: self.vtk_display.setFocus())
+            # VTK初期化完了後、保留中のファイルがあれば読み込む
+            QTimer.singleShot(400, self._load_pending_file)
         except Exception as e:
             print(f"ERROR in VTK final step: {e}")
             import traceback
             traceback.print_exc()
+
+    def _load_pending_file(self):
+        """VTK初期化完了後、保留中のファイルを読み込む"""
+        self.vtk_fully_ready = True
+        if self.pending_file_to_load:
+            print(f"VTK ready. Loading pending file: {self.pending_file_to_load}")
+            try:
+                self.show_stl(self.pending_file_to_load)
+                self.pending_file_to_load = None
+            except Exception as e:
+                print(f"Error loading pending file: {e}")
+                import traceback
+                traceback.print_exc()
 
     def _delayed_render(self):
         try:
@@ -1436,17 +1457,14 @@ class MainWindow(QMainWindow):
         self.update_axes_widget(x_axis, y_axis, z_axis)
         self.reset_camera()
 
-def signal_handler(sig, frame):
-    QApplication.instance().quit()
+# signal_handler moved to urdf_kitchen_utils.py
+# Now using setup_signal_handlers()
 
 
 if __name__ == "__main__":
-    import os
-
-    # M4 Mac (Apple Silicon) detection
+    # M4 Mac (Apple Silicon) detection and setup (using utils)
     if IS_APPLE_SILICON:
-        # Set environment variable for better compatibility
-        os.environ['QT_MAC_WANTS_LAYER'] = '1'
+        setup_qt_environment_for_apple_silicon()
 
     # Set Qt attributes BEFORE creating QApplication
     QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
@@ -1454,8 +1472,8 @@ if __name__ == "__main__":
     # Create QApplication
     app = QApplication(sys.argv)
 
-    # Ctrl+Cのシグナルハンドラを設定
-    signal.signal(signal.SIGINT, signal_handler)
+    # Ctrl+Cのシグナルハンドラを設定（utils関数使用）
+    setup_signal_handlers(verbose=False)
 
     try:
         window = MainWindow()
@@ -1479,15 +1497,23 @@ if __name__ == "__main__":
         window.raise_()
         window.activateWindow()
 
+        # コマンドライン引数でファイルが指定された場合は、VTK初期化後に読み込むよう設定
+        if len(sys.argv) > 1:
+            file_path = sys.argv[1]
+            if os.path.exists(file_path):
+                print(f"File specified from command line: {file_path}")
+                print("Will load after VTK initialization completes...")
+                window.pending_file_to_load = file_path
+            else:
+                print(f"Warning: File not found: {file_path}")
+
     except Exception as e:
         print(f"Error creating window: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
 
-    # タイマーを設定してシグナルを処理できるようにする
-    timer = QTimer()
-    timer.start(500)
-    timer.timeout.connect(lambda: None)
+    # シグナル処理用タイマー（utils関数使用）
+    timer = setup_signal_processing_timer(app)
 
     sys.exit(app.exec())
