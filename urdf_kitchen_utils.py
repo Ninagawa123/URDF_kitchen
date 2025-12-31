@@ -4,6 +4,7 @@ Description: Shared VTK utilities for URDF Kitchen tools (PartsEditor, Assembler
 
 Author      : Ninagawa123
 Created On  : Dec 28, 2025
+Update      : Dec 31, 2025
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -1175,3 +1176,436 @@ def save_polydata_to_mesh(file_path, poly_data, mesh_color=None, color_manually_
         stl_writer.SetInputData(poly_data)
         stl_writer.SetFileTypeToBinary()
         stl_writer.Write()
+
+
+# ============================================================================
+# Qt Application Setup Utilities
+# ============================================================================
+
+def setup_signal_handlers(verbose=True, include_sigterm=True):
+    """
+    Setup signal handlers for graceful application shutdown.
+
+    Args:
+        verbose: If True, print message when signal received
+        include_sigterm: If True, also handle SIGTERM signal
+
+    Usage:
+        setup_signal_handlers()  # Call before QApplication.exec()
+    """
+    import signal
+    from PySide6.QtWidgets import QApplication
+
+    def signal_handler(signum, frame):
+        """Signal handler for SIGINT (Ctrl+C) and SIGTERM"""
+        if verbose:
+            print("\nCtrl+C detected, closing application...")
+        app = QApplication.instance()
+        if app:
+            app.quit()
+
+    signal.signal(signal.SIGINT, signal_handler)
+    if include_sigterm:
+        signal.signal(signal.SIGTERM, signal_handler)
+
+
+def setup_signal_processing_timer(app, interval_ms=500):
+    """
+    Create a QTimer to allow Python signal processing in Qt event loop.
+
+    Qt's event loop can block signal processing, so this timer periodically
+    interrupts the loop to allow signals like SIGINT to be processed.
+
+    Args:
+        app: QApplication instance
+        interval_ms: Timer interval in milliseconds (default 500)
+
+    Returns:
+        QTimer instance (keep reference to prevent garbage collection)
+
+    Usage:
+        app = QApplication(sys.argv)
+        timer = setup_signal_processing_timer(app)
+        # ... rest of setup ...
+        sys.exit(app.exec())
+    """
+    from PySide6.QtCore import QTimer
+
+    timer = QTimer()
+    timer.start(interval_ms)
+    timer.timeout.connect(lambda: None)  # Dummy function to interrupt event loop
+    return timer
+
+
+def is_apple_silicon():
+    """
+    Detect if running on Apple Silicon (M1/M2/M3/M4).
+
+    Returns:
+        bool: True if running on Apple Silicon, False otherwise
+    """
+    import platform
+    return platform.system() == 'Darwin' and platform.machine() == 'arm64'
+
+
+def setup_qt_environment_for_apple_silicon():
+    """
+    Configure Qt environment variables for Apple Silicon compatibility.
+
+    Should be called before creating QApplication on Apple Silicon Macs.
+
+    Usage:
+        if is_apple_silicon():
+            setup_qt_environment_for_apple_silicon()
+        app = QApplication(sys.argv)
+    """
+    import os
+    os.environ['QT_MAC_WANTS_LAYER'] = '1'
+
+
+# VTK Display Stylesheet Constant
+VTK_DISPLAY_STYLESHEET = """
+    QLabel {
+        background-color: #1a1a1a;
+        border: 2px solid #555;
+    }
+    QLabel:focus {
+        border: 2px solid #00aaff;
+    }
+"""
+
+
+def create_vtk_display_widget(parent, min_width=800, min_height=600, text="3D View\n\n(Load file to display)"):
+    """
+    Create a QLabel widget configured for VTK rendering display.
+
+    Args:
+        parent: Parent widget
+        min_width: Minimum width in pixels (default 800)
+        min_height: Minimum height in pixels (default 600)
+        text: Initial text to display (default "3D View\\n\\n(Load file to display)")
+
+    Returns:
+        QLabel: Configured widget ready for VTK rendering
+
+    Usage:
+        self.vtk_display = create_vtk_display_widget(self, min_width=800, min_height=600)
+        layout.addWidget(self.vtk_display)
+    """
+    from PySide6.QtWidgets import QLabel
+    from PySide6.QtCore import Qt
+
+    vtk_display = QLabel(parent)
+    vtk_display.setMinimumSize(min_width, min_height)
+    vtk_display.setStyleSheet(VTK_DISPLAY_STYLESHEET)
+    vtk_display.setAlignment(Qt.AlignCenter)
+    vtk_display.setText(text)
+    vtk_display.setScaledContents(False)
+    vtk_display.setFocusPolicy(Qt.StrongFocus)
+
+    return vtk_display
+
+
+def setup_dark_theme(app, theme='default', custom_styles=None):
+    """
+    Apply dark theme to Qt application with optional theme presets.
+
+    Args:
+        app: QApplication instance
+        theme: Theme preset - 'default', 'parts_editor', 'assembler', 'mesh_sourcer'
+        custom_styles: Optional dict of custom stylesheet rules to append
+
+    Usage:
+        app = QApplication(sys.argv)
+        setup_dark_theme(app, theme='parts_editor')
+        # Or with custom styles:
+        setup_dark_theme(app, theme='assembler', custom_styles={
+            'QTextEdit': 'background-color: #2a2a2a;'
+        })
+    """
+    from PySide6.QtGui import QPalette, QColor
+
+    if theme == 'parts_editor':
+        # PartsEditor theme: warm gray tones with extensive styling
+        palette = app.palette()
+        palette.setColor(QPalette.Window, QColor(70, 80, 80))
+        palette.setColor(QPalette.WindowText, QColor(240, 240, 237))
+        palette.setColor(QPalette.Base, QColor(240, 240, 237))
+        palette.setColor(QPalette.AlternateBase, QColor(230, 230, 227))
+        palette.setColor(QPalette.ToolTipBase, QColor(240, 240, 237))
+        palette.setColor(QPalette.ToolTipText, QColor(51, 51, 51))
+        palette.setColor(QPalette.Text, QColor(51, 51, 51))
+        palette.setColor(QPalette.Button, QColor(240, 240, 237))
+        palette.setColor(QPalette.ButtonText, QColor(51, 51, 51))
+        palette.setColor(QPalette.Highlight, QColor(150, 150, 150))
+        palette.setColor(QPalette.HighlightedText, QColor(240, 240, 237))
+        app.setPalette(palette)
+
+        stylesheet = """
+            QMainWindow {
+                background-color: #404244;
+            }
+            QPushButton {
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                stop:0 #5a5a5a, stop:1 #3a3a3a);
+                color: #ffffff;
+                border: 1px solid #707070;
+                border-radius: 5px;
+                padding: 2px 8px;
+                margin: 3px 2px;
+                min-height: 20px;
+            }
+            QPushButton:hover {
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                stop:0 #6a6a6a, stop:1 #4a4a4a);
+            }
+            QPushButton:pressed {
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                stop:0 #3a3a3a, stop:1 #5a5a5a);
+            }
+            QLineEdit {
+                background-color: #F0F0ED;
+                border: 1px solid #BBBBB7;
+                color: #333333;
+                padding: 1px;
+                border-radius: 2px;
+                min-height: 12px;
+                max-height: 12px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #999999;
+                background-color: #FFFFFF;
+            }
+            QLabel {
+                color: #F0F0ED;
+            }
+            QCheckBox {
+                color: #F0F0ED;
+                spacing: 10px;
+            }
+            QCheckBox::indicator {
+                width: 12px;
+                height: 12px;
+            }
+        """
+        app.setStyleSheet(stylesheet)
+
+    elif theme == 'assembler':
+        # Assembler theme: cooler dark tones with minimal styling
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(53, 53, 53))
+        palette.setColor(QPalette.WindowText, QColor(255, 255, 255))
+        palette.setColor(QPalette.Base, QColor(42, 42, 42))
+        palette.setColor(QPalette.AlternateBase, QColor(66, 66, 66))
+        palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
+        palette.setColor(QPalette.ToolTipText, QColor(255, 255, 255))
+        palette.setColor(QPalette.Text, QColor(255, 255, 255))
+        palette.setColor(QPalette.Button, QColor(53, 53, 53))
+        palette.setColor(QPalette.ButtonText, QColor(255, 255, 255))
+        palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
+        palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+        palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
+        app.setPalette(palette)
+
+    elif theme == 'mesh_sourcer':
+        # MeshSourcer theme: similar to assembler but may have custom tweaks
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(53, 53, 53))
+        palette.setColor(QPalette.WindowText, QColor(255, 255, 255))
+        palette.setColor(QPalette.Base, QColor(42, 42, 42))
+        palette.setColor(QPalette.AlternateBase, QColor(66, 66, 66))
+        palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
+        palette.setColor(QPalette.ToolTipText, QColor(255, 255, 255))
+        palette.setColor(QPalette.Text, QColor(255, 255, 255))
+        palette.setColor(QPalette.Button, QColor(53, 53, 53))
+        palette.setColor(QPalette.ButtonText, QColor(255, 255, 255))
+        palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
+        palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+        palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
+        app.setPalette(palette)
+
+    else:  # 'default' or any other value
+        # Default dark theme (same as assembler)
+        palette = QPalette()
+        palette.setColor(QPalette.Window, QColor(53, 53, 53))
+        palette.setColor(QPalette.WindowText, QColor(255, 255, 255))
+        palette.setColor(QPalette.Base, QColor(42, 42, 42))
+        palette.setColor(QPalette.AlternateBase, QColor(66, 66, 66))
+        palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
+        palette.setColor(QPalette.ToolTipText, QColor(255, 255, 255))
+        palette.setColor(QPalette.Text, QColor(255, 255, 255))
+        palette.setColor(QPalette.Button, QColor(53, 53, 53))
+        palette.setColor(QPalette.ButtonText, QColor(255, 255, 255))
+        palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
+        palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
+        palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
+        app.setPalette(palette)
+
+    # Apply custom styles if provided
+    if custom_styles:
+        additional_stylesheet = "\n".join([f"{selector} {{ {rules} }}"
+                                          for selector, rules in custom_styles.items()])
+        current_stylesheet = app.styleSheet()
+        app.setStyleSheet(current_stylesheet + "\n" + additional_stylesheet)
+
+
+# ==============================================================================
+# Physical Properties Mirroring (Y-axis)
+# ==============================================================================
+
+def mirror_physical_properties_y_axis(inertia_dict, inertial_origin_dict):
+    """
+    Y軸でミラーリングする際の物理プロパティ変換（慣性テンソルと慣性中心）
+
+    この関数は、左右対称なパーツの物理特性を正しくミラーリングします。
+    PartsEditorで使用されている方法を標準化したものです。
+
+    Y軸ミラーリングの物理的変換:
+    - 慣性中心（COM）: Y座標を反転 [x, y, z] → [x, -y, z]
+    - 慣性テンソル:
+      * 対角成分（ixx, iyy, izz）: 変化なし
+      * 非対角成分: ixy, iyz を符号反転、ixz は変化なし
+
+    Args:
+        inertia_dict: dict - 慣性テンソルの辞書
+            {'ixx': float, 'iyy': float, 'izz': float,
+             'ixy': float, 'ixz': float, 'iyz': float}
+        inertial_origin_dict: dict - 慣性中心の辞書
+            {'xyz': [x, y, z], 'rpy': [r, p, y]}
+
+    Returns:
+        tuple: (mirrored_inertia_dict, mirrored_inertial_origin_dict)
+
+    Example:
+        >>> inertia = {'ixx': 0.001, 'iyy': 0.002, 'izz': 0.003,
+        ...            'ixy': 0.0001, 'ixz': 0.0002, 'iyz': 0.0003}
+        >>> origin = {'xyz': [0.1, 0.2, 0.3], 'rpy': [0, 0, 0]}
+        >>> mir_inertia, mir_origin = mirror_physical_properties_y_axis(inertia, origin)
+        >>> print(mir_origin['xyz'])  # [0.1, -0.2, 0.3]
+        >>> print(mir_inertia['ixy'])  # -0.0001
+    """
+    # 慣性テンソルのミラーリング
+    mirrored_inertia = {}
+    if inertia_dict is not None and isinstance(inertia_dict, dict):
+        mirrored_inertia = inertia_dict.copy()
+        # Y軸ミラーリング: ixyとiyzの符号を反転
+        if 'ixy' in mirrored_inertia:
+            mirrored_inertia['ixy'] = -inertia_dict['ixy']
+        if 'iyz' in mirrored_inertia:
+            mirrored_inertia['iyz'] = -inertia_dict['iyz']
+        # ixx, iyy, izz, ixzはそのまま
+
+    # 慣性中心（COM）のミラーリング
+    mirrored_origin = {}
+    if inertial_origin_dict is not None and isinstance(inertial_origin_dict, dict):
+        mirrored_origin = inertial_origin_dict.copy()
+        if 'xyz' in mirrored_origin and len(mirrored_origin['xyz']) >= 3:
+            xyz = mirrored_origin['xyz']
+            mirrored_origin['xyz'] = [xyz[0], -xyz[1], xyz[2]]
+        # RPYはそのまま（回転の扱いは複雑なため、必要に応じて調整）
+
+    return mirrored_inertia, mirrored_origin
+
+
+def calculate_mirrored_physical_properties_from_mesh(mesh_file_path, mass, density=1.0):
+    """
+    メッシュファイルからY軸ミラーリングされた物理プロパティを計算
+
+    この関数は、STL/OBJ/DAEメッシュファイルをY軸でミラーリングし、
+    ミラーリングされたジオメトリから物理プロパティ（体積、重心、慣性テンソル）を
+    再計算します。PartsEditorで使用されている標準的な方法です。
+
+    Args:
+        mesh_file_path: str - メッシュファイルのパス（.stl, .obj, .dae）
+        mass: float - 質量（kg）
+        density: float - 密度（kg/m³）、massが指定されていない場合に使用
+
+    Returns:
+        dict: ミラーリングされた物理プロパティ
+            {
+                'volume': float,
+                'mass': float,
+                'center_of_mass': [x, y, z],
+                'inertia': {
+                    'ixx': float, 'iyy': float, 'izz': float,
+                    'ixy': float, 'ixz': float, 'iyz': float
+                }
+            }
+        エラー時はNoneを返す
+
+    Example:
+        >>> props = calculate_mirrored_physical_properties_from_mesh(
+        ...     'l_arm.stl', mass=0.5)
+        >>> print(props['center_of_mass'])  # Y座標が反転された重心
+        >>> print(props['inertia']['ixy'])  # 符号反転された非対角成分
+    """
+    import vtk
+    import numpy as np
+
+    try:
+        # メッシュファイルを読み込む
+        poly_data, volume_unused, extracted_color = load_mesh_to_polydata(mesh_file_path)
+
+        # Y軸反転の変換を設定
+        transform = vtk.vtkTransform()
+        transform.Scale(1, -1, 1)
+
+        # 変換を適用
+        transformer = vtk.vtkTransformPolyDataFilter()
+        transformer.SetInputData(poly_data)
+        transformer.SetTransform(transform)
+        transformer.Update()
+
+        # 法線の修正
+        normal_generator = vtk.vtkPolyDataNormals()
+        normal_generator.SetInputData(transformer.GetOutput())
+        normal_generator.ConsistencyOn()
+        normal_generator.AutoOrientNormalsOn()
+        normal_generator.ComputeCellNormalsOn()
+        normal_generator.ComputePointNormalsOn()
+        normal_generator.Update()
+
+        mirrored_poly_data = normal_generator.GetOutput()
+
+        # 体積を計算
+        mass_properties = vtk.vtkMassProperties()
+        mass_properties.SetInputData(mirrored_poly_data)
+        mass_properties.Update()
+        volume = mass_properties.GetVolume()
+
+        # 質量が指定されていない場合は体積×密度で計算
+        if mass is None or mass <= 0:
+            mass = volume * density
+
+        # 重心を計算
+        com_filter = vtk.vtkCenterOfMass()
+        com_filter.SetInputData(mirrored_poly_data)
+        com_filter.SetUseScalarsAsWeights(False)
+        com_filter.Update()
+        center_of_mass = list(com_filter.GetCenter())
+
+        # 慣性テンソルを計算（is_mirrored=Trueでミラーリングを考慮）
+        inertia_tensor = calculate_inertia_tensor(
+            mirrored_poly_data, mass, center_of_mass, is_mirrored=True
+        )
+
+        # 辞書形式で返す
+        return {
+            'volume': volume,
+            'mass': mass,
+            'center_of_mass': center_of_mass,
+            'inertia': {
+                'ixx': float(inertia_tensor[0, 0]),
+                'iyy': float(inertia_tensor[1, 1]),
+                'izz': float(inertia_tensor[2, 2]),
+                'ixy': float(inertia_tensor[0, 1]),
+                'ixz': float(inertia_tensor[0, 2]),
+                'iyz': float(inertia_tensor[1, 2])
+            }
+        }
+
+    except Exception as e:
+        print(f"Error calculating mirrored properties from mesh: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        return None
