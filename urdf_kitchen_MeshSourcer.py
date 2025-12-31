@@ -4,7 +4,7 @@ Description: A Python script for reconfiguring the center coordinates and axis d
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Created On  : Dec 31, 2025
+Created On  : Jan  1, 2026
 
 
 Version     : 0.1.0
@@ -39,7 +39,8 @@ except ImportError:
 
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QMainWindow, QVBoxLayout, QWidget,
-    QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout
+    QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout,
+    QComboBox, QGroupBox, QScrollArea, QButtonGroup, QRadioButton
 )
 from PySide6.QtCore import QTimer, Qt, QObject
 
@@ -190,7 +191,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("URDF kitchen - MeshSourcer v0.1.0")
-        self.setGeometry(100, 100, 700, 700)
+        self.resize(1200, 600)  # Wider window, 800px height
 
         self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
         self.absolute_origin = [0, 0, 0]  # 大原点の設定
@@ -207,36 +208,21 @@ class MainWindow(QMainWindow):
         # Track loaded STL file path for save dialog defaults
         self.current_stl_path = None
 
-        # メインウィジェットとレイアウトの設定
-        central_widget = QWidget(self)
+        # メインウィジェットとレイアウトの設定（横分割）
+        central_widget = QWidget()
         self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)
+        main_layout = QHBoxLayout(central_widget)
 
         self.set_ui_style()
 
-        # ファイル名表示用のラベル
-        self.file_name_label = QLabel("File: No file loaded")
-        main_layout.addWidget(self.file_name_label)
-
-        # LOADボタンとEXPORTボタン
-        button_layout = QHBoxLayout()
-        self.load_button = QPushButton("Load Mesh")
-        self.load_button.setFocusPolicy(Qt.NoFocus)  # Don't steal focus from vtk_display
-        self.load_button.clicked.connect(self.load_stl_file)
-        self.load_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
-        button_layout.addWidget(self.load_button)
-
-        self.export_stl_button = QPushButton("Save as reoriented Mesh")
-        self.export_stl_button.setFocusPolicy(Qt.NoFocus)  # Don't steal focus from vtk_display
-        self.export_stl_button.clicked.connect(self.export_stl_with_new_origin)
-        self.export_stl_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
-        button_layout.addWidget(self.export_stl_button)
-
-        main_layout.addLayout(button_layout)
+        # 左側：3Dビュー
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
 
         # STL表示画面 - Use QLabel instead of QVTKRenderWindowInteractor for M4 Mac compatibility
-        self.vtk_display = QLabel(central_widget)
-        self.vtk_display.setMinimumSize(800, 600)
+        self.vtk_display = QLabel()
+        self.vtk_display.setMinimumSize(600, 600)
         self.vtk_display.setStyleSheet("""
             QLabel {
                 background-color: #1a1a1a;
@@ -261,21 +247,86 @@ class MainWindow(QMainWindow):
         # Install event filter for mouse events
         self.vtk_display.installEventFilter(self)
 
-        main_layout.addWidget(self.vtk_display)
+        left_layout.addWidget(self.vtk_display)
+        main_layout.addWidget(left_widget, 70)  # 70% width for 3D view
 
         # Create offscreen VTK render window
         self.render_window = vtk.vtkRenderWindow()
         self.render_window.SetOffScreenRendering(1)
-        self.render_window.SetSize(800, 600)
+        self.render_window.SetSize(1000, 800)
 
         # No more QVTKRenderWindowInteractor - using offscreen rendering
 
-        # Volume表示
-        self.volume_label = QLabel("Volume (m^3): 0.000000")
-        main_layout.addWidget(self.volume_label)
+        # 右側：コントロールパネル（スクロール可能、400px固定幅）
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        right_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        right_scroll.setFixedWidth(400)  # Fixed width: 400px
 
-        # Points UI
-        self.setup_points_ui(main_layout)
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setSpacing(4)  # Reduce vertical spacing to 2/3 (default ~6-8)
+        right_layout.setContentsMargins(8, 8, 8, 8)  # Reduce margins
+        right_scroll.setWidget(right_widget)
+        main_layout.addWidget(right_scroll)  # Fixed width, no stretch factor
+
+        # ファイル名表示用のラベル
+        self.file_name_label = QLabel("File: No file loaded")
+        right_layout.addWidget(self.file_name_label)
+
+        # LOADボタン
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(4)  # Reduce horizontal spacing
+        self.load_button = QPushButton("Load Mesh")
+        self.load_button.setFocusPolicy(Qt.NoFocus)
+        self.load_button.clicked.connect(self.load_stl_file)
+        self.load_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(self.load_button)
+
+        right_layout.addLayout(button_layout)
+
+        # Initialize collider state BEFORE setting up UI
+        self.collider_type = "box"
+        self.collider_params = {"box": [1.0, 1.0, 1.0], "sphere": [0.5], "cylinder": [0.5, 1.0], "capsule": [0.5, 1.0]}
+        self.collider_position = [0.0, 0.0, 0.0]
+        self.collider_rotation = [0.0, 0.0, 0.0]  # roll, pitch, yaw in degrees (for UI display)
+        self.collider_rotation_quaternion = np.array([1.0, 0.0, 0.0, 0.0])  # [w, x, y, z] for actual rotation
+        self.collider_actor = None
+        self.collider_surface_actor = None  # Surface actor for blinking effect
+        self.collider_type_initialized = {"box": False, "sphere": False, "cylinder": False, "capsule": False}
+        self.collider_show = False  # Show/hide collider (default: unchecked)
+        self.collider_first_show = True  # Track if this is the first time Show is clicked
+
+        # Timer for collider surface blinking (1 second interval)
+        self.collider_blink_timer = QTimer()
+        self.collider_blink_timer.timeout.connect(self.toggle_collider_surface)
+        self.collider_blink_state = False
+
+        # Flags for keyboard control
+        self.center_position_active = True  # Center Position checkbox state
+        self.collider_position_active = False  # Collider Position checkbox state
+        self.collider_size_active = False  # Collider Size checkbox state (for box)
+        self.collider_radius_length_active = False  # Collider Radius/Length checkbox state (shared)
+        self.collider_rotation_active = False  # Collider Rotation checkbox state
+
+        # Add spacing before Origin Coordinates
+        right_layout.addSpacing(10)
+        # Reorient Mesh UI (includes Volume and Center Position)
+        self.setup_reorient_mesh_ui(right_layout)
+
+        # Add spacing before Collider Design
+        right_layout.addSpacing(10)
+        # Collider UI
+        self.setup_collider_ui(right_layout)
+
+        # Add spacing before Batch Mesh Converter
+        right_layout.addSpacing(10)
+        # Batch Converter UI
+        self.setup_batch_converter_ui(right_layout)
+
+        # Add stretch to push everything to the top
+        right_layout.addStretch()
 
         # DON'T setup VTK yet - delay it until after window is shown
         self.vtk_initialized = False
@@ -293,6 +344,9 @@ class MainWindow(QMainWindow):
         self.wireframe_actor = None
         self.original_stl_color = None  # Store original color
         self._toggling_wireframe = False  # Lock for wireframe toggle
+
+        # Help text visibility toggle
+        self.help_visible = True  # Show help text by default
 
         # Rendering lock to prevent re-entry
         self._is_rendering = False
@@ -390,6 +444,13 @@ class MainWindow(QMainWindow):
 
     def render_to_image(self):
         """Render VTK scene offscreen and display as image in QLabel"""
+        # Dynamically adjust RenderWindow size to match QLabel size
+        # This prevents text clipping and scale issues at different window sizes
+        label_width = self.vtk_display.width()
+        label_height = self.vtk_display.height()
+        if label_width > 0 and label_height > 0:
+            self.render_window.SetSize(label_width, label_height)
+
         self.offscreen_renderer.update_display(self.vtk_display, restore_focus=True)
         self._render_counter += 1
 
@@ -406,6 +467,13 @@ class MainWindow(QMainWindow):
     def set_ui_style(self):
         self.setStyleSheet("""
             QMainWindow {
+                background-color: #2b2b2b;
+            }
+            QScrollArea {
+                background-color: #2b2b2b;
+                border: none;
+            }
+            QWidget {
                 background-color: #2b2b2b;
             }
             QLabel {
@@ -437,6 +505,35 @@ class MainWindow(QMainWindow):
                 border-radius: 3px;
                 padding: 2px;
             }
+            QComboBox {
+                background-color: #3a3a3a;
+                color: #ffffff;
+                border: 1px solid #5a5a5a;
+                border-radius: 3px;
+                padding: 2px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid #ffffff;
+            }
+            QGroupBox {
+                color: #ffffff;
+                border: 1px solid #5a5a5a;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 5px;
+                color: #4a90e2;
+            }
             QCheckBox {
                 color: #ffffff;
             }
@@ -454,55 +551,678 @@ class MainWindow(QMainWindow):
             }
         """)
 
-    def setup_points_ui(self, layout):
+    def setup_points_ui(self):
+        """Create and return the Center Position layout (no longer adds to parent layout)"""
         points_layout = QGridLayout()
+        points_layout.setSpacing(4)  # Reduce spacing between grid cells
+        points_layout.setVerticalSpacing(5)  # Vertical spacing: 5px
+        points_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
 
         for i in range(self.num_points):
-            # Replace checkbox with "Center Position" label
-            label = QLabel("Center Position")
-            points_layout.addWidget(label, i, 0)
-
-            # Create hidden checkbox for backward compatibility (always checked)
+            # Checkbox and Target Marker label on the same row
             checkbox = QCheckBox()
             checkbox.setChecked(True)
-            checkbox.setVisible(False)  # Hide the checkbox
+            checkbox.stateChanged.connect(lambda state, idx=i: self.on_center_position_checkbox_changed(idx, state))
             self.point_checkboxes.append(checkbox)
+            points_layout.addWidget(checkbox, i*2, 0)
 
+            label = QLabel("Target Marker Position:")
+            points_layout.addWidget(label, i*2, 1, 1, 7)  # Span remaining columns
+
+            # Input fields on the next row
             inputs = []
             for j, axis in enumerate(['X', 'Y', 'Z']):
                 input_field = QLineEdit(str(self.point_coords[i][j]))
                 # Only focus when explicitly clicked, don't steal keyboard focus
                 input_field.setFocusPolicy(Qt.ClickFocus)
                 # Return focus to vtk_display when editing is done
+                input_field.editingFinished.connect(lambda idx=i: self.on_center_position_changed(idx))
                 input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
                 inputs.append(input_field)
-                points_layout.addWidget(QLabel(f"{axis}:"), i, j*2+1)
-                points_layout.addWidget(input_field, i, j*2+2)
+                points_layout.addWidget(QLabel(f"{axis}:"), i*2+1, j*2)
+                points_layout.addWidget(input_field, i*2+1, j*2+1)
             self.point_inputs.append(inputs)
 
-        layout.addLayout(points_layout)
+        return points_layout
 
-        # SET と RESET ボタン
+    def setup_reorient_mesh_ui(self, layout):
+        """Setup Origin Marker UI group box"""
+        # Create group box for reorient mesh section
+        reorient_group = QGroupBox("Origin Coordinates")
+        reorient_layout = QVBoxLayout()
+        reorient_layout.setSpacing(4)  # Reduce vertical spacing
+        reorient_layout.setContentsMargins(8, 8, 8, 8)  # Reduce margins
+
+        # Volume表示
+        self.volume_label = QLabel("Volume (m^3): 0.000000")
+        reorient_layout.addWidget(self.volume_label)
+
+        # Center Position (from setup_points_ui)
+        points_layout = self.setup_points_ui()
+        reorient_layout.addLayout(points_layout)
+
+        # Save, Reset Marker, and Set Front as X buttons (horizontal layout)
         button_layout = QHBoxLayout()
-        set_button = QPushButton("Set Marker")
-        set_button.setFocusPolicy(Qt.NoFocus)  # Don't steal focus from vtk_display
-        set_button.clicked.connect(self.handle_set_reset)
-        set_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
-        button_layout.addWidget(set_button)
+        button_layout.setSpacing(4)  # Reduce horizontal spacing
 
         reset_button = QPushButton("Reset Marker")
-        reset_button.setFocusPolicy(Qt.NoFocus)  # Don't steal focus from vtk_display
+        reset_button.setFocusPolicy(Qt.NoFocus)
         reset_button.clicked.connect(self.handle_set_reset)
         reset_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
         button_layout.addWidget(reset_button)
 
         set_front_button = QPushButton("Set Front as X")
-        set_front_button.setFocusPolicy(Qt.NoFocus)  # Don't steal focus from vtk_display
+        set_front_button.setFocusPolicy(Qt.NoFocus)
         set_front_button.clicked.connect(self.handle_set_reset)
         set_front_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
         button_layout.addWidget(set_front_button)
 
-        layout.addLayout(button_layout)
+        self.export_stl_button = QPushButton("Save")
+        self.export_stl_button.setFocusPolicy(Qt.NoFocus)
+        self.export_stl_button.clicked.connect(self.export_stl_with_new_origin)
+        self.export_stl_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(self.export_stl_button)
+
+        reorient_layout.addLayout(button_layout)
+
+        reorient_group.setLayout(reorient_layout)
+        layout.addWidget(reorient_group)
+
+    def setup_collider_ui(self, layout):
+        """Setup collider design UI"""
+        # Create group box for collider section
+        collider_group = QGroupBox("Collider Design")
+        collider_layout = QVBoxLayout()
+        collider_layout.setSpacing(4)  # Reduce vertical spacing
+        collider_layout.setContentsMargins(8, 8, 8, 8)  # Reduce margins
+
+        # Show checkbox and Type selection
+        type_layout = QHBoxLayout()
+        type_layout.setSpacing(4)  # Reduce horizontal spacing
+        self.collider_show_checkbox = QCheckBox("Show Collider")
+        self.collider_show_checkbox.setChecked(False)  # Default: unchecked
+        self.collider_show_checkbox.stateChanged.connect(self.on_collider_show_changed)
+        type_layout.addWidget(self.collider_show_checkbox)
+
+        type_layout.addWidget(QLabel("Type:"))
+        self.collider_type_combo = QComboBox()
+        self.collider_type_combo.addItems(["box", "sphere", "cylinder", "capsule"])
+        self.collider_type_combo.setFocusPolicy(Qt.NoFocus)
+        self.collider_type_combo.currentTextChanged.connect(self.on_collider_type_changed)
+        type_layout.addWidget(self.collider_type_combo)
+        collider_layout.addLayout(type_layout)
+
+        # Position inputs with checkbox (moved to be right after Show/Type)
+        position_layout = QGridLayout()
+        self.collider_position_checkbox = QCheckBox()
+        self.collider_position_checkbox.setChecked(False)
+        self.collider_position_checkbox.stateChanged.connect(self.on_collider_position_checkbox_changed)
+        position_layout.addWidget(self.collider_position_checkbox, 0, 0)
+        position_layout.addWidget(QLabel("Position:"), 0, 1)
+        self.collider_position_inputs = []
+        for i, axis in enumerate(['X', 'Y', 'Z']):
+            position_layout.addWidget(QLabel(f"{axis}:"), 0, i*2+2)
+            input_field = QLineEdit("0.0")
+            input_field.setFocusPolicy(Qt.ClickFocus)
+            input_field.editingFinished.connect(lambda idx=i: self.on_collider_position_input_changed(idx))
+            input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
+            position_layout.addWidget(input_field, 0, i*2+3)
+            self.collider_position_inputs.append(input_field)
+        collider_layout.addLayout(position_layout)
+
+        # Parameters section (dynamic based on type)
+        self.collider_params_layout = QGridLayout()
+        self.collider_param_labels = []
+        self.collider_param_inputs = []
+        collider_layout.addLayout(self.collider_params_layout)
+
+        # Rotation inputs with checkbox
+        rotation_layout = QGridLayout()
+        self.collider_rotation_checkbox = QCheckBox()
+        self.collider_rotation_checkbox.setChecked(False)
+        self.collider_rotation_checkbox.stateChanged.connect(self.on_collider_rotation_checkbox_changed)
+        rotation_layout.addWidget(self.collider_rotation_checkbox, 0, 0)
+        rotation_layout.addWidget(QLabel("Rotation (deg):"), 0, 1)
+        self.collider_rotation_inputs = []
+        for i, axis in enumerate(['Roll', 'Pitch', 'Yaw']):
+            rotation_layout.addWidget(QLabel(f"{axis}:"), 0, i*2+2)
+            input_field = QLineEdit("0.0")
+            input_field.setFocusPolicy(Qt.ClickFocus)
+            input_field.editingFinished.connect(lambda idx=i: self.on_collider_rotation_input_changed(idx))
+            input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
+            rotation_layout.addWidget(input_field, 0, i*2+3)
+            self.collider_rotation_inputs.append(input_field)
+        collider_layout.addLayout(rotation_layout)
+
+        # Add spacing before buttons
+        collider_layout.addSpacing(10)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        draft_button = QPushButton("Rough Fit")
+        draft_button.setFocusPolicy(Qt.NoFocus)
+        draft_button.clicked.connect(self.draft_collider)
+        draft_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(draft_button)
+
+        reset_button = QPushButton("Reset Collider")
+        reset_button.setFocusPolicy(Qt.NoFocus)
+        reset_button.clicked.connect(self.reset_and_fit_collider)
+        reset_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(reset_button)
+
+        export_collider_button = QPushButton("Export Collider")
+        export_collider_button.setFocusPolicy(Qt.NoFocus)
+        export_collider_button.clicked.connect(self.export_collider)
+        export_collider_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(export_collider_button)
+
+        collider_layout.addLayout(button_layout)
+
+        collider_group.setLayout(collider_layout)
+        layout.addWidget(collider_group)
+
+        # Initialize parameter inputs for default type (box)
+        self.update_collider_param_inputs()
+
+    def setup_batch_converter_ui(self, layout):
+        """Setup Batch Mesh Converter UI group box"""
+        # Create group box for batch converter section
+        converter_group = QGroupBox("Batch Mesh Converter")
+        converter_layout = QVBoxLayout()
+        converter_layout.setSpacing(4)  # Reduce vertical spacing
+        converter_layout.setContentsMargins(8, 8, 8, 8)  # Reduce margins
+
+        # Radio button style for white text
+        radio_style = "QRadioButton { color: white; }"
+
+        # Input format selection (label and radio buttons on same line)
+        input_layout = QHBoxLayout()
+        input_layout.setSpacing(4)
+
+        input_label = QLabel("Input:")
+        input_layout.addWidget(input_label)
+
+        self.input_format_group = QButtonGroup()
+        self.input_stl_radio = QRadioButton(".stl")
+        self.input_dae_radio = QRadioButton(".dae")
+        self.input_obj_radio = QRadioButton(".obj")
+        self.input_stl_radio.setChecked(True)  # Default: .stl
+
+        # Apply white text style
+        self.input_stl_radio.setStyleSheet(radio_style)
+        self.input_dae_radio.setStyleSheet(radio_style)
+        self.input_obj_radio.setStyleSheet(radio_style)
+
+        self.input_format_group.addButton(self.input_stl_radio, 0)
+        self.input_format_group.addButton(self.input_dae_radio, 1)
+        self.input_format_group.addButton(self.input_obj_radio, 2)
+
+        input_layout.addWidget(self.input_stl_radio)
+        input_layout.addWidget(self.input_dae_radio)
+        input_layout.addWidget(self.input_obj_radio)
+        input_layout.addStretch()  # Push everything to the left
+        converter_layout.addLayout(input_layout)
+
+        # Output format selection (label and radio buttons on same line)
+        output_layout = QHBoxLayout()
+        output_layout.setSpacing(4)
+
+        output_label = QLabel("Output:")
+        output_layout.addWidget(output_label)
+
+        self.output_format_group = QButtonGroup()
+        self.output_stl_radio = QRadioButton(".stl")
+        self.output_dae_radio = QRadioButton(".dae")
+        self.output_obj_radio = QRadioButton(".obj")
+        self.output_dae_radio.setChecked(True)  # Default: .dae
+
+        # Apply white text style
+        self.output_stl_radio.setStyleSheet(radio_style)
+        self.output_dae_radio.setStyleSheet(radio_style)
+        self.output_obj_radio.setStyleSheet(radio_style)
+
+        self.output_format_group.addButton(self.output_stl_radio, 0)
+        self.output_format_group.addButton(self.output_dae_radio, 1)
+        self.output_format_group.addButton(self.output_obj_radio, 2)
+
+        output_layout.addWidget(self.output_stl_radio)
+        output_layout.addWidget(self.output_dae_radio)
+        output_layout.addWidget(self.output_obj_radio)
+        output_layout.addStretch()  # Push everything to the left
+        converter_layout.addLayout(output_layout)
+
+        # Convert button
+        convert_button = QPushButton("Select Directory and Convert")
+        convert_button.setFocusPolicy(Qt.NoFocus)
+        convert_button.clicked.connect(self.batch_convert_meshes)
+        convert_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        converter_layout.addWidget(convert_button)
+
+        converter_group.setLayout(converter_layout)
+        layout.addWidget(converter_group)
+
+    def batch_convert_meshes(self):
+        """Batch convert mesh files from input format to output format"""
+        # Get selected formats
+        input_ext = None
+        if self.input_stl_radio.isChecked():
+            input_ext = ".stl"
+        elif self.input_dae_radio.isChecked():
+            input_ext = ".dae"
+        elif self.input_obj_radio.isChecked():
+            input_ext = ".obj"
+
+        output_ext = None
+        if self.output_stl_radio.isChecked():
+            output_ext = ".stl"
+        elif self.output_dae_radio.isChecked():
+            output_ext = ".dae"
+        elif self.output_obj_radio.isChecked():
+            output_ext = ".obj"
+
+        if input_ext == output_ext:
+            print(f"Input and output formats are the same ({input_ext}). No conversion needed.")
+            return
+
+        # Select directory
+        directory = QFileDialog.getExistingDirectory(self, "Select Directory for Batch Conversion")
+        if not directory:
+            return
+
+        # Find all files with input extension
+        from pathlib import Path
+        input_files = list(Path(directory).glob(f"*{input_ext}"))
+
+        if not input_files:
+            print(f"No {input_ext} files found in {directory}")
+            return
+
+        print(f"Found {len(input_files)} {input_ext} file(s) in {directory}")
+
+        # Check for existing output files
+        existing_files = []
+        for input_file in input_files:
+            output_file = input_file.with_suffix(output_ext)
+            if output_file.exists():
+                existing_files.append(output_file.name)
+
+        # Ask user about overwriting if there are existing files
+        overwrite = True
+        if existing_files:
+            from PySide6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self,
+                "Overwrite Existing Files?",
+                f"{len(existing_files)} file(s) already exist:\n{', '.join(existing_files[:5])}"
+                + (f"\n...and {len(existing_files) - 5} more" if len(existing_files) > 5 else "")
+                + "\n\nDo you want to overwrite all existing files?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            overwrite = (reply == QMessageBox.Yes)
+            if not overwrite:
+                print("Conversion cancelled by user.")
+                return
+
+        # Convert files
+        success_count = 0
+        error_count = 0
+
+        # Import utility functions from urdf_kitchen_utils
+        from urdf_kitchen_utils import load_mesh_to_polydata, save_polydata_to_mesh
+
+        for input_file in input_files:
+            output_file = input_file.with_suffix(output_ext)
+            try:
+                polydata = load_mesh_to_polydata(str(input_file))
+                if polydata:
+                    # save_polydata_to_mesh signature: (file_path, poly_data, mesh_color, color_manually_changed)
+                    save_polydata_to_mesh(str(output_file), polydata)
+                    print(f"Converted: {input_file.name} → {output_file.name}")
+                    success_count += 1
+                else:
+                    print(f"Error loading: {input_file.name}")
+                    error_count += 1
+            except Exception as e:
+                print(f"Error converting {input_file.name}: {e}")
+                error_count += 1
+
+        print(f"\nBatch conversion complete:")
+        print(f"  Success: {success_count} file(s)")
+        print(f"  Errors: {error_count} file(s)")
+
+    def update_collider_param_inputs(self):
+        """Update parameter input fields based on selected collider type"""
+        # Clear existing parameter inputs by removing all items from layout
+        while self.collider_params_layout.count():
+            item = self.collider_params_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Clear lists
+        self.collider_param_labels.clear()
+        self.collider_param_inputs.clear()
+        if not hasattr(self, 'collider_param_checkboxes'):
+            self.collider_param_checkboxes = []
+        else:
+            self.collider_param_checkboxes.clear()
+
+        # Add new parameter inputs based on type
+        collider_type = self.collider_type
+        params = self.collider_params[collider_type]
+
+        col = 0
+
+        # Add one checkbox at the beginning for all types
+        checkbox = QCheckBox()
+        # Set checkbox state based on current state variable
+        if collider_type == "box":
+            checkbox.setChecked(self.collider_size_active)
+            checkbox.stateChanged.connect(self.on_collider_size_checkbox_changed)
+        elif collider_type in ["sphere", "cylinder", "capsule"]:
+            checkbox.setChecked(self.collider_radius_length_active)
+            checkbox.stateChanged.connect(self.on_collider_radius_length_checkbox_changed)
+        self.collider_param_checkboxes.append(checkbox)
+        self.collider_params_layout.addWidget(checkbox, 0, col)
+        col += 1
+
+        # Add parameter labels and inputs
+        if collider_type == "box":
+            labels = ["Size:  X:", "Y:", "Z:"]
+        elif collider_type == "sphere":
+            labels = ["Radius:"]
+        elif collider_type in ["cylinder", "capsule"]:
+            labels = ["Radius:", "Length:"]
+        else:
+            labels = []
+
+        for i, (label_text, param_value) in enumerate(zip(labels, params)):
+            label = QLabel(label_text)
+            self.collider_param_labels.append(label)
+            self.collider_params_layout.addWidget(label, 0, col)
+            col += 1
+
+            input_field = QLineEdit(str(param_value))
+            input_field.setFocusPolicy(Qt.ClickFocus)
+            input_field.editingFinished.connect(lambda idx=i: self.on_collider_param_input_changed(idx))
+            input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
+            self.collider_param_inputs.append(input_field)
+            self.collider_params_layout.addWidget(input_field, 0, col)
+            col += 1
+
+    def on_collider_type_changed(self, new_type):
+        """Handle collider type change"""
+        old_type = self.collider_type
+        self.collider_type = new_type
+
+        # Auto-uncheck hidden checkboxes when switching between box and other types
+        # Note: Switching within sphere/cylinder/capsule preserves the checkbox state
+        # If switching from box to sphere/cylinder/capsule, uncheck Size
+        if old_type == "box" and new_type in ["sphere", "cylinder", "capsule"]:
+            if self.collider_size_active:
+                self.collider_size_active = False
+        # If switching from sphere/cylinder/capsule to box, uncheck Radius/Length
+        elif old_type in ["sphere", "cylinder", "capsule"] and new_type == "box":
+            if self.collider_radius_length_active:
+                self.collider_radius_length_active = False
+        # Switching within sphere/cylinder/capsule: checkbox state is preserved (no action needed)
+
+        self.update_collider_param_inputs()
+
+        # Only update 3D display if Show is ON
+        if self.collider_show:
+            # Auto-draft on first selection of this type
+            if not self.collider_type_initialized[new_type]:
+                self.collider_type_initialized[new_type] = True
+                # Only auto-draft if mesh is loaded
+                if self.model_bounds:
+                    self.draft_collider()
+                else:
+                    # Even without mesh, display collider with default params
+                    self.update_collider_display()
+            else:
+                # Update display with existing values
+                self.update_collider_display()
+
+    def on_center_position_checkbox_changed(self, index, state):
+        """Handle Center Position checkbox change"""
+        if state == 2:  # Checked
+            # Set this active, others inactive (mutual exclusivity)
+            self.center_position_active = True
+            self.collider_size_active = False
+            self.collider_position_active = False
+            self.collider_radius_length_active = False
+            self.collider_rotation_active = False
+
+            # Uncheck other checkboxes
+            if hasattr(self, 'collider_position_checkbox'):
+                self.collider_position_checkbox.blockSignals(True)
+                self.collider_position_checkbox.setChecked(False)
+                self.collider_position_checkbox.blockSignals(False)
+            if hasattr(self, 'collider_rotation_checkbox'):
+                self.collider_rotation_checkbox.blockSignals(True)
+                self.collider_rotation_checkbox.setChecked(False)
+                self.collider_rotation_checkbox.blockSignals(False)
+            # Uncheck parameter checkboxes (size/radius/length)
+            if hasattr(self, 'collider_param_checkboxes'):
+                for cb in self.collider_param_checkboxes:
+                    if cb:
+                        cb.blockSignals(True)
+                        cb.setChecked(False)
+                        cb.blockSignals(False)
+        else:  # Unchecked
+            self.center_position_active = False
+
+    def on_center_position_changed(self, index):
+        """Handle Center Position input change"""
+        try:
+            for j in range(3):
+                value = float(self.point_inputs[index][j].text())
+                self.point_coords[index][j] = value
+            self.update_point_display(index)
+            self.render_to_image()
+        except ValueError:
+            print(f"Invalid center position value")
+
+    def on_collider_show_changed(self, state):
+        """Handle collider show checkbox change"""
+        # state is an int: 2=Checked, 0=Unchecked
+        self.collider_show = (state == 2)
+
+        if self.collider_show:
+            # Show ON: Force mesh to wireframe, show collider
+            if self.stl_actor:
+                # Force wireframe mode
+                if not self.wireframe_mode:
+                    self.toggle_wireframe()
+                    self.render_to_image()  # Render immediately to apply wireframe
+
+            # First time Show is clicked - auto draft
+            if self.collider_first_show:
+                self.collider_first_show = False
+                if self.model_bounds:
+                    # Draft collider based on mesh bounds
+                    self.draft_collider()
+                else:
+                    # No mesh loaded, just display with default params
+                    self.update_collider_display()
+            else:
+                # Not first time, just update display
+                self.update_collider_display()
+        else:
+            # Show OFF: Force mesh to surface mode, hide collider
+            if self.stl_actor:
+                # Force surface mode
+                if self.wireframe_mode:
+                    self.toggle_wireframe()
+                    self.render_to_image()  # Render immediately to apply surface mode
+
+            # Hide collider
+            if self.collider_actor:
+                self.renderer.RemoveActor(self.collider_actor)
+                self.collider_actor = None
+            if self.collider_surface_actor:
+                self.renderer.RemoveActor(self.collider_surface_actor)
+                self.collider_surface_actor = None
+            if self.collider_blink_timer.isActive():
+                self.collider_blink_timer.stop()
+            self.render_to_image()
+
+    def on_collider_param_input_changed(self, index):
+        """Handle collider parameter input change"""
+        try:
+            value = float(self.collider_param_inputs[index].text())
+            self.collider_params[self.collider_type][index] = value
+            # Format to 4 decimal places with rounding
+            self.collider_param_inputs[index].setText(f"{value:.4f}")
+            if self.collider_show:
+                self.update_collider_display()
+        except ValueError:
+            print(f"Invalid parameter value at index {index}")
+
+    def on_collider_position_checkbox_changed(self, state):
+        """Handle collider position checkbox change"""
+        if state == 2:  # Checked
+            # Set this active, others inactive (mutual exclusivity)
+            self.center_position_active = False
+            self.collider_size_active = False
+            self.collider_position_active = True
+            self.collider_radius_length_active = False
+            self.collider_rotation_active = False
+
+            # Uncheck other checkboxes
+            for cb in self.point_checkboxes:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
+            if hasattr(self, 'collider_rotation_checkbox'):
+                self.collider_rotation_checkbox.blockSignals(True)
+                self.collider_rotation_checkbox.setChecked(False)
+                self.collider_rotation_checkbox.blockSignals(False)
+            # Uncheck parameter checkboxes (size/radius/length)
+            if hasattr(self, 'collider_param_checkboxes'):
+                for cb in self.collider_param_checkboxes:
+                    if cb:
+                        cb.blockSignals(True)
+                        cb.setChecked(False)
+                        cb.blockSignals(False)
+        else:  # Unchecked
+            self.collider_position_active = False
+
+    def on_collider_position_input_changed(self, index):
+        """Handle collider position input change"""
+        try:
+            value = float(self.collider_position_inputs[index].text())
+            self.collider_position[index] = value
+            # Format to 4 decimal places with rounding
+            self.collider_position_inputs[index].setText(f"{value:.4f}")
+            if self.collider_show:
+                self.update_collider_display()
+        except ValueError:
+            print(f"Invalid position value at index {index}")
+
+    def on_collider_rotation_checkbox_changed(self, state):
+        """Handle collider rotation checkbox change"""
+        if state == 2:  # Checked
+            # Set this active, others inactive (mutual exclusivity)
+            self.center_position_active = False
+            self.collider_size_active = False
+            self.collider_position_active = False
+            self.collider_radius_length_active = False
+            self.collider_rotation_active = True
+
+            # Uncheck other checkboxes
+            for cb in self.point_checkboxes:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
+            if hasattr(self, 'collider_position_checkbox'):
+                self.collider_position_checkbox.blockSignals(True)
+                self.collider_position_checkbox.setChecked(False)
+                self.collider_position_checkbox.blockSignals(False)
+            # Uncheck parameter checkboxes (size/radius/length)
+            if hasattr(self, 'collider_param_checkboxes'):
+                for cb in self.collider_param_checkboxes:
+                    if cb:
+                        cb.blockSignals(True)
+                        cb.setChecked(False)
+                        cb.blockSignals(False)
+        else:  # Unchecked
+            self.collider_rotation_active = False
+
+    def on_collider_rotation_input_changed(self, index):
+        """Handle collider rotation input change"""
+        try:
+            value = float(self.collider_rotation_inputs[index].text())
+            self.collider_rotation[index] = value
+            # Format to 2 decimal places with rounding
+            self.collider_rotation_inputs[index].setText(f"{value:.2f}")
+
+            # Update quaternion from Euler angles
+            self.collider_rotation_quaternion = self.euler_to_quaternion(
+                self.collider_rotation[0],
+                self.collider_rotation[1],
+                self.collider_rotation[2]
+            )
+
+            if self.collider_show:
+                self.update_collider_display()
+        except ValueError:
+            print(f"Invalid rotation value at index {index}")
+
+    def on_collider_size_checkbox_changed(self, state):
+        """Handle collider size checkbox change (for box)"""
+        if state == 2:  # Checked
+            # Set this active, others inactive (mutual exclusivity)
+            self.center_position_active = False
+            self.collider_size_active = True
+            self.collider_position_active = False
+            self.collider_radius_length_active = False
+            self.collider_rotation_active = False
+
+            # Uncheck other checkboxes
+            for cb in self.point_checkboxes:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
+            if hasattr(self, 'collider_position_checkbox'):
+                self.collider_position_checkbox.blockSignals(True)
+                self.collider_position_checkbox.setChecked(False)
+                self.collider_position_checkbox.blockSignals(False)
+            if hasattr(self, 'collider_rotation_checkbox'):
+                self.collider_rotation_checkbox.blockSignals(True)
+                self.collider_rotation_checkbox.setChecked(False)
+                self.collider_rotation_checkbox.blockSignals(False)
+        else:  # Unchecked
+            self.collider_size_active = False
+
+    def on_collider_radius_length_checkbox_changed(self, state):
+        """Handle collider radius/length checkbox change (shared for sphere/cylinder/capsule)"""
+        if state == 2:  # Checked
+            # Set this active, others inactive (mutual exclusivity)
+            self.center_position_active = False
+            self.collider_size_active = False
+            self.collider_position_active = False
+            self.collider_radius_length_active = True
+            self.collider_rotation_active = False
+
+            # Uncheck other checkboxes
+            for cb in self.point_checkboxes:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
+            if hasattr(self, 'collider_position_checkbox'):
+                self.collider_position_checkbox.blockSignals(True)
+                self.collider_position_checkbox.setChecked(False)
+                self.collider_position_checkbox.blockSignals(False)
+            if hasattr(self, 'collider_rotation_checkbox'):
+                self.collider_rotation_checkbox.blockSignals(True)
+                self.collider_rotation_checkbox.setChecked(False)
+                self.collider_rotation_checkbox.blockSignals(False)
+        else:  # Unchecked
+            self.collider_radius_length_active = False
 
     def set_point(self, index):
         try:
@@ -777,42 +1497,87 @@ class MainWindow(QMainWindow):
                 self.axis_actors.append(actor)
 
     def add_instruction_text(self):
+        """Add instruction text with adaptive font sizing and safe margins"""
         if not hasattr(self, 'text_actors'):
             self.text_actors = []
 
+        # Get current window height for adaptive font sizing
+        height = self.vtk_display.height() if self.vtk_display.height() > 0 else 600
+
+        # Adaptive font size based on window height
+        # Smaller windows get smaller fonts to prevent clipping
+        if height < 450:
+            font_size = 12
+        elif height < 550:
+            font_size = 14
+        elif height < 650:
+            font_size = 16
+        else:
+            font_size = 18
+
+        # Top text: Shortened lines to prevent right overflow
         text_actor_top = vtk.vtkTextActor()
         text_actor_top.SetInput(
-            "[W/S]: Up/Down Rotate\n"
-            "[A/D]: Left/Right Rotate\n"
+            "[W/S]: Rotate Up/Down\n"
+            "[A/D]: Rotate L/R\n"
             "[Q/E]: Roll\n"
-            "[R]: Reset Camera\n"
-            "[T]: Wireframe\n\n"
+            "[R]: Reset Cam\n"
+            "[T]: Wireframe\n"
+            "[H]: Toggle Help\n\n"
             "[Drag]: Rotate\n"
-            "[Shift + Drag]: Move View\n"
+            "[Shift+Drag]:\n"
+            "  Move View\n"
         )
-        text_actor_top.GetTextProperty().SetFontSize(14)
+        text_actor_top.GetTextProperty().SetFontSize(font_size)
         text_actor_top.GetTextProperty().SetColor(0.0, 0.8, 0.8)
         text_actor_top.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
-        text_actor_top.SetPosition(0.03, 0.97)
+        # Safe margin from top: 0.96 instead of 0.97 to ensure visibility
+        text_actor_top.SetPosition(0.03, 0.96)
         text_actor_top.GetTextProperty().SetJustificationToLeft()
         text_actor_top.GetTextProperty().SetVerticalJustificationToTop()
         self.renderer.AddActor(text_actor_top)
         self.text_actors.append(text_actor_top)
 
+        # Bottom text: Shortened to fit smaller screens
         text_actor_bottom = vtk.vtkTextActor()
         text_actor_bottom.SetInput(
-            "[Arrows] : Move Marker 10mm\n"
-            "  +[Shift] : Move Marker 1mm\n"
-            "   +[Ctrl] : Move Marker 0.1mm\n"
+            "[Arrows]: Move 10mm\n"
+            " +[Shift]: Move 1mm\n"
+            "  +[Ctrl]: Move 0.1mm\n"
         )
-        text_actor_bottom.GetTextProperty().SetFontSize(14)
+        text_actor_bottom.GetTextProperty().SetFontSize(font_size)
         text_actor_bottom.GetTextProperty().SetColor(0.0, 0.8, 0.8)
         text_actor_bottom.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
-        text_actor_bottom.SetPosition(0.03, 0.03)
+        # Safe margin from bottom: 0.04 instead of 0.03 to ensure visibility
+        text_actor_bottom.SetPosition(0.03, 0.04)
         text_actor_bottom.GetTextProperty().SetJustificationToLeft()
         text_actor_bottom.GetTextProperty().SetVerticalJustificationToBottom()
         self.renderer.AddActor(text_actor_bottom)
         self.text_actors.append(text_actor_bottom)
+
+    def update_instruction_text_layout(self):
+        """Update instruction text font size and visibility based on window size"""
+        if not hasattr(self, 'text_actors') or len(self.text_actors) < 2:
+            return
+
+        # Get current window height for adaptive font sizing
+        height = self.vtk_display.height() if self.vtk_display.height() > 0 else 600
+
+        # Adaptive font size based on window height
+        if height < 450:
+            font_size = 10
+        elif height < 550:
+            font_size = 11
+        elif height < 650:
+            font_size = 12
+        else:
+            font_size = 14
+
+        # Update font size for all text actors
+        for actor in self.text_actors:
+            actor.GetTextProperty().SetFontSize(font_size)
+            # Update visibility based on help_visible flag
+            actor.SetVisibility(1 if self.help_visible else 0)
 
     def load_stl_file(self):
         print("Opening file dialog...")
@@ -942,6 +1707,622 @@ class MainWindow(QMainWindow):
             self.current_rotation = self.target_rotation
             self.is_animating = False  # Allow new input
 
+    def quaternion_from_axis_angle(self, axis, angle_deg):
+        """Create quaternion from axis and angle (in degrees)"""
+        angle_rad = np.radians(angle_deg)
+        axis = np.array(axis)
+        axis = axis / np.linalg.norm(axis)  # Normalize
+        w = np.cos(angle_rad / 2.0)
+        x, y, z = axis * np.sin(angle_rad / 2.0)
+        return np.array([w, x, y, z])
+
+    def quaternion_multiply(self, q1, q2):
+        """Multiply two quaternions"""
+        w1, x1, y1, z1 = q1
+        w2, x2, y2, z2 = q2
+        w = w1*w2 - x1*x2 - y1*y2 - z1*z2
+        x = w1*x2 + x1*w2 + y1*z2 - z1*y2
+        y = w1*y2 - x1*z2 + y1*w2 + z1*x2
+        z = w1*z2 + x1*y2 - y1*x2 + z1*w2
+        return np.array([w, x, y, z])
+
+    def quaternion_to_euler(self, q):
+        """Convert quaternion to Euler angles (roll, pitch, yaw) in degrees"""
+        w, x, y, z = q
+
+        # Roll (x-axis rotation)
+        sinr_cosp = 2 * (w * x + y * z)
+        cosr_cosp = 1 - 2 * (x * x + y * y)
+        roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+        # Pitch (y-axis rotation)
+        sinp = 2 * (w * y - z * x)
+        if abs(sinp) >= 1:
+            pitch = np.copysign(np.pi / 2, sinp)
+        else:
+            pitch = np.arcsin(sinp)
+
+        # Yaw (z-axis rotation)
+        siny_cosp = 2 * (w * z + x * y)
+        cosy_cosp = 1 - 2 * (y * y + z * z)
+        yaw = np.arctan2(siny_cosp, cosy_cosp)
+
+        return np.degrees([roll, pitch, yaw])
+
+    def euler_to_quaternion(self, roll_deg, pitch_deg, yaw_deg):
+        """Convert Euler angles (roll, pitch, yaw) in degrees to quaternion"""
+        roll = np.radians(roll_deg)
+        pitch = np.radians(pitch_deg)
+        yaw = np.radians(yaw_deg)
+
+        cy = np.cos(yaw * 0.5)
+        sy = np.sin(yaw * 0.5)
+        cp = np.cos(pitch * 0.5)
+        sp = np.sin(pitch * 0.5)
+        cr = np.cos(roll * 0.5)
+        sr = np.sin(roll * 0.5)
+
+        w = cr * cp * cy + sr * sp * sy
+        x = sr * cp * cy - cr * sp * sy
+        y = cr * sp * cy + sr * cp * sy
+        z = cr * cp * sy - sr * sp * cy
+
+        return np.array([w, x, y, z])
+
+    def quaternion_to_matrix(self, q):
+        """Convert quaternion to 3x3 rotation matrix"""
+        w, x, y, z = q
+        return np.array([
+            [1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y)],
+            [2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x)],
+            [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x + y*y)]
+        ])
+
+    def create_collider_actor(self):
+        """Create VTK actor for the collider wireframe (lines only)"""
+        collider_type = self.collider_type
+        params = self.collider_params[collider_type]
+
+        # Create assembly to hold all parts of the collider
+        assembly = vtk.vtkAssembly()
+
+        if collider_type == "box":
+            # Box collider
+            box = vtk.vtkCubeSource()
+            box.SetXLength(params[0])
+            box.SetYLength(params[1])
+            box.SetZLength(params[2])
+            box.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(box.GetOutputPort())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToWireframe()
+            actor.GetProperty().SetLineWidth(2)
+            assembly.AddPart(actor)
+
+        elif collider_type == "sphere":
+            # Sphere collider
+            sphere = vtk.vtkSphereSource()
+            sphere.SetRadius(params[0])
+            sphere.SetThetaResolution(20)
+            sphere.SetPhiResolution(20)
+            sphere.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(sphere.GetOutputPort())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToWireframe()
+            actor.GetProperty().SetLineWidth(2)
+            assembly.AddPart(actor)
+
+        elif collider_type == "cylinder":
+            # Cylinder collider
+            cylinder = vtk.vtkCylinderSource()
+            cylinder.SetRadius(params[0])
+            cylinder.SetHeight(params[1])
+            cylinder.SetResolution(20)
+            cylinder.Update()
+
+            # Rotate to align with Z-axis (VTK cylinder is along Y by default)
+            transform = vtk.vtkTransform()
+            transform.RotateX(90)
+
+            transform_filter = vtk.vtkTransformPolyDataFilter()
+            transform_filter.SetInputConnection(cylinder.GetOutputPort())
+            transform_filter.SetTransform(transform)
+            transform_filter.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(transform_filter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToWireframe()
+            actor.GetProperty().SetLineWidth(2)
+            assembly.AddPart(actor)
+
+        elif collider_type == "capsule":
+            # Capsule collider (cylinder + 2 hemispheres)
+            radius = params[0]
+            length = params[1]
+
+            # Cylinder part
+            cylinder = vtk.vtkCylinderSource()
+            cylinder.SetRadius(radius)
+            cylinder.SetHeight(length)
+            cylinder.SetResolution(20)
+            cylinder.Update()
+
+            # Rotate to align with Z-axis
+            transform = vtk.vtkTransform()
+            transform.RotateX(90)
+
+            transform_filter = vtk.vtkTransformPolyDataFilter()
+            transform_filter.SetInputConnection(cylinder.GetOutputPort())
+            transform_filter.SetTransform(transform)
+            transform_filter.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(transform_filter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToWireframe()
+            actor.GetProperty().SetLineWidth(2)
+            assembly.AddPart(actor)
+
+            # Top hemisphere
+            top_sphere = vtk.vtkSphereSource()
+            top_sphere.SetRadius(radius)
+            top_sphere.SetThetaResolution(20)
+            top_sphere.SetPhiResolution(20)
+            top_sphere.SetStartPhi(0)
+            top_sphere.SetEndPhi(90)
+            top_sphere.Update()
+
+            mapper_top = vtk.vtkPolyDataMapper()
+            mapper_top.SetInputConnection(top_sphere.GetOutputPort())
+
+            actor_top = vtk.vtkActor()
+            actor_top.SetMapper(mapper_top)
+            actor_top.SetPosition(0, 0, length / 2)
+            actor_top.GetProperty().SetColor(0.0, 0.8, 1.0)
+            actor_top.GetProperty().SetRepresentationToWireframe()
+            actor_top.GetProperty().SetLineWidth(2)
+            assembly.AddPart(actor_top)
+
+            # Bottom hemisphere
+            bottom_sphere = vtk.vtkSphereSource()
+            bottom_sphere.SetRadius(radius)
+            bottom_sphere.SetThetaResolution(20)
+            bottom_sphere.SetPhiResolution(20)
+            bottom_sphere.SetStartPhi(90)
+            bottom_sphere.SetEndPhi(180)
+            bottom_sphere.Update()
+
+            mapper_bottom = vtk.vtkPolyDataMapper()
+            mapper_bottom.SetInputConnection(bottom_sphere.GetOutputPort())
+
+            actor_bottom = vtk.vtkActor()
+            actor_bottom.SetMapper(mapper_bottom)
+            actor_bottom.SetPosition(0, 0, -length / 2)
+            actor_bottom.GetProperty().SetColor(0.0, 0.8, 1.0)
+            actor_bottom.GetProperty().SetRepresentationToWireframe()
+            actor_bottom.GetProperty().SetLineWidth(2)
+            assembly.AddPart(actor_bottom)
+
+        # Apply position
+        assembly.SetPosition(self.collider_position)
+
+        # Apply rotation using quaternion
+        transform = vtk.vtkTransform()
+        transform.PostMultiply()
+
+        # Move to origin
+        transform.Translate(*[-x for x in self.collider_position])
+
+        # Apply rotation from quaternion
+        rot_matrix = self.quaternion_to_matrix(self.collider_rotation_quaternion)
+        vtk_matrix = vtk.vtkMatrix4x4()
+        for i in range(3):
+            for j in range(3):
+                vtk_matrix.SetElement(i, j, rot_matrix[i, j])
+        transform.Concatenate(vtk_matrix)
+
+        # Move back to position
+        transform.Translate(*self.collider_position)
+
+        assembly.SetUserTransform(transform)
+
+        return assembly
+
+    def create_collider_surface_actor(self):
+        """Create VTK actor for the collider surface (transparent, for blinking effect)"""
+        collider_type = self.collider_type
+        params = self.collider_params[collider_type]
+
+        # Create assembly to hold all parts of the collider surface
+        assembly = vtk.vtkAssembly()
+
+        if collider_type == "box":
+            # Box collider
+            box = vtk.vtkCubeSource()
+            box.SetXLength(params[0])
+            box.SetYLength(params[1])
+            box.SetZLength(params[2])
+            box.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(box.GetOutputPort())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToSurface()
+            actor.GetProperty().SetOpacity(0.5)  # 50% transparency
+            assembly.AddPart(actor)
+
+        elif collider_type == "sphere":
+            # Sphere collider
+            sphere = vtk.vtkSphereSource()
+            sphere.SetRadius(params[0])
+            sphere.SetThetaResolution(20)
+            sphere.SetPhiResolution(20)
+            sphere.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(sphere.GetOutputPort())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToSurface()
+            actor.GetProperty().SetOpacity(0.5)  # 50% transparency
+            assembly.AddPart(actor)
+
+        elif collider_type == "cylinder":
+            # Cylinder collider
+            cylinder = vtk.vtkCylinderSource()
+            cylinder.SetRadius(params[0])
+            cylinder.SetHeight(params[1])
+            cylinder.SetResolution(20)
+            cylinder.Update()
+
+            # Rotate to align with Z-axis (VTK cylinder is along Y by default)
+            transform = vtk.vtkTransform()
+            transform.RotateX(90)
+
+            transform_filter = vtk.vtkTransformPolyDataFilter()
+            transform_filter.SetInputConnection(cylinder.GetOutputPort())
+            transform_filter.SetTransform(transform)
+            transform_filter.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(transform_filter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToSurface()
+            actor.GetProperty().SetOpacity(0.5)  # 50% transparency
+            assembly.AddPart(actor)
+
+        elif collider_type == "capsule":
+            # Capsule collider (cylinder + 2 hemispheres)
+            radius = params[0]
+            length = params[1]
+
+            # Cylinder part
+            cylinder = vtk.vtkCylinderSource()
+            cylinder.SetRadius(radius)
+            cylinder.SetHeight(length)
+            cylinder.SetResolution(20)
+            cylinder.Update()
+
+            # Rotate to align with Z-axis
+            transform = vtk.vtkTransform()
+            transform.RotateX(90)
+
+            transform_filter = vtk.vtkTransformPolyDataFilter()
+            transform_filter.SetInputConnection(cylinder.GetOutputPort())
+            transform_filter.SetTransform(transform)
+            transform_filter.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(transform_filter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToSurface()
+            actor.GetProperty().SetOpacity(0.5)  # 50% transparency
+            assembly.AddPart(actor)
+
+            # Top hemisphere
+            top_sphere = vtk.vtkSphereSource()
+            top_sphere.SetRadius(radius)
+            top_sphere.SetThetaResolution(20)
+            top_sphere.SetPhiResolution(20)
+            top_sphere.SetStartPhi(0)
+            top_sphere.SetEndPhi(90)
+            top_sphere.Update()
+
+            mapper_top = vtk.vtkPolyDataMapper()
+            mapper_top.SetInputConnection(top_sphere.GetOutputPort())
+
+            actor_top = vtk.vtkActor()
+            actor_top.SetMapper(mapper_top)
+            actor_top.SetPosition(0, 0, length / 2)
+            actor_top.GetProperty().SetColor(0.0, 0.8, 1.0)
+            actor_top.GetProperty().SetRepresentationToSurface()
+            actor_top.GetProperty().SetOpacity(0.5)  # 50% transparency
+            assembly.AddPart(actor_top)
+
+            # Bottom hemisphere
+            bottom_sphere = vtk.vtkSphereSource()
+            bottom_sphere.SetRadius(radius)
+            bottom_sphere.SetThetaResolution(20)
+            bottom_sphere.SetPhiResolution(20)
+            bottom_sphere.SetStartPhi(90)
+            bottom_sphere.SetEndPhi(180)
+            bottom_sphere.Update()
+
+            mapper_bottom = vtk.vtkPolyDataMapper()
+            mapper_bottom.SetInputConnection(bottom_sphere.GetOutputPort())
+
+            actor_bottom = vtk.vtkActor()
+            actor_bottom.SetMapper(mapper_bottom)
+            actor_bottom.SetPosition(0, 0, -length / 2)
+            actor_bottom.GetProperty().SetColor(0.0, 0.8, 1.0)
+            actor_bottom.GetProperty().SetRepresentationToSurface()
+            actor_bottom.GetProperty().SetOpacity(0.5)  # 50% transparency
+            assembly.AddPart(actor_bottom)
+
+        # Apply position
+        assembly.SetPosition(self.collider_position)
+
+        # Apply rotation using quaternion
+        transform = vtk.vtkTransform()
+        transform.PostMultiply()
+
+        # Move to origin
+        transform.Translate(*[-x for x in self.collider_position])
+
+        # Apply rotation from quaternion
+        rot_matrix = self.quaternion_to_matrix(self.collider_rotation_quaternion)
+        vtk_matrix = vtk.vtkMatrix4x4()
+        for i in range(3):
+            for j in range(3):
+                vtk_matrix.SetElement(i, j, rot_matrix[i, j])
+        transform.Concatenate(vtk_matrix)
+
+        # Move back to position
+        transform.Translate(*self.collider_position)
+
+        assembly.SetUserTransform(transform)
+
+        return assembly
+
+    def update_collider_display(self):
+        """Update collider display in the 3D view"""
+        # Remove old collider actors if exist
+        if self.collider_actor:
+            self.renderer.RemoveActor(self.collider_actor)
+            self.collider_actor = None
+        if self.collider_surface_actor:
+            self.renderer.RemoveActor(self.collider_surface_actor)
+            self.collider_surface_actor = None
+
+        # Stop blinking timer (no longer needed)
+        if self.collider_blink_timer.isActive():
+            self.collider_blink_timer.stop()
+
+        # Create and add new wireframe actor (always visible)
+        self.collider_actor = self.create_collider_actor()
+        self.renderer.AddActor(self.collider_actor)
+
+        # Create and add new surface actor (always visible with 50% transparency)
+        self.collider_surface_actor = self.create_collider_surface_actor()
+        self.renderer.AddActor(self.collider_surface_actor)
+
+        # Render the updated scene
+        self.render_to_image()
+
+    def toggle_collider_surface(self):
+        """Toggle collider surface visibility (deprecated - no longer used)"""
+        # This method is no longer used since blinking is disabled
+        pass
+
+    def reset_and_fit_collider(self):
+        """Reset collider to default state (all zeros) and then fit to mesh"""
+        if not self.model_bounds:
+            print("No mesh loaded. Please load a mesh first.")
+            return
+
+        # Reset position to origin
+        self.collider_position = [0.0, 0.0, 0.0]
+
+        # Reset rotation to zero (identity quaternion)
+        self.collider_rotation = [0.0, 0.0, 0.0]
+        self.collider_rotation_quaternion = np.array([1.0, 0.0, 0.0, 0.0])
+
+        # Reset parameters to default values
+        self.collider_params = {
+            "box": [1.0, 1.0, 1.0],
+            "sphere": [0.5],
+            "cylinder": [0.5, 1.0],
+            "capsule": [0.5, 1.0]
+        }
+
+        # Update UI with reset values
+        for i in range(3):
+            self.collider_position_inputs[i].setText("0.0000")
+            self.collider_rotation_inputs[i].setText("0.00")
+
+        # Now perform Rough Fit with reset rotation (identity)
+        self.draft_collider()
+
+    def draft_collider(self):
+        """Draft a collider from mesh bounding box based on selected type"""
+        if not self.model_bounds:
+            print("No mesh loaded. Please load a mesh first.")
+            return
+
+        # Calculate bounding box dimensions (world space, round to 4 decimal places)
+        size_x = round(self.model_bounds[1] - self.model_bounds[0], 4)
+        size_y = round(self.model_bounds[3] - self.model_bounds[2], 4)
+        size_z = round(self.model_bounds[5] - self.model_bounds[4], 4)
+
+        # Calculate center position (round to 4 decimal places)
+        center_x = round((self.model_bounds[0] + self.model_bounds[1]) / 2, 4)
+        center_y = round((self.model_bounds[2] + self.model_bounds[3]) / 2, 4)
+        center_z = round((self.model_bounds[4] + self.model_bounds[5]) / 2, 4)
+
+        # Set position (keep existing rotation)
+        self.collider_position = [center_x, center_y, center_z]
+
+        # Calculate parameters based on current collider type
+        collider_type = self.collider_type
+
+        if collider_type == "box":
+            # Box: use full bounding box dimensions
+            self.collider_params["box"] = [size_x, size_y, size_z]
+            print(f"Drafted box collider: size=({size_x:.4f}, {size_y:.4f}, {size_z:.4f}), center=({center_x:.4f}, {center_y:.4f}, {center_z:.4f})")
+
+        elif collider_type == "sphere":
+            # Sphere: radius that fits inside mesh bounding box (use smallest dimension)
+            radius = round(min(size_x, size_y, size_z) / 2, 4)
+            self.collider_params["sphere"] = [radius]
+            print(f"Drafted sphere collider: radius={radius:.4f}, center=({center_x:.4f}, {center_y:.4f}, {center_z:.4f})")
+
+        elif collider_type in ["cylinder", "capsule"]:
+            # For cylinder/capsule, consider rotation to find which world axis aligns with collider's Z-axis
+            rot_matrix = self.quaternion_to_matrix(self.collider_rotation_quaternion)
+            collider_z_axis = rot_matrix[:, 2]  # Third column is Z-axis direction in world space
+
+            # Find which world axis is most aligned with collider's Z-axis
+            world_axes = [np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, 0, 1])]
+            mesh_sizes = [size_x, size_y, size_z]
+
+            # Calculate dot products to find most aligned axis
+            alignments = [abs(np.dot(collider_z_axis, axis)) for axis in world_axes]
+            primary_axis_idx = np.argmax(alignments)
+
+            # Length comes from the most aligned axis
+            primary_size = mesh_sizes[primary_axis_idx]
+
+            # Radius comes from the smaller of the two perpendicular axes
+            perpendicular_sizes = [mesh_sizes[i] for i in range(3) if i != primary_axis_idx]
+            perpendicular_size = min(perpendicular_sizes)
+
+            if collider_type == "cylinder":
+                # Cylinder: radius from perpendicular plane, height from aligned axis
+                radius = round(perpendicular_size / 2, 4)
+                height = round(primary_size, 4)
+                self.collider_params["cylinder"] = [radius, height]
+                print(f"Drafted cylinder collider: radius={radius:.4f}, length={height:.4f}, center=({center_x:.4f}, {center_y:.4f}, {center_z:.4f})")
+
+            else:  # capsule
+                # Capsule: radius from perpendicular plane, length from aligned axis minus hemispheres
+                radius = round(perpendicular_size / 2, 4)
+                length = round(primary_size - (2 * radius), 4)
+                if length < 0:
+                    length = 0.0  # Ensure non-negative length
+                self.collider_params["capsule"] = [radius, length]
+                print(f"Drafted capsule collider: radius={radius:.4f}, length={length:.4f} (cylinder only), center=({center_x:.4f}, {center_y:.4f}, {center_z:.4f})")
+
+        # Update UI (position and parameters only, keep existing rotation)
+        self.update_collider_param_inputs()
+        for i, value in enumerate([center_x, center_y, center_z]):
+            self.collider_position_inputs[i].setText(f"{value:.4f}")
+
+        # Update display
+        self.update_collider_display()
+
+    def export_collider(self):
+        """Export collider to XML file"""
+        if not self.current_stl_path:
+            print("No mesh loaded. Please load a mesh first.")
+            return
+
+        # Generate default file path (mesh_filename + _collider.xml)
+        import os
+        base_name = os.path.splitext(self.current_stl_path)[0]
+        default_path = base_name + "_collider.xml"
+
+        # Ask user for save location
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Collider", default_path, "XML Files (*.xml)")
+        if not file_path:
+            return
+
+        try:
+            # Create XML content
+            import xml.etree.ElementTree as ET
+            from xml.dom import minidom
+
+            root = ET.Element("urdf_kitchen_collider")
+            root.set("version", "1.0")
+
+            # Add mesh reference
+            mesh_elem = ET.SubElement(root, "mesh_file")
+            mesh_elem.text = os.path.basename(self.current_stl_path)
+
+            # Add collider info
+            collider_elem = ET.SubElement(root, "collider")
+            collider_elem.set("type", self.collider_type)
+
+            # Add parameters (4 decimal places for size/radius/length)
+            params_elem = ET.SubElement(collider_elem, "geometry")
+            params = self.collider_params[self.collider_type]
+
+            if self.collider_type == "box":
+                params_elem.set("size_x", f"{round(params[0], 4):.4f}")
+                params_elem.set("size_y", f"{round(params[1], 4):.4f}")
+                params_elem.set("size_z", f"{round(params[2], 4):.4f}")
+            elif self.collider_type == "sphere":
+                params_elem.set("radius", f"{round(params[0], 4):.4f}")
+            elif self.collider_type in ["cylinder", "capsule"]:
+                params_elem.set("radius", f"{round(params[0], 4):.4f}")
+                params_elem.set("length", f"{round(params[1], 4):.4f}")
+
+            # Add position (4 decimal places)
+            position_elem = ET.SubElement(collider_elem, "position")
+            position_elem.set("x", f"{round(self.collider_position[0], 4):.4f}")
+            position_elem.set("y", f"{round(self.collider_position[1], 4):.4f}")
+            position_elem.set("z", f"{round(self.collider_position[2], 4):.4f}")
+
+            # Add rotation (2 decimal places)
+            rotation_elem = ET.SubElement(collider_elem, "rotation")
+            rotation_elem.set("roll", f"{round(self.collider_rotation[0], 2):.2f}")
+            rotation_elem.set("pitch", f"{round(self.collider_rotation[1], 2):.2f}")
+            rotation_elem.set("yaw", f"{round(self.collider_rotation[2], 2):.2f}")
+
+            # Pretty print XML
+            xml_str = ET.tostring(root, encoding='unicode')
+            dom = minidom.parseString(xml_str)
+            pretty_xml = dom.toprettyxml(indent="  ")
+
+            # Write to file
+            with open(file_path, 'w') as f:
+                f.write(pretty_xml)
+
+            print(f"Collider exported to: {file_path}")
+
+        except Exception as e:
+            print(f"Error exporting collider: {e}")
+            import traceback
+            traceback.print_exc()
+
     def export_urdf(self):
         print("URDF export functionality will be implemented here")
 
@@ -1037,6 +2418,53 @@ class MainWindow(QMainWindow):
         shift_pressed = modifiers & Qt.ShiftModifier
         ctrl_pressed = modifiers & Qt.ControlModifier
 
+        # Tab key: cycle through Position, Size/Radius, Rotation checkboxes
+        if key == Qt.Key_Tab:
+            event.accept()
+
+            # Only work if ShowCollider is checked
+            if self.collider_show:
+                # Determine available options based on collider type
+                if self.collider_type == "box":
+                    # Box: Position → Size → Rotation → Position...
+                    available_options = ['position', 'size', 'rotation']
+                else:  # sphere, cylinder, capsule
+                    # Others: Position → Radius&Length → Rotation → Position...
+                    available_options = ['position', 'radius_length', 'rotation']
+
+                # Find current active option
+                current_active = None
+                if self.collider_position_active:
+                    current_active = 'position'
+                elif self.collider_size_active:
+                    current_active = 'size'
+                elif self.collider_radius_length_active:
+                    current_active = 'radius_length'
+                elif self.collider_rotation_active:
+                    current_active = 'rotation'
+
+                # If any checkbox is active, cycle to the next one
+                if current_active and current_active in available_options:
+                    current_index = available_options.index(current_active)
+                    next_index = (current_index + 1) % len(available_options)
+                    next_option = available_options[next_index]
+
+                    # Activate the next checkbox (this will trigger the mutual exclusivity logic)
+                    if next_option == 'position':
+                        self.collider_position_checkbox.setChecked(True)
+                    elif next_option == 'size':
+                        # Find the size checkbox in collider_param_checkboxes
+                        if hasattr(self, 'collider_param_checkboxes') and self.collider_param_checkboxes[0]:
+                            self.collider_param_checkboxes[0].setChecked(True)
+                    elif next_option == 'radius_length':
+                        # Find the radius/length checkbox in collider_param_checkboxes
+                        if hasattr(self, 'collider_param_checkboxes') and self.collider_param_checkboxes[0]:
+                            self.collider_param_checkboxes[0].setChecked(True)
+                    elif next_option == 'rotation':
+                        self.collider_rotation_checkbox.setChecked(True)
+
+            return
+
         # Block WASDQER keys during animation
         if self.is_animating and key in [Qt.Key_W, Qt.Key_A, Qt.Key_S, Qt.Key_D, Qt.Key_Q, Qt.Key_E, Qt.Key_R]:
             return
@@ -1084,22 +2512,183 @@ class MainWindow(QMainWindow):
             # Release lock quickly to allow next toggle
             QTimer.singleShot(100, lambda: setattr(self, '_toggling_wireframe', False))
 
+        elif key == Qt.Key_H:
+            # Toggle help text visibility
+            self.help_visible = not self.help_visible
+            self.update_instruction_text_layout()
+            self.render_to_image()
+
         elif key in [Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right]:
             step = calculate_arrow_key_step(shift_pressed, ctrl_pressed)
+            handled = False
 
-            horizontal_axis, vertical_axis, screen_right, screen_up = self.get_screen_axes()
+            # Priority 1: Collider Rotation (left/right only, roll direction from camera view)
+            if self.collider_rotation_active and key in [Qt.Key_Left, Qt.Key_Right]:
+                # Step sizes: 10 degrees (default), 1 degree (shift), 0.1 degree (shift+ctrl)
+                angle_step = 10.0  # Default: 10 degrees
+                if shift_pressed and not ctrl_pressed:
+                    angle_step = 1.0  # Shift: 1 degree
+                elif shift_pressed and ctrl_pressed:
+                    angle_step = 0.1  # Shift+Ctrl: 0.1 degree
 
-            for i, checkbox in enumerate(self.point_checkboxes):
-                if checkbox.isChecked():
-                    if key == Qt.Key_Up:
-                        self.move_point_screen(i, screen_up, step)
-                    elif key == Qt.Key_Down:
-                        self.move_point_screen(i, screen_up, -step)
-                    elif key == Qt.Key_Left:
-                        self.move_point_screen(i, screen_right, -step)
+                # Get camera view direction (axis of rotation)
+                camera = self.renderer.GetActiveCamera()
+                camera_pos = np.array(camera.GetPosition())
+                focal_point = np.array(camera.GetFocalPoint())
+                view_direction = focal_point - camera_pos
+                view_direction = view_direction / np.linalg.norm(view_direction)  # Normalize
+
+                # Determine rotation direction
+                if key == Qt.Key_Left:
+                    angle_step = -angle_step  # Counter-clockwise from camera view
+
+                # Create rotation quaternion around camera view direction
+                delta_quat = self.quaternion_from_axis_angle(view_direction, angle_step)
+
+                # Apply rotation to current quaternion
+                self.collider_rotation_quaternion = self.quaternion_multiply(
+                    delta_quat, self.collider_rotation_quaternion)
+
+                # Normalize quaternion to prevent drift
+                self.collider_rotation_quaternion /= np.linalg.norm(self.collider_rotation_quaternion)
+
+                # Update UI with Euler angles (for reference)
+                euler = self.quaternion_to_euler(self.collider_rotation_quaternion)
+                for i in range(3):
+                    self.collider_rotation[i] = euler[i]
+                    self.collider_rotation_inputs[i].setText(f"{euler[i]:.2f}")
+
+                if self.collider_show:
+                    self.update_collider_display()
+                handled = True
+
+            # Priority 2: Collider Size (for box, camera-relative)
+            elif self.collider_size_active:
+                param_step = 0.01 if not shift_pressed else 0.001
+                if ctrl_pressed and shift_pressed:
+                    param_step = 0.0001
+
+                # Get camera screen axes
+                horizontal_axis, vertical_axis, screen_right, screen_up = self.get_screen_axes()
+
+                # Determine which box axis is closest to screen_right and screen_up
+                axes = [np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, 0, 1])]  # X, Y, Z
+
+                # Find axis most aligned with screen_right (for left/right keys)
+                right_dots = [abs(np.dot(screen_right, axis)) for axis in axes]
+                right_axis_idx = np.argmax(right_dots)
+
+                # Find axis most aligned with screen_up (for up/down keys)
+                up_dots = [abs(np.dot(screen_up, axis)) for axis in axes]
+                up_axis_idx = np.argmax(up_dots)
+
+                # Left/Right: change size along screen_right direction
+                if key in [Qt.Key_Left, Qt.Key_Right]:
+                    current_size = self.collider_params[self.collider_type][right_axis_idx]
+                    if key == Qt.Key_Left:
+                        current_size -= param_step
                     elif key == Qt.Key_Right:
-                        self.move_point_screen(i, screen_right, step)
-                    self.render_to_image()
+                        current_size += param_step
+                    current_size = max(0.001, current_size)
+                    self.collider_params[self.collider_type][right_axis_idx] = current_size
+                    self.collider_param_inputs[right_axis_idx].setText(f"{current_size:.4f}")
+                    handled = True
+
+                # Up/Down: change size along screen_up direction
+                if key in [Qt.Key_Up, Qt.Key_Down]:
+                    current_size = self.collider_params[self.collider_type][up_axis_idx]
+                    if key == Qt.Key_Up:
+                        current_size += param_step
+                    elif key == Qt.Key_Down:
+                        current_size -= param_step
+                    current_size = max(0.001, current_size)
+                    self.collider_params[self.collider_type][up_axis_idx] = current_size
+                    self.collider_param_inputs[up_axis_idx].setText(f"{current_size:.4f}")
+                    handled = True
+
+                if handled and self.collider_show:
+                    self.update_collider_display()
+
+            # Priority 3: Collider Radius/Length (shared checkbox)
+            elif self.collider_radius_length_active:
+                param_step = 0.01 if not shift_pressed else 0.001
+                if ctrl_pressed and shift_pressed:
+                    param_step = 0.0001
+
+                # Radius: left/right
+                if key in [Qt.Key_Left, Qt.Key_Right]:
+                    radius_idx = 0
+                    current_radius = self.collider_params[self.collider_type][radius_idx]
+                    if key == Qt.Key_Left:
+                        current_radius -= param_step
+                    elif key == Qt.Key_Right:
+                        current_radius += param_step
+                    current_radius = max(0.001, current_radius)  # Minimum radius
+                    self.collider_params[self.collider_type][radius_idx] = current_radius
+                    self.collider_param_inputs[radius_idx].setText(f"{current_radius:.4f}")
+                    if self.collider_show:
+                        self.update_collider_display()
+                    handled = True
+
+                # Length: up/down (only for cylinder/capsule)
+                if self.collider_type in ["cylinder", "capsule"] and key in [Qt.Key_Up, Qt.Key_Down]:
+                    length_idx = 1
+                    current_length = self.collider_params[self.collider_type][length_idx]
+                    if key == Qt.Key_Up:
+                        current_length += param_step
+                    elif key == Qt.Key_Down:
+                        current_length -= param_step
+                    current_length = max(0.001, current_length)  # Minimum length
+                    self.collider_params[self.collider_type][length_idx] = current_length
+                    self.collider_param_inputs[length_idx].setText(f"{current_length:.4f}")
+                    if self.collider_show:
+                        self.update_collider_display()
+                    handled = True
+
+            # Priority 4: Collider Position
+            elif self.collider_position_active:
+                horizontal_axis, vertical_axis, screen_right, screen_up = self.get_screen_axes()
+
+                if key == Qt.Key_Up:
+                    self.collider_position[0] += screen_up[0] * step
+                    self.collider_position[1] += screen_up[1] * step
+                    self.collider_position[2] += screen_up[2] * step
+                elif key == Qt.Key_Down:
+                    self.collider_position[0] -= screen_up[0] * step
+                    self.collider_position[1] -= screen_up[1] * step
+                    self.collider_position[2] -= screen_up[2] * step
+                elif key == Qt.Key_Left:
+                    self.collider_position[0] -= screen_right[0] * step
+                    self.collider_position[1] -= screen_right[1] * step
+                    self.collider_position[2] -= screen_right[2] * step
+                elif key == Qt.Key_Right:
+                    self.collider_position[0] += screen_right[0] * step
+                    self.collider_position[1] += screen_right[1] * step
+                    self.collider_position[2] += screen_right[2] * step
+
+                # Update UI
+                for i in range(3):
+                    self.collider_position_inputs[i].setText(f"{self.collider_position[i]:.4f}")
+                if self.collider_show:
+                    self.update_collider_display()
+                handled = True
+
+            # Priority 5: Center Position (default behavior)
+            if not handled:
+                horizontal_axis, vertical_axis, screen_right, screen_up = self.get_screen_axes()
+
+                for i, checkbox in enumerate(self.point_checkboxes):
+                    if checkbox.isChecked():
+                        if key == Qt.Key_Up:
+                            self.move_point_screen(i, screen_up, step)
+                        elif key == Qt.Key_Down:
+                            self.move_point_screen(i, screen_up, -step)
+                        elif key == Qt.Key_Left:
+                            self.move_point_screen(i, screen_right, -step)
+                        elif key == Qt.Key_Right:
+                            self.move_point_screen(i, screen_right, step)
+                        self.render_to_image()
+                        handled = True
 
         super().keyPressEvent(event)
 
@@ -1166,7 +2755,7 @@ class MainWindow(QMainWindow):
                         # Set focus to vtk_display to enable keyboard controls
                         self.vtk_display.setFocus()
                         self.mouse_pressed = True
-                        self.last_mouse_pos = event.pos()
+                        self.last_mouse_pos = event.position().toPoint()
                         # CRITICAL: Grab mouse to receive events even outside widget
                         self.vtk_display.grabMouse()
                         return True
@@ -1174,7 +2763,7 @@ class MainWindow(QMainWindow):
                     elif event.button() == QtCore.MiddleButton:
                         self.vtk_display.setFocus()
                         self.middle_mouse_pressed = True
-                        self.last_mouse_pos = event.pos()
+                        self.last_mouse_pos = event.position().toPoint()
                         self.vtk_display.grabMouse()
                         return True
 
@@ -1198,7 +2787,7 @@ class MainWindow(QMainWindow):
                 if isinstance(event, QMouseEvent):
                     # Handle left button drag
                     if self.mouse_pressed and self.last_mouse_pos:
-                        current_pos = event.pos()
+                        current_pos = event.position().toPoint()
                         dx = current_pos.x() - self.last_mouse_pos.x()
                         dy = current_pos.y() - self.last_mouse_pos.y()
 
@@ -1214,7 +2803,7 @@ class MainWindow(QMainWindow):
                         return True
                     # Handle middle button drag (always pan)
                     elif self.middle_mouse_pressed and self.last_mouse_pos:
-                        current_pos = event.pos()
+                        current_pos = event.position().toPoint()
                         dx = current_pos.x() - self.last_mouse_pos.x()
                         dy = current_pos.y() - self.last_mouse_pos.y()
 
@@ -1291,6 +2880,24 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Error during cleanup: {e}")
         event.accept()
+
+    def resizeEvent(self, event):
+        """Handle window resize to update text layout and re-render"""
+        super().resizeEvent(event)
+        # Debounce resize events to avoid excessive re-rendering
+        # Update text layout and trigger re-render after a short delay
+        if hasattr(self, 'vtk_fully_ready') and self.vtk_fully_ready:
+            QTimer.singleShot(0, self._handle_resize)
+
+    def _handle_resize(self):
+        """Internal handler for resize event (debounced)"""
+        try:
+            # Update instruction text font size based on new window size
+            self.update_instruction_text_layout()
+            # Re-render with new RenderWindow size
+            self.render_to_image()
+        except Exception as e:
+            pass  # Silently ignore resize errors during initialization
 
     def get_screen_axes(self):
         return self.camera_controller.get_screen_axes()
@@ -1382,20 +2989,7 @@ class MainWindow(QMainWindow):
         sender = self.sender()
         button_text = sender.text()
 
-        if button_text == "Set Marker":
-            for i, checkbox in enumerate(self.point_checkboxes):
-                if checkbox.isChecked():
-                    try:
-                        new_coords = [float(self.point_inputs[i][j].text()) for j in range(3)]
-                        self.point_coords[i] = new_coords
-                        # Always show the point when Set Marker is pressed
-                        self.show_point(i)
-                        print(f"Point {i+1} set to: {new_coords}")
-                    except ValueError:
-                        print(f"Invalid input for Point {i+1}. Please enter valid numbers.")
-            # Update display after setting markers
-            self.render_to_image()
-        elif button_text == "Set Front as X":
+        if button_text == "Set Front as X":
             self.handle_set_front_as_x()
             # Update display after transforming STL to camera view
             self.render_to_image()
