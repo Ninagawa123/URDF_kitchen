@@ -4,7 +4,7 @@ Description: A Python script for configuring connection points of parts for urdf
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Dec 31, 2025
+Update.     : Jan  1, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -16,6 +16,8 @@ pip install numpy
 pip install PySide6
 pip install vtk
 pip install NodeGraphQt
+pip install trimesh
+pip install pycollada
 """
 
 import sys
