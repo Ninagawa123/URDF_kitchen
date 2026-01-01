@@ -1,12 +1,10 @@
 """
-File Name: urdf_kitchen_StlSourcer.py
+File Name: urdf_kitchen_MeshSourcer.py
 Description: A Python script for reconfiguring the center coordinates and axis directions of STL and dae files.
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Created On  : Jan  1, 2026
-
-
+Update.     : Jan  1, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -40,7 +38,7 @@ except ImportError:
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QMainWindow, QVBoxLayout, QWidget,
     QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout,
-    QComboBox, QGroupBox, QScrollArea, QButtonGroup, QRadioButton
+    QComboBox, QGroupBox, QScrollArea, QButtonGroup, QRadioButton, QSizePolicy
 )
 from PySide6.QtCore import QTimer, Qt, QObject
 
@@ -50,7 +48,8 @@ from urdf_kitchen_utils import (
     AdaptiveMarkerSize, MouseDragState, calculate_arrow_key_step,
     get_mesh_file_filter, load_mesh_to_polydata, save_polydata_to_mesh,
     is_apple_silicon, setup_qt_environment_for_apple_silicon,
-    setup_signal_handlers, setup_signal_processing_timer
+    setup_signal_handlers, setup_signal_processing_timer,
+    euler_to_quaternion, quaternion_to_euler, quaternion_to_matrix
 )
 
 # M4 Mac (Apple Silicon) compatibility
@@ -153,8 +152,6 @@ class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
                 else:
                     actor.GetProperty().SetRepresentationToSurface()
             actor = actors.GetNextItem()
-        # SKIP Render on M4 Mac - it blocks the UI thread
-        # self.GetInteractor().GetRenderWindow().Render()
 
 
 class GlobalKeyEventFilter(QObject):
@@ -168,30 +165,24 @@ class GlobalKeyEventFilter(QObject):
         from PySide6.QtCore import QEvent, Qt
         from PySide6.QtWidgets import QLineEdit, QTextEdit, QPlainTextEdit, QApplication
 
-        # Only process KeyPress events
         if event.type() == QEvent.KeyPress:
-            # Check if focus is on an input widget
             focus_widget = QApplication.focusWidget()
             if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
-                # Let input widget handle the event
                 return False
-
-            # Route WASD keys to main window
             key = event.key()
             if key in [Qt.Key_W, Qt.Key_A, Qt.Key_S, Qt.Key_D, Qt.Key_Q, Qt.Key_E,
                       Qt.Key_R, Qt.Key_T, Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right]:
-                # Forward to main window's keyPressEvent
                 self.main_window.keyPressEvent(event)
-                return True  # Consume the event
+                return True
 
-        return False  # Let event propagate normally
+        return False
 
 
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("URDF kitchen - MeshSourcer v0.1.0")
-        self.resize(1200, 600)  # Wider window, 800px height
+        self.resize(1000, 680)  # Wider window, 680px height
 
         self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
         self.absolute_origin = [0, 0, 0]  # 大原点の設定
@@ -235,49 +226,41 @@ class MainWindow(QMainWindow):
         self.vtk_display.setAlignment(Qt.AlignCenter)
         self.vtk_display.setText("3D View\n\n(Load STL file to display)\n\nKeyboard controls are enabled")
         self.vtk_display.setScaledContents(False)
-        self.vtk_display.setMouseTracking(True)  # Enable mouse tracking
-
-        # Make vtk_display focusable so it can receive keyboard events
+        self.vtk_display.setMouseTracking(True)
         self.vtk_display.setFocusPolicy(Qt.StrongFocus)
 
-        # Mouse interaction state
         self.mouse_pressed = False
         self.last_mouse_pos = None
-
-        # Install event filter for mouse events
         self.vtk_display.installEventFilter(self)
 
         left_layout.addWidget(self.vtk_display)
-        main_layout.addWidget(left_widget, 70)  # 70% width for 3D view
+        main_layout.addWidget(left_widget, 70)
 
-        # Create offscreen VTK render window
         self.render_window = vtk.vtkRenderWindow()
         self.render_window.SetOffScreenRendering(1)
         self.render_window.SetSize(1000, 800)
 
-        # No more QVTKRenderWindowInteractor - using offscreen rendering
-
-        # 右側：コントロールパネル（スクロール可能、400px固定幅）
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         right_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        right_scroll.setFixedWidth(400)  # Fixed width: 400px
+        right_scroll.setFixedWidth(400)
 
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
-        right_layout.setSpacing(4)  # Reduce vertical spacing to 2/3 (default ~6-8)
-        right_layout.setContentsMargins(8, 8, 8, 8)  # Reduce margins
+        right_layout.setSpacing(4)
+        right_layout.setContentsMargins(8, 8, 8, 8)
         right_scroll.setWidget(right_widget)
-        main_layout.addWidget(right_scroll)  # Fixed width, no stretch factor
+        main_layout.addWidget(right_scroll)
 
-        # ファイル名表示用のラベル
         self.file_name_label = QLabel("File: No file loaded")
+        self.file_name_label.setWordWrap(True)
+        self.file_name_label.setMaximumWidth(380)
+        self.file_name_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
         right_layout.addWidget(self.file_name_label)
 
-        # LOADボタン
         button_layout = QHBoxLayout()
-        button_layout.setSpacing(4)  # Reduce horizontal spacing
+        button_layout.setSpacing(4)
         self.load_button = QPushButton("Load Mesh")
         self.load_button.setFocusPolicy(Qt.NoFocus)
         self.load_button.clicked.connect(self.load_stl_file)
@@ -286,49 +269,40 @@ class MainWindow(QMainWindow):
 
         right_layout.addLayout(button_layout)
 
-        # Initialize collider state BEFORE setting up UI
+        # Initialize collider state before setting up UI
         self.collider_type = "box"
         self.collider_params = {"box": [1.0, 1.0, 1.0], "sphere": [0.5], "cylinder": [0.5, 1.0], "capsule": [0.5, 1.0]}
         self.collider_position = [0.0, 0.0, 0.0]
-        self.collider_rotation = [0.0, 0.0, 0.0]  # roll, pitch, yaw in degrees (for UI display)
-        self.collider_rotation_quaternion = np.array([1.0, 0.0, 0.0, 0.0])  # [w, x, y, z] for actual rotation
+        self.collider_rotation = [0.0, 0.0, 0.0]
+        self.collider_rotation_quaternion = np.array([1.0, 0.0, 0.0, 0.0])
         self.collider_actor = None
-        self.collider_surface_actor = None  # Surface actor for blinking effect
+        self.collider_surface_actor = None
         self.collider_type_initialized = {"box": False, "sphere": False, "cylinder": False, "capsule": False}
-        self.collider_show = False  # Show/hide collider (default: unchecked)
-        self.collider_first_show = True  # Track if this is the first time Show is clicked
+        self.collider_show = False
+        self.collider_first_show = True
 
-        # Timer for collider surface blinking (1 second interval)
         self.collider_blink_timer = QTimer()
         self.collider_blink_timer.timeout.connect(self.toggle_collider_surface)
         self.collider_blink_state = False
 
-        # Flags for keyboard control
-        self.center_position_active = True  # Center Position checkbox state
-        self.collider_position_active = False  # Collider Position checkbox state
-        self.collider_size_active = False  # Collider Size checkbox state (for box)
-        self.collider_radius_length_active = False  # Collider Radius/Length checkbox state (shared)
-        self.collider_rotation_active = False  # Collider Rotation checkbox state
+        self.center_position_active = True
+        self.collider_position_active = False
+        self.collider_size_active = False
+        self.collider_radius_length_active = False
+        self.collider_rotation_active = False
 
-        # Add spacing before Origin Coordinates
         right_layout.addSpacing(10)
-        # Reorient Mesh UI (includes Volume and Center Position)
         self.setup_reorient_mesh_ui(right_layout)
 
-        # Add spacing before Collider Design
         right_layout.addSpacing(10)
-        # Collider UI
         self.setup_collider_ui(right_layout)
 
-        # Add spacing before Batch Mesh Converter
         right_layout.addSpacing(10)
-        # Batch Converter UI
         self.setup_batch_converter_ui(right_layout)
 
-        # Add stretch to push everything to the top
         right_layout.addStretch()
 
-        # DON'T setup VTK yet - delay it until after window is shown
+        # Delay VTK setup until after window is shown
         self.vtk_initialized = False
         self.vtk_fully_ready = False  # VTK初期化完了フラグ
         self.pending_file_to_load = None  # 初期化後に読み込むファイル
@@ -428,6 +402,9 @@ class MainWindow(QMainWindow):
             print(f"VTK ready. Loading pending file: {self.pending_file_to_load}")
             try:
                 self.show_stl(self.pending_file_to_load)
+                # Update file name label and current path
+                self.file_name_label.setText(f"File: {self.pending_file_to_load}")
+                self.current_stl_path = self.pending_file_to_load
                 self.pending_file_to_load = None
             except Exception as e:
                 print(f"Error loading pending file: {e}")
@@ -573,6 +550,7 @@ class MainWindow(QMainWindow):
             inputs = []
             for j, axis in enumerate(['X', 'Y', 'Z']):
                 input_field = QLineEdit(str(self.point_coords[i][j]))
+                input_field.setMaximumWidth(80)  # Prevent horizontal expansion
                 # Only focus when explicitly clicked, don't steal keyboard focus
                 input_field.setFocusPolicy(Qt.ClickFocus)
                 # Return focus to vtk_display when editing is done
@@ -595,11 +573,27 @@ class MainWindow(QMainWindow):
 
         # Volume表示
         self.volume_label = QLabel("Volume (m^3): 0.000000")
+        self.volume_label.setMaximumWidth(380)  # Prevent horizontal expansion
         reorient_layout.addWidget(self.volume_label)
 
         # Center Position (from setup_points_ui)
         points_layout = self.setup_points_ui()
         reorient_layout.addLayout(points_layout)
+
+        # Add spacing before Clean Mesh checkbox
+        reorient_layout.addSpacing(2)
+
+        # Clean Mesh checkbox for save operation (right-aligned)
+        clean_mesh_layout = QHBoxLayout()
+        clean_mesh_layout.addStretch()  # Push checkbox to the right
+        self.reorient_clean_mesh_checkbox = QCheckBox("Clean Mesh")
+        self.reorient_clean_mesh_checkbox.setFocusPolicy(Qt.NoFocus)
+        self.reorient_clean_mesh_checkbox.setChecked(False)
+        clean_mesh_layout.addWidget(self.reorient_clean_mesh_checkbox)
+        reorient_layout.addLayout(clean_mesh_layout)
+
+        # Add spacing after Clean Mesh checkbox
+        reorient_layout.addSpacing(2)
 
         # Save, Reset Marker, and Set Front as X buttons (horizontal layout)
         button_layout = QHBoxLayout()
@@ -663,6 +657,7 @@ class MainWindow(QMainWindow):
         for i, axis in enumerate(['X', 'Y', 'Z']):
             position_layout.addWidget(QLabel(f"{axis}:"), 0, i*2+2)
             input_field = QLineEdit("0.0")
+            input_field.setMaximumWidth(60)  # Prevent horizontal expansion
             input_field.setFocusPolicy(Qt.ClickFocus)
             input_field.editingFinished.connect(lambda idx=i: self.on_collider_position_input_changed(idx))
             input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
@@ -687,6 +682,7 @@ class MainWindow(QMainWindow):
         for i, axis in enumerate(['Roll', 'Pitch', 'Yaw']):
             rotation_layout.addWidget(QLabel(f"{axis}:"), 0, i*2+2)
             input_field = QLineEdit("0.0")
+            input_field.setMaximumWidth(60)  # Prevent horizontal expansion
             input_field.setFocusPolicy(Qt.ClickFocus)
             input_field.editingFinished.connect(lambda idx=i: self.on_collider_rotation_input_changed(idx))
             input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
@@ -732,7 +728,7 @@ class MainWindow(QMainWindow):
         converter_group = QGroupBox("Batch Mesh Converter")
         converter_layout = QVBoxLayout()
         converter_layout.setSpacing(4)  # Reduce vertical spacing
-        converter_layout.setContentsMargins(8, 8, 8, 8)  # Reduce margins
+        converter_layout.setContentsMargins(8, 8, 8, 8)  # Remove bottom margin
 
         # Radio button style for white text
         radio_style = "QRadioButton { color: white; }"
@@ -763,6 +759,13 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(self.input_dae_radio)
         input_layout.addWidget(self.input_obj_radio)
         input_layout.addStretch()  # Push everything to the left
+
+        # Add Clean Mesh checkbox to the right side of Input line
+        self.clean_mesh_checkbox = QCheckBox("Clean Mesh")
+        self.clean_mesh_checkbox.setFocusPolicy(Qt.NoFocus)
+        self.clean_mesh_checkbox.setChecked(False)
+        input_layout.addWidget(self.clean_mesh_checkbox)
+
         converter_layout.addLayout(input_layout)
 
         # Output format selection (label and radio buttons on same line)
@@ -803,9 +806,32 @@ class MainWindow(QMainWindow):
         converter_group.setLayout(converter_layout)
         layout.addWidget(converter_group)
 
+    def clean_polydata(self, polydata):
+        """Apply VTK cleaning filters to polydata"""
+        import vtk
+
+        # Step 1: Clean polydata - remove duplicate points and degenerate cells
+        clean_filter = vtk.vtkCleanPolyData()
+        clean_filter.SetInputData(polydata)
+        clean_filter.PointMergingOn()
+        clean_filter.ToleranceIsAbsoluteOn()
+        clean_filter.SetAbsoluteTolerance(1e-6)
+        clean_filter.Update()
+
+        # Step 2: Compute and fix normals
+        normals_filter = vtk.vtkPolyDataNormals()
+        normals_filter.SetInputConnection(clean_filter.GetOutputPort())
+        normals_filter.ComputePointNormalsOn()
+        normals_filter.ComputeCellNormalsOn()
+        normals_filter.ConsistencyOn()  # Make normals consistent
+        normals_filter.AutoOrientNormalsOn()  # Auto-orient normals outward
+        normals_filter.SplittingOff()  # Don't split vertices (smooth shading)
+        normals_filter.Update()
+
+        return normals_filter.GetOutput()
+
     def batch_convert_meshes(self):
         """Batch convert mesh files from input format to output format"""
-        # Get selected formats
         input_ext = None
         if self.input_stl_radio.isChecked():
             input_ext = ".stl"
@@ -822,16 +848,17 @@ class MainWindow(QMainWindow):
         elif self.output_obj_radio.isChecked():
             output_ext = ".obj"
 
-        if input_ext == output_ext:
+        clean_mesh_enabled = self.clean_mesh_checkbox.isChecked()
+
+        if input_ext == output_ext and not clean_mesh_enabled:
             print(f"Input and output formats are the same ({input_ext}). No conversion needed.")
+            print("Tip: Enable 'Clean Mesh' to clean files without changing format.")
             return
 
-        # Select directory
         directory = QFileDialog.getExistingDirectory(self, "Select Directory for Batch Conversion")
         if not directory:
             return
 
-        # Find all files with input extension
         from pathlib import Path
         input_files = list(Path(directory).glob(f"*{input_ext}"))
 
@@ -841,14 +868,12 @@ class MainWindow(QMainWindow):
 
         print(f"Found {len(input_files)} {input_ext} file(s) in {directory}")
 
-        # Check for existing output files
         existing_files = []
         for input_file in input_files:
             output_file = input_file.with_suffix(output_ext)
             if output_file.exists():
                 existing_files.append(output_file.name)
 
-        # Ask user about overwriting if there are existing files
         overwrite = True
         if existing_files:
             from PySide6.QtWidgets import QMessageBox
@@ -866,30 +891,76 @@ class MainWindow(QMainWindow):
                 print("Conversion cancelled by user.")
                 return
 
-        # Convert files
         success_count = 0
         error_count = 0
+        success_files = []
+        error_files = []
 
-        # Import utility functions from urdf_kitchen_utils
         from urdf_kitchen_utils import load_mesh_to_polydata, save_polydata_to_mesh
 
         for input_file in input_files:
             output_file = input_file.with_suffix(output_ext)
             try:
-                polydata = load_mesh_to_polydata(str(input_file))
+                polydata, volume, color = load_mesh_to_polydata(str(input_file))
                 if polydata:
-                    # save_polydata_to_mesh signature: (file_path, poly_data, mesh_color, color_manually_changed)
-                    save_polydata_to_mesh(str(output_file), polydata)
-                    print(f"Converted: {input_file.name} → {output_file.name}")
+                    if clean_mesh_enabled:
+                        polydata = self.clean_polydata(polydata)
+
+                    save_polydata_to_mesh(str(output_file), polydata, mesh_color=color)
+
+                    action = "Cleaned" if (input_ext == output_ext and clean_mesh_enabled) else "Converted"
+                    print(f"{action}: {input_file.name} → {output_file.name}")
+                    success_files.append(input_file.name)
                     success_count += 1
                 else:
                     print(f"Error loading: {input_file.name}")
+                    error_files.append(input_file.name)
                     error_count += 1
             except Exception as e:
                 print(f"Error converting {input_file.name}: {e}")
+                error_files.append(input_file.name)
                 error_count += 1
 
-        print(f"\nBatch conversion complete:")
+        from PySide6.QtWidgets import QMessageBox
+
+        operation = "Batch Cleaning" if (input_ext == output_ext and clean_mesh_enabled) else "Batch Conversion"
+        result_msg = f"{operation} Complete\n\n"
+        result_msg += f"Total files: {len(input_files)}\n"
+        result_msg += f"✓ Success: {success_count} file(s)\n"
+        result_msg += f"✗ Errors: {error_count} file(s)\n"
+        if clean_mesh_enabled:
+            result_msg += "\n[Mesh cleaning applied: normals fixed, duplicates removed]\n"
+
+        if success_count > 0 and success_count <= 5:
+            result_msg += f"\nConverted files:\n"
+            result_msg += "\n".join([f"  • {f}" for f in success_files])
+        elif success_count > 5:
+            result_msg += f"\nConverted files (first 5):\n"
+            result_msg += "\n".join([f"  • {f}" for f in success_files[:5]])
+            result_msg += f"\n  ... and {success_count - 5} more"
+
+        if error_count > 0 and error_count <= 5:
+            result_msg += f"\n\nFailed files:\n"
+            result_msg += "\n".join([f"  • {f}" for f in error_files])
+        elif error_count > 5:
+            result_msg += f"\n\nFailed files (first 5):\n"
+            result_msg += "\n".join([f"  • {f}" for f in error_files[:5]])
+            result_msg += f"\n  ... and {error_count - 5} more"
+
+        op_name = "Cleaning" if (input_ext == output_ext and clean_mesh_enabled) else "Conversion"
+        if error_count == 0:
+            icon = QMessageBox.Information
+            title = f"{op_name} Successful"
+        elif success_count == 0:
+            icon = QMessageBox.Critical
+            title = f"{op_name} Failed"
+        else:
+            icon = QMessageBox.Warning
+            title = f"{op_name} Completed with Errors"
+
+        QMessageBox(icon, title, result_msg, QMessageBox.Ok, self).exec()
+
+        print(f"\nBatch {op_name.lower()} complete:")
         print(f"  Success: {success_count} file(s)")
         print(f"  Errors: {error_count} file(s)")
 
@@ -945,6 +1016,7 @@ class MainWindow(QMainWindow):
             col += 1
 
             input_field = QLineEdit(str(param_value))
+            input_field.setMaximumWidth(60)  # Prevent horizontal expansion
             input_field.setFocusPolicy(Qt.ClickFocus)
             input_field.editingFinished.connect(lambda idx=i: self.on_collider_param_input_changed(idx))
             input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
@@ -1161,7 +1233,7 @@ class MainWindow(QMainWindow):
             self.collider_rotation_inputs[index].setText(f"{value:.2f}")
 
             # Update quaternion from Euler angles
-            self.collider_rotation_quaternion = self.euler_to_quaternion(
+            self.collider_rotation_quaternion = euler_to_quaternion(
                 self.collider_rotation[0],
                 self.collider_rotation[1],
                 self.collider_rotation[2]
@@ -1497,23 +1569,12 @@ class MainWindow(QMainWindow):
                 self.axis_actors.append(actor)
 
     def add_instruction_text(self):
-        """Add instruction text with adaptive font sizing and safe margins"""
+        """Add instruction text with fixed font size and safe margins"""
         if not hasattr(self, 'text_actors'):
             self.text_actors = []
 
-        # Get current window height for adaptive font sizing
-        height = self.vtk_display.height() if self.vtk_display.height() > 0 else 600
-
-        # Adaptive font size based on window height
-        # Smaller windows get smaller fonts to prevent clipping
-        if height < 450:
-            font_size = 12
-        elif height < 550:
-            font_size = 14
-        elif height < 650:
-            font_size = 16
-        else:
-            font_size = 18
+        # Fixed font size (no adaptive sizing based on window size)
+        font_size = 14
 
         # Top text: Shortened lines to prevent right overflow
         text_actor_top = vtk.vtkTextActor()
@@ -1556,27 +1617,12 @@ class MainWindow(QMainWindow):
         self.text_actors.append(text_actor_bottom)
 
     def update_instruction_text_layout(self):
-        """Update instruction text font size and visibility based on window size"""
+        """Update instruction text visibility (font size is fixed)"""
         if not hasattr(self, 'text_actors') or len(self.text_actors) < 2:
             return
 
-        # Get current window height for adaptive font sizing
-        height = self.vtk_display.height() if self.vtk_display.height() > 0 else 600
-
-        # Adaptive font size based on window height
-        if height < 450:
-            font_size = 10
-        elif height < 550:
-            font_size = 11
-        elif height < 650:
-            font_size = 12
-        else:
-            font_size = 14
-
-        # Update font size for all text actors
+        # Update visibility based on help_visible flag (font size remains fixed)
         for actor in self.text_actors:
-            actor.GetTextProperty().SetFontSize(font_size)
-            # Update visibility based on help_visible flag
             actor.SetVisibility(1 if self.help_visible else 0)
 
     def load_stl_file(self):
@@ -1749,34 +1795,7 @@ class MainWindow(QMainWindow):
 
         return np.degrees([roll, pitch, yaw])
 
-    def euler_to_quaternion(self, roll_deg, pitch_deg, yaw_deg):
-        """Convert Euler angles (roll, pitch, yaw) in degrees to quaternion"""
-        roll = np.radians(roll_deg)
-        pitch = np.radians(pitch_deg)
-        yaw = np.radians(yaw_deg)
-
-        cy = np.cos(yaw * 0.5)
-        sy = np.sin(yaw * 0.5)
-        cp = np.cos(pitch * 0.5)
-        sp = np.sin(pitch * 0.5)
-        cr = np.cos(roll * 0.5)
-        sr = np.sin(roll * 0.5)
-
-        w = cr * cp * cy + sr * sp * sy
-        x = sr * cp * cy - cr * sp * sy
-        y = cr * sp * cy + sr * cp * sy
-        z = cr * cp * sy - sr * sp * cy
-
-        return np.array([w, x, y, z])
-
-    def quaternion_to_matrix(self, q):
-        """Convert quaternion to 3x3 rotation matrix"""
-        w, x, y, z = q
-        return np.array([
-            [1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y)],
-            [2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x)],
-            [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x + y*y)]
-        ])
+    # euler_to_quaternion() and quaternion_to_matrix() are now imported from urdf_kitchen_utils
 
     def create_collider_actor(self):
         """Create VTK actor for the collider wireframe (lines only)"""
@@ -1931,7 +1950,7 @@ class MainWindow(QMainWindow):
         transform.Translate(*[-x for x in self.collider_position])
 
         # Apply rotation from quaternion
-        rot_matrix = self.quaternion_to_matrix(self.collider_rotation_quaternion)
+        rot_matrix = quaternion_to_matrix(self.collider_rotation_quaternion)
         vtk_matrix = vtk.vtkMatrix4x4()
         for i in range(3):
             for j in range(3):
@@ -2098,7 +2117,7 @@ class MainWindow(QMainWindow):
         transform.Translate(*[-x for x in self.collider_position])
 
         # Apply rotation from quaternion
-        rot_matrix = self.quaternion_to_matrix(self.collider_rotation_quaternion)
+        rot_matrix = quaternion_to_matrix(self.collider_rotation_quaternion)
         vtk_matrix = vtk.vtkMatrix4x4()
         for i in range(3):
             for j in range(3):
@@ -2206,7 +2225,7 @@ class MainWindow(QMainWindow):
 
         elif collider_type in ["cylinder", "capsule"]:
             # For cylinder/capsule, consider rotation to find which world axis aligns with collider's Z-axis
-            rot_matrix = self.quaternion_to_matrix(self.collider_rotation_quaternion)
+            rot_matrix = quaternion_to_matrix(self.collider_rotation_quaternion)
             collider_z_axis = rot_matrix[:, 2]  # Third column is Z-axis direction in world space
 
             # Find which world axis is most aligned with collider's Z-axis
@@ -2553,7 +2572,7 @@ class MainWindow(QMainWindow):
                 self.collider_rotation_quaternion /= np.linalg.norm(self.collider_rotation_quaternion)
 
                 # Update UI with Euler angles (for reference)
-                euler = self.quaternion_to_euler(self.collider_rotation_quaternion)
+                euler = quaternion_to_euler(self.collider_rotation_quaternion)
                 for i in range(3):
                     self.collider_rotation[i] = euler[i]
                     self.collider_rotation_inputs[i].setText(f"{euler[i]:.2f}")
@@ -2932,8 +2951,16 @@ class MainWindow(QMainWindow):
             transform_filter.SetTransform(transform)
             transform_filter.Update()
 
+            # Get transformed polydata
+            output_polydata = transform_filter.GetOutput()
+
+            # Apply cleaning if checkbox is checked
+            if self.reorient_clean_mesh_checkbox.isChecked():
+                output_polydata = self.clean_polydata(output_polydata)
+                print("Mesh cleaning applied (normals fixed, duplicates removed)")
+
             # Use common utility function to save mesh
-            save_polydata_to_mesh(file_path, transform_filter.GetOutput())
+            save_polydata_to_mesh(file_path, output_polydata)
 
             print(f"Mesh file has been saved: {file_path}")
             # Update current path for next save
@@ -3086,20 +3113,22 @@ if __name__ == "__main__":
             window_geometry.moveCenter(center_point)
             window.move(window_geometry.topLeft())
 
-        # Show window
-        window.show()
-        window.raise_()
-        window.activateWindow()
-
-        # コマンドライン引数でファイルが指定された場合は、VTK初期化後に読み込むよう設定
+        # コマンドライン引数でファイルが指定された場合は、ウィンドウを最前面に表示
         if len(sys.argv) > 1:
             file_path = sys.argv[1]
             if os.path.exists(file_path):
                 print(f"File specified from command line: {file_path}")
                 print("Will load after VTK initialization completes...")
                 window.pending_file_to_load = file_path
+                # Set window to stay on top temporarily when launched from Assembler
+                window.setWindowFlags(window.windowFlags() | Qt.WindowStaysOnTopHint)
             else:
                 print(f"Warning: File not found: {file_path}")
+
+        # Show window
+        window.show()
+        window.raise_()
+        window.activateWindow()
 
     except Exception as e:
         print(f"Error creating window: {e}")
