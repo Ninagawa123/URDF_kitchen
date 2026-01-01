@@ -1,57 +1,23 @@
 """
-File Name: vtk_utils.py
-Description: Shared VTK utilities for URDF Kitchen tools (PartsEditor, Assembler, STLViewerWidget)
+File Name: urdf_kitchen_utils.py
+Description: Shared utilities for URDF Kitchen tools (Assembler, MeshSourcer, PartsEditor).
 
 Author      : Ninagawa123
 Created On  : Dec 28, 2025
-Update      : Dec 31, 2025
+Update.     : Jan  1, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
-Copyright (c) 2025 Ninagawa123
+Copyright (c) 2024 Ninagawa123
 
-VTK Utilities for URDF Kitchen Tools
-====================================
-
-This module provides shared utilities for PartsEditor, Assembler, and STLViewerWidget:
-
-1. **OffscreenRenderer** - Mac M4 compatible offscreen rendering to QLabel
-2. **CameraController** - Camera operations (rotate, pan, zoom, reset, fit)
-3. **AnimatedCameraRotation** - 90-degree animated rotations for WASD keys
-4. **AdaptiveMarkerSize** - Dynamic marker sizing based on zoom level
-5. **create_crosshair_marker** - 3D crosshair marker visualization
-6. **MouseDragState** - Mouse interaction state management
-7. **calculate_arrow_key_step** - Arrow key movement step calculation
-8. **calculate_inertia_tensor** - Inertia tensor calculation for 3D meshes
-9. **calculate_inertia_tetrahedral** - Tetrahedral decomposition method for inertia
-
-Usage Example:
---------------
-```python
-from vtk_utils import OffscreenRenderer, CameraController
-
-# Setup offscreen rendering
-renderer = vtk.vtkRenderer()
-render_window = vtk.vtkRenderWindow()
-render_window.SetOffScreenRendering(1)
-render_window.AddRenderer(renderer)
-
-offscreen = OffscreenRenderer(render_window, renderer)
-camera = CameraController(renderer, origin=[0, 0, 0])
-
-# Render to QLabel
-offscreen.update_display(my_qlabel)
-
-# Control camera
-camera.reset_camera()
-camera.zoom(delta=120)  # Zoom in
-camera.pan(dx=10, dy=5)  # Pan
-```
-
-Dependencies:
-- vtk
-- numpy
-- PySide6
+python3.11
+pip install --upgrade pip
+pip install numpy
+pip install PySide6
+pip install vtk
+pip install NodeGraphQt
+pip install trimesh
+pip install pycollada
 """
 
 import vtk
@@ -673,6 +639,155 @@ def calculate_arrow_key_step(shift_pressed, ctrl_pressed):
         return 0.001   # 1mm
     else:
         return 0.01    # 10mm
+
+
+# ============================================================================
+# QUATERNION AND EULER ANGLE CONVERSION UTILITIES
+# ============================================================================
+
+def euler_to_quaternion(roll_deg, pitch_deg, yaw_deg):
+    """
+    Convert URDF RPY (roll, pitch, yaw) in degrees to quaternion.
+
+    URDF RPY convention:
+    - Rotate by yaw around Z axis
+    - Then pitch around Y axis
+    - Then roll around X axis
+    (ZYX extrinsic / XYZ intrinsic rotation order)
+
+    Args:
+        roll_deg: Rotation around X axis in degrees
+        pitch_deg: Rotation around Y axis in degrees
+        yaw_deg: Rotation around Z axis in degrees
+
+    Returns:
+        np.ndarray: Quaternion [w, x, y, z]
+
+    Example:
+        >>> q = euler_to_quaternion(0, 90, 0)  # 90 degree pitch
+        >>> print(q)
+        [0.707107, 0.0, 0.707107, 0.0]
+    """
+    import numpy as np
+
+    roll = np.radians(roll_deg)
+    pitch = np.radians(pitch_deg)
+    yaw = np.radians(yaw_deg)
+
+    cy = np.cos(yaw * 0.5)
+    sy = np.sin(yaw * 0.5)
+    cp = np.cos(pitch * 0.5)
+    sp = np.sin(pitch * 0.5)
+    cr = np.cos(roll * 0.5)
+    sr = np.sin(roll * 0.5)
+
+    # Quaternion multiplication: qZ(yaw) * qY(pitch) * qX(roll)
+    w = cy * cp * cr + sy * sp * sr
+    x = cy * cp * sr - sy * sp * cr
+    y = cy * sp * cr + sy * cp * sr
+    z = sy * cp * cr - cy * sp * sr
+
+    return np.array([w, x, y, z])
+
+
+def quaternion_to_euler(q):
+    """
+    Convert quaternion to URDF RPY (roll, pitch, yaw) in degrees.
+
+    Args:
+        q: Quaternion as array-like [w, x, y, z]
+
+    Returns:
+        np.ndarray: Euler angles [roll, pitch, yaw] in degrees
+
+    Example:
+        >>> q = np.array([0.707107, 0.0, 0.707107, 0.0])
+        >>> euler = quaternion_to_euler(q)
+        >>> print(euler)
+        [0.0, 90.0, 0.0]
+    """
+    import numpy as np
+
+    w, x, y, z = q
+
+    # Roll (X-axis rotation)
+    sinr_cosp = 2 * (w * x + y * z)
+    cosr_cosp = 1 - 2 * (x * x + y * y)
+    roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+    # Pitch (Y-axis rotation)
+    sinp = 2 * (w * y - z * x)
+    if abs(sinp) >= 1:
+        # Gimbal lock case
+        pitch = np.copysign(np.pi / 2, sinp)
+    else:
+        pitch = np.arcsin(sinp)
+
+    # Yaw (Z-axis rotation)
+    siny_cosp = 2 * (w * z + x * y)
+    cosy_cosp = 1 - 2 * (y * y + z * z)
+    yaw = np.arctan2(siny_cosp, cosy_cosp)
+
+    return np.degrees([roll, pitch, yaw])
+
+
+def quaternion_to_matrix(q):
+    """
+    Convert quaternion to 3x3 rotation matrix.
+
+    Args:
+        q: Quaternion as array-like [w, x, y, z]
+
+    Returns:
+        np.ndarray: 3x3 rotation matrix
+
+    Example:
+        >>> q = np.array([1.0, 0.0, 0.0, 0.0])  # Identity
+        >>> m = quaternion_to_matrix(q)
+        >>> print(m)
+        [[1. 0. 0.]
+         [0. 1. 0.]
+         [0. 0. 1.]]
+    """
+    import numpy as np
+
+    w, x, y, z = q
+    return np.array([
+        [1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y)],
+        [2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x)],
+        [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x + y*y)]
+    ])
+
+
+def format_float_no_exp(value, max_decimals=15):
+    """
+    Format float without exponential notation, removing trailing zeros.
+
+    Used for URDF XML generation to ensure human-readable numbers.
+
+    Args:
+        value: Float value to format
+        max_decimals: Maximum number of decimal places (default: 15)
+
+    Returns:
+        str: Formatted string representation
+
+    Example:
+        >>> format_float_no_exp(0.0001)
+        '0.0001'
+        >>> format_float_no_exp(1.0)
+        '1'
+        >>> format_float_no_exp(1.23000)
+        '1.23'
+    """
+    # Format with max decimals
+    formatted = f"{value:.{max_decimals}f}"
+
+    # Remove trailing zeros and decimal point if not needed
+    formatted = formatted.rstrip('0').rstrip('.')
+
+    # Return '0' if empty string
+    return formatted if formatted else '0'
 
 
 # ============================================================================
