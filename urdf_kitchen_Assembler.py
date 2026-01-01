@@ -4,21 +4,26 @@ Description: A Python script to assembling files configured with urdf_kitchen_Pa
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Dec 31, 2025
-Version     : 0.0.5
+Update.     : Jan  1, 2026
+Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
 Copyright (c) 2024 Ninagawa123
 
+python3.11
+pip install --upgrade pip
 pip install numpy
 pip install PySide6
 pip install vtk
 pip install NodeGraphQt
+pip install trimesh
+pip install pycollada
 """
 
 import sys
 import signal
 import traceback
+import subprocess
 from Qt import QtWidgets, QtCore, QtGui
 from NodeGraphQt import NodeGraph, BaseNode
 import vtk
@@ -41,7 +46,8 @@ from urdf_kitchen_utils import (
     setup_signal_handlers, setup_signal_processing_timer, setup_dark_theme,
     calculate_inertia_tensor, calculate_inertia_tetrahedral,
     get_mesh_file_filter, load_mesh_to_polydata,
-    mirror_physical_properties_y_axis, calculate_mirrored_physical_properties_from_mesh
+    mirror_physical_properties_y_axis, calculate_mirrored_physical_properties_from_mesh,
+    euler_to_quaternion, quaternion_to_euler, quaternion_to_matrix, format_float_no_exp
 )
 
 # M4 Mac (Apple Silicon) compatibility
@@ -239,36 +245,7 @@ class CustomColorDialog(QtWidgets.QColorDialog):
         super().setCustomColor(self.selected_custom_color_index, color)
         # 選択インデックスは変更しない（連打しても同じ場所に設定される）
 
-def format_float_no_exp(value, max_decimals=15):
-    """
-    浮動小数点数を指数表記なしで文字列化する。
-    末尾のゼロと不要な小数点も削除する。
-
-    Args:
-        value: float - 変換する数値
-        max_decimals: int - 最大小数点以下桁数
-
-    Returns:
-        str - 指数表記なしの文字列
-
-    Examples:
-        >>> format_float_no_exp(0.0000123456789)
-        '0.0000123456789'
-        >>> format_float_no_exp(1.5)
-        '1.5'
-        >>> format_float_no_exp(1.0)
-        '1'
-        >>> format_float_no_exp(0.0)
-        '0'
-    """
-    # 指数表記を避けて文字列化
-    formatted = f"{value:.{max_decimals}f}"
-    # 末尾のゼロを削除
-    formatted = formatted.rstrip('0')
-    # 小数点だけが残った場合は削除（例: "1." -> "1"）
-    formatted = formatted.rstrip('.')
-    # 空文字列の場合は '0' を返す
-    return formatted if formatted else '0'
+# format_float_no_exp() is now imported from urdf_kitchen_utils
 
 def init_node_properties(node):
     """ノードの共通プロパティを初期化"""
@@ -501,7 +478,6 @@ class InspectorWindow(QtWidgets.QWidget):
         self.current_node = None
         self.stl_viewer = stl_viewer
         self.port_widgets = []
-        self.showing_collider = False  # Flag for Visual/Collider mesh display toggle
 
         # UIの初期化
         self.setup_ui()
@@ -889,6 +865,12 @@ class InspectorWindow(QtWidgets.QWidget):
 
         # Collider Mesh セクション
         collider_layout = QtWidgets.QHBoxLayout()
+
+        self.collider_enabled_checkbox = QtWidgets.QCheckBox()
+        self.collider_enabled_checkbox.setChecked(False)
+        self.collider_enabled_checkbox.stateChanged.connect(self.on_collider_enabled_changed)
+        collider_layout.addWidget(self.collider_enabled_checkbox)
+
         collider_layout.addWidget(QtWidgets.QLabel("Collider Mesh:"))
 
         self.collider_mesh_input = QtWidgets.QLineEdit()
@@ -901,12 +883,10 @@ class InspectorWindow(QtWidgets.QWidget):
         attach_button.setFixedWidth(60)
         collider_layout.addWidget(attach_button)
 
-        # Toggle button for Visual/Collider display
-        self.toggle_collider_button = QtWidgets.QPushButton("Show: Visual")
-        self.toggle_collider_button.clicked.connect(self.toggle_collider_display)
-        self.toggle_collider_button.setFixedWidth(90)
-        self.toggle_collider_button.setEnabled(False)  # Initially disabled
-        collider_layout.addWidget(self.toggle_collider_button)
+        mesh_sourcer_button = QtWidgets.QPushButton("Mesh Sourcer")
+        mesh_sourcer_button.clicked.connect(self.open_mesh_sourcer)
+        mesh_sourcer_button.setFixedWidth(100)
+        collider_layout.addWidget(mesh_sourcer_button)
 
         content_layout.addLayout(collider_layout)
 
@@ -945,7 +925,7 @@ class InspectorWindow(QtWidgets.QWidget):
         # PartsEditor, Save XML, Reload, Set Allボタンレイアウト
         set_button_layout = QtWidgets.QHBoxLayout()
         set_button_layout.addStretch()
-        parts_editor_button = QtWidgets.QPushButton("PartsEditor")
+        parts_editor_button = QtWidgets.QPushButton("Parts Editor")
         parts_editor_button.clicked.connect(self.open_parts_editor)
         set_button_layout.addWidget(parts_editor_button)
         save_xml_button = QtWidgets.QPushButton("Save XML")
@@ -1067,7 +1047,7 @@ class InspectorWindow(QtWidgets.QWidget):
             traceback.print_exc()
 
     def attach_collider_mesh(self):
-        """Attach a separate collision mesh file"""
+        """Attach a separate collision mesh file or XML collider definition"""
         if not self.current_node:
             return
 
@@ -1078,17 +1058,36 @@ class InspectorWindow(QtWidgets.QWidget):
         else:
             start_dir = ""
 
-        # Open file dialog with mesh filter
-        file_filter = "Mesh Files (*.stl *.dae *.obj);;STL Files (*.stl);;DAE Files (*.dae);;OBJ Files (*.obj)"
+        # Open file dialog with mesh and XML filter
+        file_filter = "All Collider Files (*.xml *.stl *.dae *.obj);;XML Collider (*.xml);;Mesh Files (*.stl *.dae *.obj);;STL Files (*.stl);;DAE Files (*.dae);;OBJ Files (*.obj)"
         file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self,
-            "Select Collision Mesh",
+            "Select Collision Mesh or XML",
             start_dir,
             file_filter
         )
 
         if file_path:
-            # Store as relative path from visual mesh directory
+            # Check if it's an XML file
+            if file_path.lower().endswith('.xml'):
+                # Parse XML collider
+                collider_data = self.parse_collider_xml(file_path)
+                if collider_data:
+                    self.current_node.collider_type = 'primitive'
+                    self.current_node.collider_data = collider_data
+                    self.collider_mesh_input.setText(f"Primitive: {collider_data['type']}")
+                    self.collider_enabled_checkbox.setChecked(True)
+                    self.current_node.collider_enabled = True
+                    print(f"Loaded primitive collider: {collider_data['type']}")
+                    print(f"  Position: {collider_data['position']}")
+                    print(f"  Rotation: {collider_data['rotation']}")
+                    # Refresh collider display if enabled
+                    if self.stl_viewer:
+                        self.stl_viewer.refresh_collider_display()
+                return
+
+            # Mesh file collider
+            self.current_node.collider_type = 'mesh'
             if visual_mesh:
                 visual_dir = os.path.dirname(visual_mesh)
                 try:
@@ -1096,55 +1095,144 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.current_node.collider_mesh = relative_path
                     self.collider_mesh_input.setText(relative_path)
                     print(f"Attached collider mesh: {relative_path}")
-
-                    # Enable toggle button
-                    self.toggle_collider_button.setEnabled(True)
+                    self.collider_enabled_checkbox.setChecked(True)
+                    self.current_node.collider_enabled = True
                 except ValueError:
-                    # Paths on different drives on Windows
                     self.current_node.collider_mesh = file_path
                     self.collider_mesh_input.setText(file_path)
                     print(f"Attached collider mesh (absolute): {file_path}")
-                    self.toggle_collider_button.setEnabled(True)
+                    self.collider_enabled_checkbox.setChecked(True)
+                    self.current_node.collider_enabled = True
             else:
-                # No visual mesh, store absolute path
                 self.current_node.collider_mesh = file_path
                 self.collider_mesh_input.setText(file_path)
                 print(f"Attached collider mesh (absolute): {file_path}")
-                self.toggle_collider_button.setEnabled(True)
+                self.collider_enabled_checkbox.setChecked(True)
+                self.current_node.collider_enabled = True
 
-    def toggle_collider_display(self):
-        """Toggle between Visual and Collider mesh display"""
-        if not self.current_node or not hasattr(self.stl_viewer, 'load_stl_for_node'):
+            # Refresh collider display if enabled
+            if self.stl_viewer:
+                self.stl_viewer.refresh_collider_display()
+
+    def auto_load_collider_xml(self, mesh_path):
+        """Auto-load collider XML if it exists (meshname_collider.xml)"""
+        if not self.current_node or not mesh_path:
             return
 
-        collider_mesh = getattr(self.current_node, 'collider_mesh', None)
-        if not collider_mesh:
+        # Generate expected collider XML path
+        mesh_dir = os.path.dirname(mesh_path)
+        mesh_basename = os.path.splitext(os.path.basename(mesh_path))[0]
+        collider_xml_path = os.path.join(mesh_dir, f"{mesh_basename}_collider.xml")
+
+        if os.path.exists(collider_xml_path):
+            collider_data = self.parse_collider_xml(collider_xml_path)
+            if collider_data:
+                self.current_node.collider_type = 'primitive'
+                self.current_node.collider_data = collider_data
+                self.collider_mesh_input.setText(f"Primitive: {collider_data['type']}")
+                self.collider_enabled_checkbox.setChecked(True)
+                self.current_node.collider_enabled = True
+                print(f"Auto-loaded collider XML: {collider_xml_path}")
+                print(f"  Type: {collider_data['type']}")
+                # Refresh collider display if enabled
+                if self.stl_viewer:
+                    self.stl_viewer.refresh_collider_display()
+
+    def parse_collider_xml(self, xml_path):
+        """Parse collider XML file and return collider data"""
+        try:
+            tree = ET.parse(xml_path)
+            root = tree.getroot()
+
+            if root.tag != 'urdf_kitchen_collider':
+                print(f"Invalid collider XML format: Root element should be 'urdf_kitchen_collider', got '{root.tag}'")
+                return None
+
+            collider_elem = root.find('collider')
+            if collider_elem is None:
+                print("No collider element found in XML")
+                return None
+
+            collider_data = {}
+            collider_data['type'] = collider_elem.get('type', 'box')
+
+            # Parse geometry
+            geometry_elem = collider_elem.find('geometry')
+            if geometry_elem is not None:
+                collider_data['geometry'] = dict(geometry_elem.attrib)
+
+            # Parse position
+            position_elem = collider_elem.find('position')
+            if position_elem is not None:
+                collider_data['position'] = [
+                    float(position_elem.get('x', '0.0')),
+                    float(position_elem.get('y', '0.0')),
+                    float(position_elem.get('z', '0.0'))
+                ]
+            else:
+                collider_data['position'] = [0.0, 0.0, 0.0]
+
+            # Parse rotation (in degrees)
+            rotation_elem = collider_elem.find('rotation')
+            if rotation_elem is not None:
+                collider_data['rotation'] = [
+                    float(rotation_elem.get('roll', '0.0')),
+                    float(rotation_elem.get('pitch', '0.0')),
+                    float(rotation_elem.get('yaw', '0.0'))
+                ]
+            else:
+                collider_data['rotation'] = [0.0, 0.0, 0.0]
+
+            return collider_data
+
+        except Exception as e:
+            print(f"Error parsing collider XML: {str(e)}")
+            return None
+
+    def on_collider_enabled_changed(self, state):
+        """Handle collider enabled checkbox state change"""
+        if self.current_node:
+            self.current_node.collider_enabled = (state == QtCore.Qt.Checked)
+            print(f"Collider enabled: {self.current_node.collider_enabled}")
+            # Refresh collider display if enabled
+            if self.stl_viewer:
+                self.stl_viewer.refresh_collider_display()
+
+    def open_mesh_sourcer(self):
+        """Open MeshSourcer with the current node's mesh file"""
+        if not self.current_node:
+            print("No node selected")
             return
 
-        self.showing_collider = not self.showing_collider
+        # Get the current mesh file path
+        mesh_file = getattr(self.current_node, 'stl_file', None)
+        if not mesh_file:
+            print("No mesh file loaded in current node")
+            return
 
-        if self.showing_collider:
-            # Show collider mesh
-            self.toggle_collider_button.setText("Show: Collider")
-            # Temporarily swap mesh files
-            visual_mesh = self.current_node.stl_file
-            if visual_mesh:
-                visual_dir = os.path.dirname(visual_mesh)
-                collider_absolute = os.path.join(visual_dir, collider_mesh)
-                if os.path.exists(collider_absolute):
-                    # Temporarily set stl_file to collider
-                    original_stl = self.current_node.stl_file
-                    self.current_node.stl_file = collider_absolute
-                    self.stl_viewer.load_stl_for_node(self.current_node)
-                    self.current_node.stl_file = original_stl  # Restore original
-                    print(f"Displaying collider mesh: {collider_mesh}")
-                else:
-                    print(f"Warning: Collider mesh not found: {collider_absolute}")
-        else:
-            # Show visual mesh
-            self.toggle_collider_button.setText("Show: Visual")
-            self.stl_viewer.load_stl_for_node(self.current_node)
-            print(f"Displaying visual mesh")
+        # Check if file exists
+        if not os.path.exists(mesh_file):
+            print(f"Mesh file not found: {mesh_file}")
+            return
+
+        try:
+            # Get the directory where this script is located
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            mesh_sourcer_path = os.path.join(script_dir, "urdf_kitchen_MeshSourcer.py")
+
+            # Check if MeshSourcer script exists
+            if not os.path.exists(mesh_sourcer_path):
+                print(f"MeshSourcer not found at: {mesh_sourcer_path}")
+                return
+
+            # Launch MeshSourcer as a separate process with the mesh file path
+            subprocess.Popen([sys.executable, mesh_sourcer_path, mesh_file])
+
+            print(f"Launched MeshSourcer with: {mesh_file}")
+        except Exception as e:
+            print(f"Error launching MeshSourcer: {e}")
+            import traceback
+            traceback.print_exc()
 
     def update_port_coordinate(self, port_index, coord_index, value):
         """ポート座標の更新"""
@@ -1356,15 +1444,11 @@ class InspectorWindow(QtWidgets.QWidget):
                 )
 
             # Collider Mesh settings
-            self.showing_collider = False  # Reset display toggle to Visual when switching nodes
             if hasattr(node, 'collider_mesh') and node.collider_mesh:
                 self.collider_mesh_input.setText(node.collider_mesh)
-                self.toggle_collider_button.setEnabled(True)
             else:
                 node.collider_mesh = None
                 self.collider_mesh_input.clear()  # Show placeholder "Same as Visual Mesh"
-                self.toggle_collider_button.setEnabled(False)
-            self.toggle_collider_button.setText("Show: Visual")
 
             # 回転軸の選択を更新するためのシグナルを接続
             for button in self.axis_group.buttons():
@@ -1506,6 +1590,9 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.stl_viewer.load_stl_for_node(self.current_node)
                     # 3Dビューを更新
                     self.stl_viewer.render_to_image()
+
+                # Auto-load collider XML if exists
+                self.auto_load_collider_xml(file_name)
 
                 # Recalc Positionsと同じ効果を実行
                 if hasattr(self.current_node, 'graph') and self.current_node.graph:
@@ -4363,6 +4450,8 @@ class STLViewerWidget(QtWidgets.QWidget):
         self.base_connected_node = None
         self.text_actors = []
         self.inertial_origin_actors = {}  # Inertial Origin表示用のアクター
+        self.collider_actors = {}  # Collider表示用のアクター
+        self.collider_display_enabled = False  # Collider表示のON/OFF状態
 
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -4414,39 +4503,53 @@ class STLViewerWidget(QtWidgets.QWidget):
 
         # ボタンとスライダーのレイアウト
         button_layout = QtWidgets.QVBoxLayout()  # 垂直レイアウトに変更
+        button_layout.setSpacing(2)  # ボタン間のスペースを狭く設定
 
-        # Wireframeスイッチ と Reset Angleボタンの横並びレイアウト
-        top_buttons_layout = QtWidgets.QHBoxLayout()
+        # 1行目: Front, Side, Topボタン
+        first_row_layout = QtWidgets.QHBoxLayout()
 
-        # Wireframeスイッチ（左側）
-        self.wireframe_toggle = QtWidgets.QPushButton("Wireframe")
-        self.wireframe_toggle.setCheckable(True)
-        self.wireframe_toggle.setFixedWidth(100)
-        self.wireframe_toggle.toggled.connect(self.toggle_wireframe)
-        top_buttons_layout.addWidget(self.wireframe_toggle)
-
-        top_buttons_layout.addStretch()
-
-        # Reset Angleボタン（右側）
         # Frontボタン
         self.front_button = QtWidgets.QPushButton("Front")
         self.front_button.setFixedWidth(50)
         self.front_button.clicked.connect(self.reset_camera_front)
-        top_buttons_layout.addWidget(self.front_button)
+        first_row_layout.addWidget(self.front_button)
 
         # Sideボタン
         self.side_button = QtWidgets.QPushButton("Side")
         self.side_button.setFixedWidth(50)
         self.side_button.clicked.connect(self.reset_camera_side)
-        top_buttons_layout.addWidget(self.side_button)
+        first_row_layout.addWidget(self.side_button)
 
         # Topボタン
         self.top_button = QtWidgets.QPushButton("Top")
         self.top_button.setFixedWidth(50)
         self.top_button.clicked.connect(self.reset_camera_top)
-        top_buttons_layout.addWidget(self.top_button)
+        first_row_layout.addWidget(self.top_button)
 
-        button_layout.addLayout(top_buttons_layout)
+        first_row_layout.addStretch()
+
+        button_layout.addLayout(first_row_layout)
+
+        # 2行目: Wireframe, Colliderボタン
+        second_row_layout = QtWidgets.QHBoxLayout()
+
+        # Wireframeスイッチ
+        self.wireframe_toggle = QtWidgets.QPushButton("Wireframe")
+        self.wireframe_toggle.setCheckable(True)
+        self.wireframe_toggle.setFixedWidth(100)
+        self.wireframe_toggle.toggled.connect(self.toggle_wireframe)
+        second_row_layout.addWidget(self.wireframe_toggle)
+
+        # Colliderスイッチ
+        self.collider_toggle = QtWidgets.QPushButton("Collider")
+        self.collider_toggle.setCheckable(True)
+        self.collider_toggle.setFixedWidth(100)
+        self.collider_toggle.toggled.connect(self.toggle_collider_display)
+        second_row_layout.addWidget(self.collider_toggle)
+
+        second_row_layout.addStretch()
+
+        button_layout.addLayout(second_row_layout)
 
         # Background スライダーのレイアウト
         bg_layout = QtWidgets.QHBoxLayout()
@@ -5232,6 +5335,317 @@ class STLViewerWidget(QtWidgets.QWidget):
 
         # 再描画
         self.render_to_image()
+
+    def toggle_collider_display(self, checked):
+        """Collider表示の切り替え"""
+        self.collider_display_enabled = checked
+
+        if checked:
+            # Colliderを表示
+            self.show_all_colliders()
+            print("Collider display ON")
+        else:
+            # Colliderを非表示
+            self.hide_all_colliders()
+            print("Collider display OFF")
+
+        # 再描画
+        self.render_to_image()
+
+    def show_all_colliders(self):
+        """全てのノードのColliderを表示"""
+        # 既存のColliderアクターをクリア
+        self.hide_all_colliders()
+
+        # グラフから全ノードを取得
+        if hasattr(self, 'graph') and self.graph:
+            for node in self.graph.all_nodes():
+                self.create_collider_actor_for_node(node)
+
+    def hide_all_colliders(self):
+        """全てのColliderアクターを削除"""
+        for node, actors in list(self.collider_actors.items()):
+            if isinstance(actors, list):
+                for actor in actors:
+                    self.renderer.RemoveActor(actor)
+            else:
+                self.renderer.RemoveActor(actors)
+        self.collider_actors.clear()
+
+    def create_collider_actor_for_node(self, node):
+        """ノードのColliderアクターを作成"""
+        # Colliderが有効でない場合はスキップ
+        if not getattr(node, 'collider_enabled', False):
+            return
+
+        collider_type = getattr(node, 'collider_type', None)
+
+        if collider_type == 'primitive':
+            # プリミティブコライダー
+            collider_data = getattr(node, 'collider_data', None)
+            if collider_data:
+                actor = self.create_primitive_collider_actor(collider_data, node)
+                if actor:
+                    self.renderer.AddActor(actor)
+                    self.collider_actors[node] = actor
+
+        elif collider_type == 'mesh':
+            # メッシュコライダー
+            collider_mesh = getattr(node, 'collider_mesh', None)
+            if collider_mesh:
+                actor = self.create_mesh_collider_actor(node, collider_mesh)
+                if actor:
+                    self.renderer.AddActor(actor)
+                    self.collider_actors[node] = actor
+
+    def create_primitive_collider_actor(self, collider_data, node=None):
+        """プリミティブコライダーのアクターを作成"""
+        geom_type = collider_data.get('type', 'box')
+        geometry = collider_data.get('geometry', {})
+        position = collider_data.get('position', [0, 0, 0])
+        rotation = collider_data.get('rotation', [0, 0, 0])  # degrees
+
+        # ジオメトリソースを作成
+        source = None
+
+        if geom_type == 'box':
+            size_x = float(geometry.get('size_x', 1.0))
+            size_y = float(geometry.get('size_y', 1.0))
+            size_z = float(geometry.get('size_z', 1.0))
+            source = vtk.vtkCubeSource()
+            source.SetXLength(size_x)
+            source.SetYLength(size_y)
+            source.SetZLength(size_z)
+
+        elif geom_type == 'sphere':
+            radius = float(geometry.get('radius', 0.5))
+            source = vtk.vtkSphereSource()
+            source.SetRadius(radius)
+            source.SetThetaResolution(30)
+            source.SetPhiResolution(30)
+
+        elif geom_type == 'cylinder':
+            radius = float(geometry.get('radius', 0.5))
+            length = float(geometry.get('length', 1.0))
+
+            # アペンドフィルターで結合
+            append = vtk.vtkAppendPolyData()
+
+            # シリンダー本体（キャップなし）- VTKデフォルトはY軸、URDF/MuJoCoデフォルトはZ軸
+            cylinder = vtk.vtkCylinderSource()
+            cylinder.SetRadius(radius)
+            cylinder.SetHeight(length)
+            cylinder.SetResolution(30)
+            cylinder.SetCapping(0)  # キャップなし
+
+            # Y軸→Z軸への補正回転を適用
+            cyl_transform = vtk.vtkTransform()
+            cyl_transform.RotateX(90)
+            cyl_filter = vtk.vtkTransformPolyDataFilter()
+            cyl_filter.SetInputConnection(cylinder.GetOutputPort())
+            cyl_filter.SetTransform(cyl_transform)
+            append.AddInputConnection(cyl_filter.GetOutputPort())
+
+            # 上端のキャップ（Z軸正方向）
+            top_cap = vtk.vtkDiskSource()
+            top_cap.SetInnerRadius(0.0)
+            top_cap.SetOuterRadius(radius)
+            top_cap.SetRadialResolution(1)
+            top_cap.SetCircumferentialResolution(30)
+
+            top_cap_transform = vtk.vtkTransform()
+            top_cap_transform.Translate(0, 0, length / 2)  # Z軸方向に配置
+            top_cap_filter = vtk.vtkTransformPolyDataFilter()
+            top_cap_filter.SetInputConnection(top_cap.GetOutputPort())
+            top_cap_filter.SetTransform(top_cap_transform)
+            append.AddInputConnection(top_cap_filter.GetOutputPort())
+
+            # 下端のキャップ（Z軸負方向）
+            bottom_cap = vtk.vtkDiskSource()
+            bottom_cap.SetInnerRadius(0.0)
+            bottom_cap.SetOuterRadius(radius)
+            bottom_cap.SetRadialResolution(1)
+            bottom_cap.SetCircumferentialResolution(30)
+
+            bottom_cap_transform = vtk.vtkTransform()
+            bottom_cap_transform.RotateY(180)  # ディスクを反転
+            bottom_cap_transform.Translate(0, 0, -length / 2)  # Z軸負方向に配置
+            bottom_cap_filter = vtk.vtkTransformPolyDataFilter()
+            bottom_cap_filter.SetInputConnection(bottom_cap.GetOutputPort())
+            bottom_cap_filter.SetTransform(bottom_cap_transform)
+            append.AddInputConnection(bottom_cap_filter.GetOutputPort())
+
+            append.Update()
+            source = append
+
+        elif geom_type == 'capsule':
+            # カプセルはシリンダー（両端開放） + 2つの半球で構成
+            radius = float(geometry.get('radius', 0.5))
+            length = float(geometry.get('length', 1.0))
+
+            # アペンドフィルターで結合
+            append = vtk.vtkAppendPolyData()
+
+            # 中央のシリンダー（キャップなし）- VTKデフォルトはY軸、URDF/MuJoCoデフォルトはZ軸
+            cylinder = vtk.vtkCylinderSource()
+            cylinder.SetRadius(radius)
+            cylinder.SetHeight(length)
+            cylinder.SetResolution(30)
+            cylinder.SetCapping(0)  # 両端を開ける
+
+            # Y軸→Z軸への補正回転を適用
+            cyl_transform = vtk.vtkTransform()
+            cyl_transform.RotateX(90)
+            cyl_filter = vtk.vtkTransformPolyDataFilter()
+            cyl_filter.SetInputConnection(cylinder.GetOutputPort())
+            cyl_filter.SetTransform(cyl_transform)
+            append.AddInputConnection(cyl_filter.GetOutputPort())
+
+            # 上半球（Z軸正方向）
+            top_sphere = vtk.vtkSphereSource()
+            top_sphere.SetRadius(radius)
+            top_sphere.SetThetaResolution(30)
+            top_sphere.SetPhiResolution(30)
+            top_sphere.SetStartTheta(0)
+            top_sphere.SetEndTheta(360)
+            top_sphere.SetStartPhi(0)
+            top_sphere.SetEndPhi(90)
+
+            top_transform = vtk.vtkTransform()
+            top_transform.Translate(0, 0, length / 2)  # Z軸正方向に配置
+            top_filter = vtk.vtkTransformPolyDataFilter()
+            top_filter.SetInputConnection(top_sphere.GetOutputPort())
+            top_filter.SetTransform(top_transform)
+            append.AddInputConnection(top_filter.GetOutputPort())
+
+            # 下半球（Z軸負方向）
+            bottom_sphere = vtk.vtkSphereSource()
+            bottom_sphere.SetRadius(radius)
+            bottom_sphere.SetThetaResolution(30)
+            bottom_sphere.SetPhiResolution(30)
+            bottom_sphere.SetStartTheta(0)
+            bottom_sphere.SetEndTheta(360)
+            bottom_sphere.SetStartPhi(90)
+            bottom_sphere.SetEndPhi(180)
+
+            bottom_transform = vtk.vtkTransform()
+            bottom_transform.Translate(0, 0, -length / 2)  # Z軸負方向に配置
+            bottom_filter = vtk.vtkTransformPolyDataFilter()
+            bottom_filter.SetInputConnection(bottom_sphere.GetOutputPort())
+            bottom_filter.SetTransform(bottom_transform)
+            append.AddInputConnection(bottom_filter.GetOutputPort())
+
+            append.Update()
+            source = append
+
+        if not source:
+            return None
+
+        # マッパーとアクターを作成
+        mapper = vtk.vtkPolyDataMapper()
+        if hasattr(source, 'GetOutputPort'):
+            mapper.SetInputConnection(source.GetOutputPort())
+        else:
+            mapper.SetInputData(source.GetOutput())
+
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+
+        # 透明度30%の赤色を設定
+        actor.GetProperty().SetColor(1.0, 0.0, 0.0)  # Red
+        actor.GetProperty().SetOpacity(0.3)  # 30% opacity (70% transparent)
+
+        # コライダーのローカル変換を作成
+        collider_local_transform = vtk.vtkTransform()
+        collider_local_transform.PostMultiply()
+
+        # Euler angles (degrees) -> Quaternion -> Rotation Matrix
+        # URDF RPY: rotate by yaw around Z, then pitch around Y, then roll around X
+        quat = euler_to_quaternion(rotation[0], rotation[1], rotation[2])
+        w, x, y, z = quat
+
+        # Convert quaternion to rotation matrix
+        rot_matrix = vtk.vtkMatrix4x4()
+        rot_matrix.SetElement(0, 0, 1 - 2*(y*y + z*z))
+        rot_matrix.SetElement(0, 1, 2*(x*y - w*z))
+        rot_matrix.SetElement(0, 2, 2*(x*z + w*y))
+        rot_matrix.SetElement(1, 0, 2*(x*y + w*z))
+        rot_matrix.SetElement(1, 1, 1 - 2*(x*x + z*z))
+        rot_matrix.SetElement(1, 2, 2*(y*z - w*x))
+        rot_matrix.SetElement(2, 0, 2*(x*z - w*y))
+        rot_matrix.SetElement(2, 1, 2*(y*z + w*x))
+        rot_matrix.SetElement(2, 2, 1 - 2*(x*x + y*y))
+
+        # Apply rotation matrix
+        collider_local_transform.Concatenate(rot_matrix)
+
+        # Apply translation
+        collider_local_transform.Translate(position[0], position[1], position[2])
+
+        # ノードの変換と結合
+        if node and node in self.transforms:
+            combined_transform = vtk.vtkTransform()
+            combined_transform.PostMultiply()
+            # まずコライダーのローカル変換を適用
+            combined_transform.Concatenate(collider_local_transform)
+            # 次にノードの変換を適用
+            combined_transform.Concatenate(self.transforms[node])
+            actor.SetUserTransform(combined_transform)
+        else:
+            # ノード変換がない場合はコライダーのローカル変換のみ
+            actor.SetUserTransform(collider_local_transform)
+
+        return actor
+
+    def create_mesh_collider_actor(self, node, collider_mesh):
+        """メッシュコライダーのアクターを作成"""
+        # ビジュアルメッシュと同じディレクトリからコライダーメッシュを読み込む
+        visual_mesh = getattr(node, 'stl_file', None)
+        if not visual_mesh:
+            return None
+
+        visual_dir = os.path.dirname(visual_mesh)
+        collider_path = os.path.join(visual_dir, collider_mesh)
+
+        if not os.path.exists(collider_path):
+            print(f"Collider mesh not found: {collider_path}")
+            return None
+
+        # メッシュファイルを読み込む
+        polydata, _ = self.load_mesh_file(collider_path)
+        if not polydata:
+            return None
+
+        # マッパーとアクターを作成
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputData(polydata)
+
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+
+        # 透明度30%の赤色を設定
+        actor.GetProperty().SetColor(1.0, 0.0, 0.0)  # Red
+        actor.GetProperty().SetOpacity(0.3)  # 30% opacity
+
+        # ノードの位置と回転を適用
+        self.apply_node_transform_to_collider(node, actor)
+
+        return actor
+
+    def apply_node_transform_to_collider(self, node, actor):
+        """ノードの変換をコライダーアクターに適用"""
+        if node in self.transforms:
+            # 既存のtransformをコピー
+            node_transform = self.transforms[node]
+            collider_transform = vtk.vtkTransform()
+            collider_transform.DeepCopy(node_transform)
+            actor.SetUserTransform(collider_transform)
+
+    def refresh_collider_display(self):
+        """Collider表示が有効な場合、表示を更新"""
+        if self.collider_display_enabled:
+            self.show_all_colliders()
+            self.render_to_image()
 
     def create_coordinate_axes(self):
         """座標軸の作成（線と独立したテキスト）"""
@@ -8752,18 +9166,86 @@ class CustomNodeGraph(NodeGraph):
 
                 file.write('    </visual>\n')
 
-                # コリジョン
-                file.write('    <collision>\n')
-                file.write(f'      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
-                file.write('      <geometry>\n')
-                file.write(f'        <mesh filename="{package_path}"/>\n')
-                file.write('      </geometry>\n')
-                file.write('    </collision>\n')
+                # コリジョン (新しいヘルパー関数を使用)
+                self._write_urdf_collision(file, base_node, package_path, mesh_dir_name)
 
             file.write('  </link>\n\n')
         else:
             # Blanklinkがオンの場合、パラメータなしのリンクとして出力（デフォルト動作）
             file.write('  <link name="base_link"/>\n\n')
+
+    def _write_urdf_collision(self, file, node, package_path, mesh_dir_name):
+        """Write collision geometry for URDF"""
+        # Check if collider is enabled
+        if not getattr(node, 'collider_enabled', False):
+            # No collider - output empty collision or skip
+            return
+
+        collider_type = getattr(node, 'collider_type', 'mesh')
+
+        file.write('    <collision>\n')
+
+        if collider_type == 'primitive' and hasattr(node, 'collider_data'):
+            # Primitive collider from XML
+            data = node.collider_data
+            pos = data.get('position', [0, 0, 0])
+            rot_deg = data.get('rotation', [0, 0, 0])
+            # Convert degrees to radians for URDF
+            rot_rad = [math.radians(r) for r in rot_deg]
+            file.write(f'      <origin xyz="{pos[0]} {pos[1]} {pos[2]}" rpy="{rot_rad[0]} {rot_rad[1]} {rot_rad[2]}"/>\n')
+            file.write('      <geometry>\n')
+
+            geom_type = data['type']
+            geom = data.get('geometry', {})
+
+            if geom_type == 'box':
+                # Box: size attribute (x y z)
+                size = geom.get('size', '1 1 1')
+                if isinstance(size, str):
+                    file.write(f'        <box size="{size}"/>\n')
+                else:
+                    # If stored as list/dict
+                    sx = geom.get('x', geom.get('size_x', 1.0))
+                    sy = geom.get('y', geom.get('size_y', 1.0))
+                    sz = geom.get('z', geom.get('size_z', 1.0))
+                    file.write(f'        <box size="{sx} {sy} {sz}"/>\n')
+
+            elif geom_type == 'sphere':
+                radius = geom.get('radius', '0.5')
+                file.write(f'        <sphere radius="{radius}"/>\n')
+
+            elif geom_type == 'cylinder':
+                radius = geom.get('radius', '0.5')
+                length = geom.get('length', '1.0')
+                file.write(f'        <cylinder radius="{radius}" length="{length}"/>\n')
+
+            elif geom_type == 'capsule':
+                # URDF doesn't have native capsule, approximate with cylinder
+                radius = geom.get('radius', '0.5')
+                length = geom.get('length', '1.0')
+                file.write(f'        <cylinder radius="{radius}" length="{length}"/>\n')
+
+            file.write('      </geometry>\n')
+
+        elif collider_type == 'mesh' and hasattr(node, 'collider_mesh') and node.collider_mesh:
+            # Mesh collider
+            file.write(f'      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+            file.write('      <geometry>\n')
+            visual_dir = os.path.dirname(node.stl_file)
+            collider_absolute = os.path.join(visual_dir, node.collider_mesh)
+            collider_filename = os.path.basename(collider_absolute)
+            collider_package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{collider_filename}"
+            file.write(f'        <mesh filename="{collider_package_path}"/>\n')
+            file.write('      </geometry>\n')
+
+        else:
+            # Default: use visual mesh as collider
+            file.write(f'      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+            file.write('      <geometry>\n')
+            file.write(f'        <mesh filename="{package_path}"/>\n')
+            file.write('      </geometry>\n')
+
+        file.write('    </collision>\n')
 
     def _write_urdf_node(self, file, node, parent_node, visited_nodes, materials):
         """再帰的にノードをURDFとして書き出し"""
@@ -8837,25 +9319,8 @@ class CustomNodeGraph(NodeGraph):
             file.write('      </geometry>\n')
             file.write('    </visual>\n')
 
-            # コリジョン (collider_meshが設定されている場合はそれを使用)
-            file.write('    <collision>\n')
-            file.write(f'      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
-            file.write('      <geometry>\n')
-
-            # collider_meshが設定されている場合はそれを使用
-            if hasattr(node, 'collider_mesh') and node.collider_mesh:
-                # collider_meshは相対パスなので、visual meshと同じディレクトリから取得
-                visual_dir = os.path.dirname(node.stl_file)
-                collider_absolute = os.path.join(visual_dir, node.collider_mesh)
-                collider_filename = os.path.basename(collider_absolute)
-                collider_package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{collider_filename}"
-                file.write(f'        <mesh filename="{collider_package_path}"/>\n')
-            else:
-                # collider_meshが設定されていない場合はvisual meshと同じものを使用
-                file.write(f'        <mesh filename="{package_path}"/>\n')
-
-            file.write('      </geometry>\n')
-            file.write('    </collision>\n')
+            # コリジョン (新しいヘルパー関数を使用)
+            self._write_urdf_collision(file, node, package_path, mesh_dir_name)
 
         file.write('  </link>\n\n')
 
@@ -11227,6 +11692,75 @@ class CustomNodeGraph(NodeGraph):
             f.write('</mujoco>\n')
         print(f"Created materials file: {file_path}")
 
+    # _convert_rpy_to_quaternion() is now euler_to_quaternion() from urdf_kitchen_utils
+
+    def _write_mjcf_geom(self, file, node, mesh_name, color_str, indent_str):
+        """Write geom elements for MJCF (visual + collision)"""
+        # Check if collider is enabled
+        collider_enabled = getattr(node, 'collider_enabled', False)
+
+        if not collider_enabled:
+            # No collider - visual only with no collision
+            file.write(f'{indent_str}  <geom type="mesh" mesh="{mesh_name}" rgba="{color_str}" contype="0" conaffinity="0" />\n')
+            return
+
+        collider_type = getattr(node, 'collider_type', 'mesh')
+
+        if collider_type == 'primitive' and hasattr(node, 'collider_data'):
+            # Primitive collider from XML
+            data = node.collider_data
+            # Visual mesh (no collision)
+            file.write(f'{indent_str}  <geom type="mesh" mesh="{mesh_name}" rgba="{color_str}" contype="0" conaffinity="0" />\n')
+
+            # Collision primitive
+            pos = data.get('position', [0, 0, 0])
+            rot_deg = data.get('rotation', [0, 0, 0])
+            # Convert URDF RPY (ZYX) to quaternion for MuJoCo
+            quat = euler_to_quaternion(rot_deg[0], rot_deg[1], rot_deg[2])
+            pos_str = f"{pos[0]} {pos[1]} {pos[2]}"
+            quat_str = f"{quat[0]} {quat[1]} {quat[2]} {quat[3]}"
+
+            geom_type = data['type']
+            geom = data.get('geometry', {})
+
+            if geom_type == 'box':
+                # MuJoCo box: size is half-sizes
+                if 'size' in geom:
+                    size_str = geom['size']
+                    # Parse "x y z" and convert to half-sizes
+                    sizes = [float(s)/2 for s in size_str.split()]
+                    size_str = f"{sizes[0]} {sizes[1]} {sizes[2]}"
+                else:
+                    sx = float(geom.get('x', geom.get('size_x', 1.0))) / 2
+                    sy = float(geom.get('y', geom.get('size_y', 1.0))) / 2
+                    sz = float(geom.get('z', geom.get('size_z', 1.0))) / 2
+                    size_str = f"{sx} {sy} {sz}"
+                file.write(f'{indent_str}  <geom type="box" size="{size_str}" pos="{pos_str}" quat="{quat_str}" />\n')
+
+            elif geom_type == 'sphere':
+                radius = geom.get('radius', '0.5')
+                file.write(f'{indent_str}  <geom type="sphere" size="{radius}" pos="{pos_str}" quat="{quat_str}" />\n')
+
+            elif geom_type == 'cylinder':
+                radius = geom.get('radius', '0.5')
+                length = float(geom.get('length', '1.0')) / 2  # MuJoCo uses half-length
+                file.write(f'{indent_str}  <geom type="cylinder" size="{radius} {length}" pos="{pos_str}" quat="{quat_str}" />\n')
+
+            elif geom_type == 'capsule':
+                radius = geom.get('radius', '0.5')
+                length = float(geom.get('length', '1.0')) / 2  # MuJoCo uses half-length
+                file.write(f'{indent_str}  <geom type="capsule" size="{radius} {length}" pos="{pos_str}" quat="{quat_str}" />\n')
+
+        elif collider_type == 'mesh' and hasattr(node, 'collider_mesh') and node.collider_mesh:
+            # Mesh collider
+            file.write(f'{indent_str}  <geom type="mesh" mesh="{mesh_name}" rgba="{color_str}" contype="0" conaffinity="0" />\n')
+            collider_mesh_name = f"{mesh_name}_collision"
+            file.write(f'{indent_str}  <geom type="mesh" mesh="{collider_mesh_name}" />\n')
+
+        else:
+            # Default: visual and collision use same mesh
+            file.write(f'{indent_str}  <geom type="mesh" mesh="{mesh_name}" rgba="{color_str}" />\n')
+
     def _write_mjcf_body(self, file, node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent=2, joint_info=None):
         """MJCF bodyを再帰的に出力"""
         if node in visited_nodes:
@@ -11283,17 +11817,8 @@ class CustomNodeGraph(NodeGraph):
                     r, g, b = node.node_color[:3]
                     color_str = f"{r} {g} {b} 1.0"
 
-                # collider_meshが設定されている場合は、visualとcollisionを分離
-                if hasattr(node, 'collider_mesh') and node.collider_mesh:
-                    # Visual mesh (contype=0, conaffinity=0で衝突しない)
-                    file.write(f'{indent_str}  <geom type="mesh" mesh="{mesh_name}" rgba="{color_str}" contype="0" conaffinity="0" />\n')
-                    # Collision mesh (別途定義 - ここでは仮のmesh名を使用。実際にはmesh_namesに追加する必要がある)
-                    # TODO: collider meshをmesh_namesに登録する処理が必要
-                    collider_mesh_name = f"{mesh_name}_collision"
-                    file.write(f'{indent_str}  <geom type="mesh" mesh="{collider_mesh_name}" />\n')
-                else:
-                    # collider_meshが設定されていない場合は通常通り（visual=collision）
-                    file.write(f'{indent_str}  <geom type="mesh" mesh="{mesh_name}" rgba="{color_str}" />\n')
+                # 新しいヘルパー関数を使用
+                self._write_mjcf_geom(file, node, mesh_name, color_str, indent_str)
 
             # base_linkの子ノードを処理
             for port in node.output_ports():
@@ -11360,17 +11885,8 @@ class CustomNodeGraph(NodeGraph):
                 r, g, b = node.node_color[:3]
                 color_str = f"{r} {g} {b} 1.0"
 
-            # collider_meshが設定されている場合は、visualとcollisionを分離
-            if hasattr(node, 'collider_mesh') and node.collider_mesh:
-                # Visual mesh (contype=0, conaffinity=0で衝突しない)
-                file.write(f'{indent_str}  <geom type="mesh" mesh="{mesh_name}" rgba="{color_str}" contype="0" conaffinity="0" />\n')
-                # Collision mesh (別途定義 - ここでは仮のmesh名を使用。実際にはmesh_namesに追加する必要がある)
-                # TODO: collider meshをmesh_namesに登録する処理が必要
-                collider_mesh_name = f"{mesh_name}_collision"
-                file.write(f'{indent_str}  <geom type="mesh" mesh="{collider_mesh_name}" />\n')
-            else:
-                # collider_meshが設定されていない場合は通常通り（visual=collision）
-                file.write(f'{indent_str}  <geom type="mesh" mesh="{mesh_name}" rgba="{color_str}" />\n')
+            # 新しいヘルパー関数を使用
+            self._write_mjcf_geom(file, node, mesh_name, color_str, indent_str)
 
         # 子ノードを処理
         for port_index, port in enumerate(node.output_ports()):
