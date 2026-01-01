@@ -1,15 +1,24 @@
 #!/usr/bin/env python3
 """
-File Name: URDF_Kitchen.py
-Description: Small utility window to launch URDF Kitchen applications
+File Name: urdf_kitchen.py
+Description: Small utility window to launch URDF Kitchen applications.
+
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update      : Dec 31, 2025
-
-Version     : 0.0.2
+Update.     : Jan  1, 2026
+Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
 Copyright (c) 2024 Ninagawa123
+
+python3.11
+pip install --upgrade pip
+pip install numpy
+pip install PySide6
+pip install vtk
+pip install NodeGraphQt
+pip install trimesh
+pip install pycollada
 """
 
 import sys
