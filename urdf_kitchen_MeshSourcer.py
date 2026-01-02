@@ -18,6 +18,7 @@ pip install vtk
 pip install NodeGraphQt
 pip install trimesh
 pip install pycollada
+pip install networkx
 """
 
 import sys
@@ -45,11 +46,13 @@ from PySide6.QtCore import QTimer, Qt, QObject
 # Import URDF Kitchen utilities
 from urdf_kitchen_utils import (
     OffscreenRenderer, CameraController, AnimatedCameraRotation,
-    AdaptiveMarkerSize, MouseDragState, calculate_arrow_key_step,
-    get_mesh_file_filter, load_mesh_to_polydata, save_polydata_to_mesh,
+    AdaptiveMarkerSize, create_crosshair_marker, MouseDragState,
+    calculate_arrow_key_step, get_mesh_file_filter, load_mesh_to_polydata,
+    save_polydata_to_mesh,
     is_apple_silicon, setup_qt_environment_for_apple_silicon,
     setup_signal_handlers, setup_signal_processing_timer,
-    euler_to_quaternion, quaternion_to_euler, quaternion_to_matrix
+    euler_to_quaternion, quaternion_to_euler, quaternion_to_matrix,
+    VTKViewerBase
 )
 
 # M4 Mac (Apple Silicon) compatibility
@@ -178,9 +181,9 @@ class GlobalKeyEventFilter(QObject):
         return False
 
 
-class MainWindow(QMainWindow):
+class MainWindow(VTKViewerBase, QMainWindow):
     def __init__(self):
-        super().__init__()
+        QMainWindow.__init__(self)
         self.setWindowTitle("URDF kitchen - MeshSourcer v0.1.0")
         self.resize(1000, 680)  # Wider window, 680px height
 
@@ -235,10 +238,6 @@ class MainWindow(QMainWindow):
 
         left_layout.addWidget(self.vtk_display)
         main_layout.addWidget(left_widget, 70)
-
-        self.render_window = vtk.vtkRenderWindow()
-        self.render_window.SetOffScreenRendering(1)
-        self.render_window.SetSize(1000, 800)
 
         right_scroll = QScrollArea()
         right_scroll.setWidgetResizable(True)
@@ -1313,27 +1312,6 @@ class MainWindow(QMainWindow):
             print(
                 f"Invalid input for Point {index+1}. Please enter valid numbers for coordinates.")
 
-    def setup_vtk(self):
-        self.renderer = vtk.vtkRenderer()
-        self.renderer.SetBackground(0.2, 0.2, 0.2)
-        self.render_window.AddRenderer(self.renderer)
-        self.render_window_interactor = None
-
-        # Initialize utility classes
-        self.offscreen_renderer = OffscreenRenderer(self.render_window, self.renderer)
-        self.camera_controller = CameraController(self.renderer, self.absolute_origin)
-        self.animated_rotation = AnimatedCameraRotation(self.renderer, self.absolute_origin)
-        self.mouse_state = MouseDragState(self.vtk_display)
-
-    def setup_camera(self):
-        position = [self.absolute_origin[i] + self.initial_camera_position[i] for i in range(3)]
-        self.camera_controller.setup_parallel_camera(
-            position=position,
-            view_up=self.initial_camera_view_up,
-            focal_point=self.absolute_origin,
-            parallel_scale=5
-        )
-
     def reset_point_to_origin(self, index):
         self.point_coords[index] = list(self.absolute_origin)
         self.update_point_display(index)
@@ -1437,68 +1415,15 @@ class MainWindow(QMainWindow):
         for index, actor in enumerate(self.point_actors):
             if actor:
                 self.renderer.RemoveActor(actor)
-                self.point_actors[index] = vtk.vtkAssembly()
-                self.create_point_coordinate(self.point_actors[index], [0, 0, 0])
+                self.point_actors[index] = create_crosshair_marker(
+                    coords=[0, 0, 0],
+                    radius_scale=self.calculate_sphere_radius()
+                )
                 self.point_actors[index].SetPosition(self.point_coords[index])
                 self.renderer.AddActor(self.point_actors[index])
 
     def update_all_points(self):
         pass
-
-    def create_point_coordinate(self, assembly, coords):
-        origin = coords
-        axis_length = self.calculate_sphere_radius() * 36
-        circle_radius = self.calculate_sphere_radius()
-
-        colors = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]
-        for i, color in enumerate(colors):
-            for direction in [1, -1]:
-                line_source = vtk.vtkLineSource()
-                line_source.SetPoint1(
-                    origin[0] - (axis_length / 2) * (i == 0) * direction,
-                    origin[1] - (axis_length / 2) * (i == 1) * direction,
-                    origin[2] - (axis_length / 2) * (i == 2) * direction
-                )
-                line_source.SetPoint2(
-                    origin[0] + (axis_length / 2) * (i == 0) * direction,
-                    origin[1] + (axis_length / 2) * (i == 1) * direction,
-                    origin[2] + (axis_length / 2) * (i == 2) * direction
-                )
-
-                mapper = vtk.vtkPolyDataMapper()
-                mapper.SetInputConnection(line_source.GetOutputPort())
-
-                actor = vtk.vtkActor()
-                actor.SetMapper(mapper)
-                actor.GetProperty().SetColor(color)
-                actor.GetProperty().SetLineWidth(2)
-                assembly.AddPart(actor)
-
-        for i in range(3):
-            circle = vtk.vtkRegularPolygonSource()
-            circle.SetNumberOfSides(50)
-            circle.SetRadius(circle_radius)
-            circle.SetCenter(origin[0], origin[1], origin[2])
-            if i == 0:
-                circle.SetNormal(0, 0, 1)
-            elif i == 1:
-                circle.SetNormal(0, 1, 0)
-            else:
-                circle.SetNormal(1, 0, 0)
-
-            mapper = vtk.vtkPolyDataMapper()
-            mapper.SetInputConnection(circle.GetOutputPort())
-
-            actor = vtk.vtkActor()
-            actor.SetMapper(mapper)
-            actor.GetProperty().SetColor(1, 0, 1)
-            actor.GetProperty().SetRepresentationToWireframe()
-            actor.GetProperty().SetLineWidth(6)
-            actor.GetProperty().SetOpacity(0.7)
-
-            transform = vtk.vtkTransform()
-            actor.SetUserTransform(transform)
-            assembly.AddPart(actor)
 
     def calculate_sphere_radius(self):
         return AdaptiveMarkerSize.calculate_sphere_radius(self.renderer)
@@ -1518,25 +1443,6 @@ class MainWindow(QMainWindow):
 
         except ValueError:
             print("Error calculating properties. Please ensure the volume is a valid number.")
-
-    def apply_camera_rotation(self, camera):
-        position = list(camera.GetPosition())
-        focal_point = self.absolute_origin
-
-        transform = vtk.vtkTransform()
-        transform.PostMultiply()
-        transform.Translate(*focal_point)
-        transform.RotateZ(self.camera_rotation[2])
-        transform.RotateX(self.camera_rotation[0])
-        transform.RotateY(self.camera_rotation[1])
-        transform.Translate(*[-x for x in focal_point])
-
-        new_position = transform.TransformPoint(position)
-        camera.SetPosition(new_position)
-
-        up = [0, 0, 1]
-        new_up = transform.TransformVector(up)
-        camera.SetViewUp(new_up)
 
     def add_axes(self):
         if not hasattr(self, 'axis_actors'):
@@ -1569,48 +1475,41 @@ class MainWindow(QMainWindow):
                 self.axis_actors.append(actor)
 
     def add_instruction_text(self):
-        """Add instruction text with fixed font size and safe margins"""
+        """画面上に操作説明を表示"""
         if not hasattr(self, 'text_actors'):
             self.text_actors = []
 
-        # Fixed font size (no adaptive sizing based on window size)
-        font_size = 14
-
-        # Top text: Shortened lines to prevent right overflow
+        # 左上のテキスト
         text_actor_top = vtk.vtkTextActor()
         text_actor_top.SetInput(
-            "[W/S]: Rotate Up/Down\n"
-            "[A/D]: Rotate L/R\n"
+            "[W/S]: Up/Down Rotate\n"
+            "[A/D]: Left/Right Rotate\n"
             "[Q/E]: Roll\n"
-            "[R]: Reset Cam\n"
-            "[T]: Wireframe\n"
-            "[H]: Toggle Help\n\n"
+            "[R]: Reset Camera\n"
+            "[T]: Wireframe\n\n"
             "[Drag]: Rotate\n"
-            "[Shift+Drag]:\n"
-            "  Move View\n"
+            "[Shift + Drag]: Move View\n"
         )
-        text_actor_top.GetTextProperty().SetFontSize(font_size)
-        text_actor_top.GetTextProperty().SetColor(0.0, 0.8, 0.8)
+        text_actor_top.GetTextProperty().SetFontSize(14)
+        text_actor_top.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # 水色
         text_actor_top.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
-        # Safe margin from top: 0.96 instead of 0.97 to ensure visibility
-        text_actor_top.SetPosition(0.03, 0.96)
+        text_actor_top.SetPosition(0.03, 0.97)  # 左上に配置
         text_actor_top.GetTextProperty().SetJustificationToLeft()
         text_actor_top.GetTextProperty().SetVerticalJustificationToTop()
         self.renderer.AddActor(text_actor_top)
         self.text_actors.append(text_actor_top)
 
-        # Bottom text: Shortened to fit smaller screens
+        # 左下のテキスト
         text_actor_bottom = vtk.vtkTextActor()
         text_actor_bottom.SetInput(
-            "[Arrows]: Move 10mm\n"
-            " +[Shift]: Move 1mm\n"
-            "  +[Ctrl]: Move 0.1mm\n"
+            "[Arrows] : Move Point 10mm\n"
+            " +[Shift]: Move Point 1mm\n"
+            "  +[Ctrl]: Move Point 0.1mm\n\n"
         )
-        text_actor_bottom.GetTextProperty().SetFontSize(font_size)
-        text_actor_bottom.GetTextProperty().SetColor(0.0, 0.8, 0.8)
+        text_actor_bottom.GetTextProperty().SetFontSize(14)
+        text_actor_bottom.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # 水色
         text_actor_bottom.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
-        # Safe margin from bottom: 0.04 instead of 0.03 to ensure visibility
-        text_actor_bottom.SetPosition(0.03, 0.04)
+        text_actor_bottom.SetPosition(0.03, 0.03)  # 左下に配置
         text_actor_bottom.GetTextProperty().SetJustificationToLeft()
         text_actor_bottom.GetTextProperty().SetVerticalJustificationToBottom()
         self.renderer.AddActor(text_actor_bottom)
@@ -1716,9 +1615,10 @@ class MainWindow(QMainWindow):
 
     def show_point(self, index):
         if self.point_actors[index] is None:
-            self.point_actors[index] = vtk.vtkAssembly()
-            self.create_point_coordinate(
-                self.point_actors[index], self.point_coords[index])
+            self.point_actors[index] = create_crosshair_marker(
+                coords=self.point_coords[index],
+                radius_scale=self.calculate_sphere_radius()
+            )
             self.renderer.AddActor(self.point_actors[index])
         self.point_actors[index].VisibilityOn()
         self.update_point_display(index)
@@ -2196,6 +2096,11 @@ class MainWindow(QMainWindow):
             print("No mesh loaded. Please load a mesh first.")
             return
 
+        # Auto-enable ShowCollider when RoughFit is pressed
+        if not self.collider_show:
+            self.collider_show_checkbox.setChecked(True)
+            print("ShowCollider automatically enabled")
+
         # Calculate bounding box dimensions (world space, round to 4 decimal places)
         size_x = round(self.model_bounds[1] - self.model_bounds[0], 4)
         size_y = round(self.model_bounds[3] - self.model_bounds[2], 4)
@@ -2345,21 +2250,6 @@ class MainWindow(QMainWindow):
     def export_urdf(self):
         print("URDF export functionality will be implemented here")
 
-    def get_axis_length(self):
-        if self.model_bounds:
-            size = max([
-                self.model_bounds[1] - self.model_bounds[0],
-                self.model_bounds[3] - self.model_bounds[2],
-                self.model_bounds[5] - self.model_bounds[4]
-            ])
-            return size * 0.5
-        else:
-            return 5
-
-    def hide_point(self, index):
-        if self.point_actors[index]:
-            self.point_actors[index].VisibilityOff()
-
     def set_point(self, index):
         try:
             x = float(self.point_inputs[index][0].text())
@@ -2376,29 +2266,6 @@ class MainWindow(QMainWindow):
         except ValueError:
             print(
                 f"Invalid input for Point {index+1}. Please enter valid numbers for coordinates.")
-
-    def move_point(self, index, dx, dy, dz):
-        new_position = [
-            self.point_coords[index][0] + dx,
-            self.point_coords[index][1] + dy,
-            self.point_coords[index][2] + dz
-        ]
-        self.point_coords[index] = new_position
-        self.update_point_display(index)
-        print(
-            f"Point {index+1} moved to: ({new_position[0]:.4f}, {new_position[1]:.4f}, {new_position[2]:.4f})")
-
-    def move_point_screen(self, index, direction, step):
-        move_vector = direction * step
-        new_position = [
-            self.point_coords[index][0] + move_vector[0],
-            self.point_coords[index][1] + move_vector[1],
-            self.point_coords[index][2] + move_vector[2]
-        ]
-        self.point_coords[index] = new_position
-        self.update_point_display(index)
-        print(
-            f"Point {index+1} moved to: ({new_position[0]:.4f}, {new_position[1]:.4f}, {new_position[2]:.4f})")
 
     def fit_camera_to_model(self):
         if not self.model_bounds:
@@ -2873,11 +2740,6 @@ class MainWindow(QMainWindow):
                 return True
 
         return super().eventFilter(obj, event)
-
-    def rotate_camera_mouse(self, dx, dy):
-        """Rotate camera based on mouse drag"""
-        self.camera_controller.rotate_azimuth_elevation(dx, dy, sensitivity=0.5)
-        self.render_to_image()
 
     def pan_camera(self, dx, dy):
         """Pan camera based on mouse drag with Shift"""

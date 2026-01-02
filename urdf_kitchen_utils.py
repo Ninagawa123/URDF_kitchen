@@ -21,6 +21,7 @@ pip install pycollada
 """
 
 import vtk
+from vtk.util.numpy_support import vtk_to_numpy
 import numpy as np
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtCore import Qt
@@ -80,7 +81,8 @@ class OffscreenRenderer:
             vtk_array = vtk_image.GetPointData().GetScalars()
             components = vtk_array.GetNumberOfComponents()
 
-            arr = np.frombuffer(vtk_array, dtype=np.uint8)
+            # VTK配列をnumpy配列に変換（推奨方法）
+            arr = vtk_to_numpy(vtk_array)
             arr = arr.reshape(height, width, components)
             arr = np.flip(arr, axis=0)
             arr = np.ascontiguousarray(arr)
@@ -1520,7 +1522,36 @@ def setup_dark_theme(app, theme='default', custom_styles=None):
         palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
         palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
         palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
+        palette.setColor(QPalette.PlaceholderText, QColor(180, 180, 180))  # プレースホルダーテキスト色
         app.setPalette(palette)
+
+        # ボタンの押下時の色をスタイルシートで設定（フォーカスの有無に関わらず深い青）
+        stylesheet = """
+            QPushButton:pressed {
+                background-color: #1a3a5a;
+                border: 1px solid #2a5a8a;
+                color: #ffffff;
+            }
+            QPushButton:pressed:!active {
+                background-color: #1a3a5a;
+                border: 1px solid #2a5a8a;
+                color: #ffffff;
+            }
+            QPushButton:checked:!active {
+                background-color: #1a3a5a;
+                border: 1px solid #2a5a8a;
+                color: #ffffff;
+            }
+            QCheckBox::indicator:checked:!active {
+                background-color: #1a3a5a;
+                border: 1px solid #2a5a8a;
+            }
+            QRadioButton::indicator:checked:!active {
+                background-color: #1a3a5a;
+                border: 1px solid #2a5a8a;
+            }
+        """
+        app.setStyleSheet(stylesheet)
 
     elif theme == 'mesh_sourcer':
         # MeshSourcer theme: similar to assembler but may have custom tweaks
@@ -1539,6 +1570,15 @@ def setup_dark_theme(app, theme='default', custom_styles=None):
         palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
         app.setPalette(palette)
 
+        # ボタンの押下時の色をスタイルシートで設定（フォーカスの有無に関わらず深い青）
+        stylesheet = """
+            QPushButton:pressed {
+                background-color: #1a3a5a;
+                border: 1px solid #2a5a8a;
+            }
+        """
+        app.setStyleSheet(stylesheet)
+
     else:  # 'default' or any other value
         # Default dark theme (same as assembler)
         palette = QPalette()
@@ -1555,6 +1595,15 @@ def setup_dark_theme(app, theme='default', custom_styles=None):
         palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
         palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
         app.setPalette(palette)
+
+        # ボタンの押下時の色をスタイルシートで設定（フォーカスの有無に関わらず深い青）
+        stylesheet = """
+            QPushButton:pressed {
+                background-color: #1a3a5a;
+                border: 1px solid #2a5a8a;
+            }
+        """
+        app.setStyleSheet(stylesheet)
 
     # Apply custom styles if provided
     if custom_styles:
@@ -1724,3 +1773,504 @@ def calculate_mirrored_physical_properties_from_mesh(mesh_file_path, mass, densi
         import traceback
         traceback.print_exc()
         return None
+
+
+# ============================================================================
+# VTK VIEWER BASE CLASS
+# ============================================================================
+
+class VTKViewerBase:
+    """
+    Base class for VTK viewer applications (PartsEditor and MeshSourcer).
+
+    Provides common functionality for:
+    - Camera control (rotation, mouse interaction)
+    - Point manipulation (move, hide, display)
+    - VTK rendering coordination
+
+    Subclasses must initialize these attributes before calling methods:
+    - self.renderer: vtk.vtkRenderer
+    - self.camera_rotation: list [yaw, pitch, roll]
+    - self.absolute_origin: list [x, y, z]
+    - self.point_actors: list of vtkAssembly
+    - self.point_coords: list of [x, y, z]
+    - self.point_inputs: list of UI input fields
+    - self.camera_controller: CameraController instance
+
+    Subclasses must implement:
+    - render_to_image(): Update the display after rendering
+    - _update_point_visibility(index): Optional, customize point visibility logic
+    """
+
+    # Class variable for camera rotation sensitivity
+    CAMERA_ROTATION_SENSITIVITY = 0.5
+
+    def setup_vtk(self):
+        """
+        Setup VTK offscreen rendering (Mac compatible).
+
+        Initializes renderer, render window, and utility objects.
+        Subclasses may override to add additional initialization.
+
+        Requires these attributes to be set before calling:
+        - self.absolute_origin: focal point for camera
+        - self.vtk_display: QLabel widget for mouse tracking
+        """
+        self.renderer = vtk.vtkRenderer()
+        self.renderer.SetBackground(0.2, 0.2, 0.2)
+        self.render_window = vtk.vtkRenderWindow()
+        self.render_window.SetOffScreenRendering(1)
+        self.render_window.SetSize(800, 600)
+        self.render_window.AddRenderer(self.renderer)
+        self.render_window_interactor = None
+
+        # Initialize utility classes
+        self.offscreen_renderer = OffscreenRenderer(self.render_window, self.renderer)
+        self.camera_controller = CameraController(self.renderer, self.absolute_origin)
+        self.animated_rotation = AnimatedCameraRotation(self.renderer, self.absolute_origin)
+        self.mouse_state = MouseDragState(self.vtk_display)
+
+    def setup_camera(self):
+        """
+        Setup camera initial configuration.
+
+        Requires these attributes to be set before calling:
+        - self.absolute_origin: focal point for camera
+        - self.initial_camera_position: relative camera position [x, y, z]
+        - self.initial_camera_view_up: camera up vector [x, y, z]
+        """
+        position = [self.absolute_origin[i] + self.initial_camera_position[i] for i in range(3)]
+        self.camera_controller.setup_parallel_camera(
+            position=position,
+            view_up=self.initial_camera_view_up,
+            focal_point=self.absolute_origin,
+            parallel_scale=5
+        )
+
+    def apply_camera_rotation(self, camera):
+        """
+        Apply accumulated camera rotation to the given camera.
+
+        Uses self.camera_rotation [yaw, pitch, roll] and self.absolute_origin
+        to rotate the camera around the focal point.
+
+        Args:
+            camera: vtkCamera instance to apply rotation to
+        """
+        # カメラの現在の位置と焦点を取得
+        position = list(camera.GetPosition())
+        focal_point = self.absolute_origin
+
+        # 回転行列を作成
+        transform = vtk.vtkTransform()
+        transform.PostMultiply()
+        transform.Translate(*focal_point)
+        transform.RotateZ(self.camera_rotation[2])  # Roll
+        transform.RotateX(self.camera_rotation[0])  # Pitch
+        transform.RotateY(self.camera_rotation[1])  # Yaw
+        transform.Translate(*[-x for x in focal_point])
+
+        # カメラの位置を回転
+        new_position = transform.TransformPoint(position)
+        camera.SetPosition(new_position)
+
+        # カメラの上方向を更新
+        up = [0, 0, 1]
+        new_up = transform.TransformVector(up)
+        camera.SetViewUp(new_up)
+
+    def rotate_camera_mouse(self, dx, dy):
+        """
+        Rotate camera based on mouse drag.
+
+        Args:
+            dx: Mouse movement in x direction
+            dy: Mouse movement in y direction
+        """
+        self.camera_controller.rotate_azimuth_elevation(
+            dx, dy, sensitivity=self.CAMERA_ROTATION_SENSITIVITY
+        )
+        self.render_to_image()
+
+    def move_point(self, index, dx, dy, dz):
+        """
+        Move a point by the specified delta.
+
+        Args:
+            index: Point index
+            dx, dy, dz: Delta movement in each axis
+        """
+        new_position = [
+            self.point_coords[index][0] + dx,
+            self.point_coords[index][1] + dy,
+            self.point_coords[index][2] + dz
+        ]
+        self.point_coords[index] = new_position
+        self.update_point_display(index)
+        print(f"Point {index+1} moved to: ({new_position[0]:.6f}, {new_position[1]:.6f}, {new_position[2]:.6f})")
+
+    def move_point_screen(self, index, direction, step):
+        """
+        Move a point in screen-space direction.
+
+        Args:
+            index: Point index
+            direction: numpy array representing direction vector
+            step: Movement step size
+        """
+        move_vector = direction * step
+        new_position = [
+            self.point_coords[index][0] + move_vector[0],
+            self.point_coords[index][1] + move_vector[1],
+            self.point_coords[index][2] + move_vector[2]
+        ]
+        self.point_coords[index] = new_position
+        self.update_point_display(index)
+        print(f"Point {index+1} moved to: ({new_position[0]:.6f}, {new_position[1]:.6f}, {new_position[2]:.6f})")
+
+    def hide_point(self, index):
+        """
+        Hide a point actor.
+
+        Args:
+            index: Point index
+        """
+        if self.point_actors[index]:
+            self.point_actors[index].VisibilityOff()
+        self.render_to_image()
+
+    def update_point_display(self, index):
+        """
+        Update point display (position and input fields).
+
+        Uses template method pattern - subclasses can override
+        _update_point_visibility() for custom visibility logic.
+
+        Args:
+            index: Point index
+        """
+        if self.point_actors[index]:
+            self.point_actors[index].SetPosition(self.point_coords[index])
+
+            # Allow subclasses to customize visibility logic
+            self._update_point_visibility(index)
+
+        # Update coordinate input fields
+        for i, coord in enumerate(self.point_coords[index]):
+            self.point_inputs[index][i].setText(f"{coord:.6f}")
+
+        self.render_to_image()
+
+    def _update_point_visibility(self, index):
+        """
+        Template method for point visibility customization.
+
+        Default implementation: always show the point.
+        Subclasses can override for custom logic (e.g., checkbox-based visibility).
+
+        Args:
+            index: Point index
+        """
+        self.point_actors[index].VisibilityOn()
+
+    def render_to_image(self):
+        """
+        Update the display after rendering changes.
+
+        Must be implemented by subclasses.
+        """
+        raise NotImplementedError("Subclasses must implement render_to_image()")
+
+
+# ============================================================================
+# KITCHEN COLOR PICKER
+# ============================================================================
+
+class KitchenColorPicker:
+    """
+    Reusable color picker widget with RGBA inputs and visual preview.
+
+    This color picker provides:
+    - Four RGBA input fields (0-1 range)
+    - Visual color sample display with alpha support
+    - "Pick" button to open Qt color dialog with alpha channel
+    - Callback support for color changes
+
+    Used across PartsEditor, MeshSourcer, and Assembler for consistent
+    color selection interface.
+
+    Example:
+        >>> from PySide6.QtWidgets import QHBoxLayout
+        >>> # Create color picker with RGB only
+        >>> color_picker = KitchenColorPicker(
+        ...     parent_widget=self,
+        ...     initial_color=[1.0, 0.0, 0.0],  # Red, alpha defaults to 1.0
+        ...     on_color_changed=self.handle_color_change
+        ... )
+        >>> # Create color picker with RGBA
+        >>> color_picker = KitchenColorPicker(
+        ...     parent_widget=self,
+        ...     initial_color=[1.0, 0.0, 0.0, 0.5],  # Red with 50% transparency
+        ...     enable_alpha=True,
+        ...     on_color_changed=self.handle_color_change
+        ... )
+        >>> # Add to layout
+        >>> layout = QHBoxLayout()
+        >>> color_picker.add_to_layout(layout)
+    """
+
+    def __init__(self, parent_widget, initial_color=None, enable_alpha=True, on_color_changed=None):
+        """
+        Initialize Kitchen Color Picker.
+
+        Args:
+            parent_widget: Parent Qt widget (for dialog parent)
+            initial_color: Initial color as list [r, g, b] or [r, g, b, a] (0-1 range), defaults to white
+            enable_alpha: If True, show alpha input field and enable alpha in color dialog
+            on_color_changed: Callback function(rgba_list) called when color changes
+        """
+        from PySide6.QtWidgets import QLabel, QPushButton, QLineEdit, QHBoxLayout
+        from PySide6.QtGui import QDoubleValidator
+        from PySide6.QtCore import QLocale
+
+        self.parent_widget = parent_widget
+        self.on_color_changed = on_color_changed
+        self.enable_alpha = enable_alpha
+
+        # Set initial color (default to opaque white)
+        if initial_color is None:
+            initial_color = [1.0, 1.0, 1.0, 1.0]
+        elif len(initial_color) == 3:
+            initial_color = list(initial_color) + [1.0]  # Add default alpha
+
+        self.current_color = list(initial_color)[:4]  # Ensure RGBA
+
+        # Create UI components
+        self.color_inputs = []
+        self.color_sample = None
+        self.pick_button = None
+
+        self._create_widgets()
+
+    def _create_widgets(self):
+        """Create RGBA input fields, color sample, and Pick button."""
+        from PySide6.QtWidgets import QLabel, QPushButton, QLineEdit
+        from PySide6.QtGui import QDoubleValidator
+        from PySide6.QtCore import QLocale
+
+        # Create RGBA input fields (show alpha only if enabled)
+        num_inputs = 4 if self.enable_alpha else 3
+        for i in range(num_inputs):
+            color_input = QLineEdit()
+            color_input.setFixedWidth(60)
+            color_input.setText(f"{self.current_color[i]:.3f}")
+
+            # Validator for 0-1 range
+            validator = QDoubleValidator(0.0, 1.0, 3)
+            validator.setLocale(QLocale.c())
+            validator.setNotation(QDoubleValidator.StandardNotation)
+            color_input.setValidator(validator)
+
+            # Connect to update handler
+            color_input.textChanged.connect(self._on_input_changed)
+
+            self.color_inputs.append(color_input)
+
+        # Create color sample display
+        self.color_sample = QLabel()
+        self.color_sample.setFixedSize(30, 20)
+        self._update_color_sample()
+
+        # Create Pick button
+        self.pick_button = QPushButton("Pick")
+        self.pick_button.clicked.connect(self.show_color_picker)
+
+    def add_to_layout(self, layout):
+        """
+        Add color picker widgets to a layout.
+
+        Args:
+            layout: QLayout to add widgets to (typically QHBoxLayout or QGridLayout)
+
+        Usage:
+            >>> color_layout = QHBoxLayout()
+            >>> color_picker.add_to_layout(color_layout)
+            >>> parent_layout.addLayout(color_layout)
+        """
+        for color_input in self.color_inputs:
+            layout.addWidget(color_input)
+        layout.addWidget(self.color_sample)
+        layout.addWidget(self.pick_button)
+
+    def _update_color_sample(self):
+        """Update the color sample display to match current RGBA values."""
+        try:
+            rgba = [max(0, min(255, int(c * 255))) for c in self.current_color]
+
+            if self.enable_alpha:
+                # Use rgba() with alpha channel
+                self.color_sample.setStyleSheet(
+                    f"background-color: rgba({rgba[0]},{rgba[1]},{rgba[2]},{self.current_color[3]:.3f}); "
+                    f"border: 1px solid black;"
+                )
+            else:
+                # Use rgb() without alpha
+                self.color_sample.setStyleSheet(
+                    f"background-color: rgb({rgba[0]},{rgba[1]},{rgba[2]}); "
+                    f"border: 1px solid black;"
+                )
+        except (ValueError, IndexError):
+            pass
+
+    def _on_input_changed(self):
+        """Handle RGBA input field changes."""
+        try:
+            # Read values from input fields
+            new_color = [float(input_field.text()) for input_field in self.color_inputs]
+
+            # If alpha is disabled, preserve current alpha value
+            if not self.enable_alpha:
+                new_color.append(self.current_color[3])
+
+            # Validate range
+            new_color = [max(0.0, min(1.0, value)) for value in new_color]
+
+            # Update internal state
+            self.current_color = new_color
+
+            # Update visual sample
+            self._update_color_sample()
+
+            # Trigger callback
+            if self.on_color_changed:
+                self.on_color_changed(self.current_color)
+
+        except ValueError:
+            # Invalid input, skip update
+            pass
+
+    def show_color_picker(self):
+        """
+        Show Qt color picker dialog.
+
+        Opens a non-native color dialog with the current color selected.
+        Updates RGBA inputs and triggers callback if a new color is chosen.
+        Supports alpha channel if enable_alpha is True.
+        """
+        from PySide6.QtWidgets import QColorDialog
+        from PySide6.QtGui import QColor
+
+        try:
+            # Create QColor from current RGBA values
+            current_qcolor = QColor(
+                *[min(255, max(0, int(c * 255))) for c in self.current_color]
+            )
+        except (ValueError, IndexError):
+            current_qcolor = QColor(255, 255, 255, 255)
+
+        # Configure dialog options
+        options = QColorDialog.DontUseNativeDialog
+        if self.enable_alpha:
+            options |= QColorDialog.ShowAlphaChannel
+
+        # Show color dialog
+        color = QColorDialog.getColor(
+            initial=current_qcolor,
+            parent=self.parent_widget,
+            options=options
+        )
+
+        if color.isValid():
+            # Update RGBA inputs
+            new_color = [
+                color.red() / 255.0,
+                color.green() / 255.0,
+                color.blue() / 255.0,
+                color.alpha() / 255.0
+            ]
+
+            # Update input fields (only RGB if alpha is disabled)
+            num_inputs = 4 if self.enable_alpha else 3
+            for i in range(num_inputs):
+                self.color_inputs[i].setText(f"{new_color[i]:.3f}")
+
+            # Update internal state
+            self.current_color = new_color
+
+            # Update visual sample
+            self._update_color_sample()
+
+            # Trigger callback
+            if self.on_color_changed:
+                self.on_color_changed(self.current_color)
+
+    def get_color(self):
+        """
+        Get current RGB color (without alpha).
+
+        Returns:
+            list: Current color as [r, g, b] in 0-1 range
+        """
+        return self.current_color[:3].copy()
+
+    def get_color_rgba(self):
+        """
+        Get current color as RGBA.
+
+        Returns:
+            list: Color as [r, g, b, a] in 0-1 range
+        """
+        return self.current_color.copy()
+
+    def get_alpha(self):
+        """
+        Get current alpha value.
+
+        Returns:
+            float: Alpha value in 0-1 range
+        """
+        return self.current_color[3]
+
+    def set_color(self, color):
+        """
+        Set color programmatically (RGB or RGBA).
+
+        Args:
+            color: Color as list [r, g, b] or [r, g, b, a] in 0-1 range
+        """
+        # Convert to RGBA if RGB provided
+        if len(color) == 3:
+            new_color = list(color) + [self.current_color[3]]  # Preserve alpha
+        else:
+            new_color = list(color)[:4]
+
+        # Validate and clamp values
+        new_color = [max(0.0, min(1.0, float(c))) for c in new_color]
+
+        # Update input fields (only RGB if alpha is disabled)
+        num_inputs = 4 if self.enable_alpha else 3
+        for i in range(num_inputs):
+            self.color_inputs[i].setText(f"{new_color[i]:.3f}")
+
+        # Update internal state
+        self.current_color = new_color
+
+        # Update visual sample
+        self._update_color_sample()
+
+    def set_alpha(self, alpha):
+        """
+        Set alpha value programmatically.
+
+        Args:
+            alpha: Alpha value in 0-1 range
+        """
+        alpha = max(0.0, min(1.0, float(alpha)))
+        self.current_color[3] = alpha
+
+        # Update alpha input field if enabled
+        if self.enable_alpha and len(self.color_inputs) >= 4:
+            self.color_inputs[3].setText(f"{alpha:.3f}")
+
+        # Update visual sample
+        self._update_color_sample()

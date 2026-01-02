@@ -18,6 +18,7 @@ pip install vtk
 pip install NodeGraphQt
 pip install trimesh
 pip install pycollada
+pip install networkx
 """
 
 import sys
@@ -60,7 +61,8 @@ from urdf_kitchen_utils import (
     calculate_arrow_key_step, calculate_inertia_tensor,
     calculate_inertia_tetrahedral, get_mesh_file_filter,
     load_mesh_to_polydata, save_polydata_to_mesh,
-    setup_signal_handlers, setup_signal_processing_timer, setup_dark_theme
+    setup_signal_handlers, setup_signal_processing_timer, setup_dark_theme,
+    VTKViewerBase, KitchenColorPicker
 )
 
 # pip install numpy
@@ -311,9 +313,9 @@ class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
                     self.parent.update_point_position(i, x, y)
         self.OnMouseMove()
     
-class MainWindow(QMainWindow):
+class MainWindow(VTKViewerBase, QMainWindow):
     def __init__(self):
-        super().__init__()
+        QMainWindow.__init__(self)
         self.setWindowTitle("URDF Kitchen - PartsEditor v0.1.0 -")
         self.setGeometry(0, 0, 1200, 600)
         self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
@@ -814,29 +816,33 @@ class MainWindow(QMainWindow):
         self.original_transform = None
         self.test_rotation_angle = 0
 
-        # Color layout
+        # Color layout using KitchenColorPicker
         color_layout = QHBoxLayout()
-        
+
         color_layout.addWidget(QLabel("Color:"))
-        
-        self.color_inputs = []
-        for label in ['R:', 'G:', 'B:']:
+
+        # Add RGBA labels
+        for label in ['R:', 'G:', 'B:', 'A:']:
             color_layout.addWidget(QLabel(label))
-            color_input = QLineEdit("1.0")
-            color_input.setFixedWidth(50)
-            color_input.textChanged.connect(self.update_color_sample)
-            color_input.returnPressed.connect(self.apply_color_to_stl)  # リターンキーで即座に色を適用
-            self.color_inputs.append(color_input)
-            color_layout.addWidget(color_input)
-        
-        self.color_sample = QLabel()
-        self.color_sample.setFixedSize(30, 20)
-        self.color_sample.setStyleSheet("background-color: rgb(255,255,255); border: 1px solid black;")
-        color_layout.addWidget(self.color_sample)
-        
-        pick_button = QPushButton("Pick")
-        pick_button.clicked.connect(self.show_color_picker)
-        color_layout.addWidget(pick_button)
+
+        # Create KitchenColorPicker instance
+        self.color_picker = KitchenColorPicker(
+            parent_widget=self,
+            initial_color=[1.0, 1.0, 1.0, 1.0],  # White with full opacity
+            enable_alpha=True,  # Enable alpha for transparency control
+            on_color_changed=self._on_color_changed
+        )
+
+        # Add color picker widgets to layout
+        self.color_picker.add_to_layout(color_layout)
+
+        # Create aliases for backward compatibility
+        self.color_inputs = self.color_picker.color_inputs
+        self.color_sample = self.color_picker.color_sample
+
+        # Connect Enter key to apply color
+        for color_input in self.color_inputs:
+            color_input.returnPressed.connect(self.apply_color_to_stl)
 
         color_layout.addStretch()
         
@@ -954,7 +960,7 @@ class MainWindow(QMainWindow):
         export_layout.addLayout(export_row1)
 
         # 2行目：Batch Mirror ボタン
-        self.bulk_convert_button = QPushButton("Batch Mirror \"l_\" to \"r_\" Meshes & XMLs")
+        self.bulk_convert_button = QPushButton("Batch Mirror \"l_\" to \"r_\" Meshes and XMLs")
         self.bulk_convert_button.clicked.connect(self.bulk_convert_l_to_r)
         export_layout.addWidget(self.bulk_convert_button)
 
@@ -975,35 +981,6 @@ class MainWindow(QMainWindow):
             print(f"Point {index+1} set to: ({x}, {y}, {z})")
         except ValueError:
             print(f"Invalid input for Point {index+1}. Please enter valid numbers for coordinates.")
-
-    def setup_vtk(self):
-        """VTKのオフスクリーンレンダリングを設定（Mac互換性）"""
-        self.renderer = vtk.vtkRenderer()
-        self.renderer.SetBackground(0.2, 0.2, 0.2)  # グレー背景
-
-        # オフスクリーンレンダリングウィンドウを作成
-        self.render_window = vtk.vtkRenderWindow()
-        self.render_window.SetOffScreenRendering(1)
-        self.render_window.SetSize(800, 600)
-        self.render_window.AddRenderer(self.renderer)
-
-        # インタラクタは不要（オフスクリーンレンダリングのため）
-        self.render_window_interactor = None
-
-        # Initialize utility classes
-        self.offscreen_renderer = OffscreenRenderer(self.render_window, self.renderer)
-        self.camera_controller = CameraController(self.renderer, self.absolute_origin)
-        self.animated_rotation = AnimatedCameraRotation(self.renderer, self.absolute_origin)
-        self.mouse_state = MouseDragState(self.vtk_display)
-
-    def setup_camera(self):
-        position = [self.absolute_origin[i] + self.initial_camera_position[i] for i in range(3)]
-        self.camera_controller.setup_parallel_camera(
-            position=position,
-            view_up=self.initial_camera_view_up,
-            focal_point=self.absolute_origin,
-            parallel_scale=5
-        )
 
     def render_to_image(self):
         """Render VTK scene offscreen and display as image in QLabel"""
@@ -1230,20 +1207,13 @@ class MainWindow(QMainWindow):
             if prop in values:
                 input_field.setText(f"{values[prop]:.12f}")
 
-    def update_point_display(self, index):
-        """ポイントの表示を更新（チェック状態の確認を追加）"""
-        if self.point_actors[index]:
-            if self.point_checkboxes[index].isChecked():
-                self.point_actors[index].SetPosition(self.point_coords[index])
-                self.point_actors[index].VisibilityOn()
-            else:
-                self.point_actors[index].VisibilityOff()
-                self.renderer.RemoveActor(self.point_actors[index])
-        
-        for i, coord in enumerate(self.point_coords[index]):
-            self.point_inputs[index][i].setText(f"{coord:.6f}")
-        
-        self.render_to_image()
+    def _update_point_visibility(self, index):
+        """Override base class to add checkbox-based visibility control"""
+        if self.point_checkboxes[index].isChecked():
+            self.point_actors[index].VisibilityOn()
+        else:
+            self.point_actors[index].VisibilityOff()
+            self.renderer.RemoveActor(self.point_actors[index])
 
     def update_all_points_size(self, obj=None, event=None):
         """ポイントのサイズを更新（可視性の厳密な管理を追加）"""
@@ -1254,10 +1224,12 @@ class MainWindow(QMainWindow):
                 
                 # 一旦アクターを削除
                 self.renderer.RemoveActor(actor)
-                
+
                 # 新しいアクターを作成
-                self.point_actors[index] = vtk.vtkAssembly()
-                self.create_point_coordinate(self.point_actors[index], [0, 0, 0])
+                self.point_actors[index] = create_crosshair_marker(
+                    coords=[0, 0, 0],
+                    radius_scale=self.calculate_sphere_radius()
+                )
                 self.point_actors[index].SetPosition(self.point_coords[index])
                 
                 # チェック状態に応じて可視性を設定
@@ -1283,78 +1255,6 @@ class MainWindow(QMainWindow):
         
         self.render_to_image()
 
-    def create_point_coordinate(self, assembly, coords):
-        origin = coords
-        axis_length = self.calculate_sphere_radius() * 36  # 直径の18倍（6倍の3倍）を軸の長さとして使用
-        circle_radius = self.calculate_sphere_radius()
-
-        print(f"Creating point coordinate at {coords}")
-        print(f"Axis length: {axis_length}, Circle radius: {circle_radius}")
-
-        # XYZ軸の作成
-        colors = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]  # 赤、緑、青
-        for i, color in enumerate(colors):
-            for direction in [1, -1]:  # 正方向と負方向の両方
-                line_source = vtk.vtkLineSource()
-                line_source.SetPoint1(
-                    origin[0] - (axis_length / 2) * (i == 0) * direction,
-                    origin[1] - (axis_length / 2) * (i == 1) * direction,
-                    origin[2] - (axis_length / 2) * (i == 2) * direction
-                )
-                line_source.SetPoint2(
-                    origin[0] + (axis_length / 2) * (i == 0) * direction,
-                    origin[1] + (axis_length / 2) * (i == 1) * direction,
-                    origin[2] + (axis_length / 2) * (i == 2) * direction
-                )
-
-                mapper = vtk.vtkPolyDataMapper()
-                mapper.SetInputConnection(line_source.GetOutputPort())
-
-                actor = vtk.vtkActor()
-                actor.SetMapper(mapper)
-                actor.GetProperty().SetColor(color)
-                actor.GetProperty().SetLineWidth(2)
-
-                assembly.AddPart(actor)
-                print(f"Added {['X', 'Y', 'Z'][i]} axis {'positive' if direction == 1 else 'negative'}")
-
-        # XY, XZ, YZ平面の円を作成
-        for i in range(3):
-            circle = vtk.vtkRegularPolygonSource()
-            circle.SetNumberOfSides(50)
-            circle.SetRadius(circle_radius)
-            circle.SetCenter(origin[0], origin[1], origin[2])
-            if i == 0:  # XY平面
-                circle.SetNormal(0, 0, 1)
-                plane = "XY"
-            elif i == 1:  # XZ平面
-                circle.SetNormal(0, 1, 0)
-                plane = "XZ"
-            else:  # YZ平面
-                circle.SetNormal(1, 0, 0)
-                plane = "YZ"
-
-            mapper = vtk.vtkPolyDataMapper()
-            mapper.SetInputConnection(circle.GetOutputPort())
-
-            actor = vtk.vtkActor()
-            actor.SetMapper(mapper)
-            
-            # 円のプロパティを設定(ponintのカーソル表示用)
-            actor.GetProperty().SetColor(1, 0, 1)  # 紫色
-            actor.GetProperty().SetRepresentationToWireframe()  # 常にワイヤーフレーム表示
-            actor.GetProperty().SetLineWidth(6)  # 線の太さを3倍の6に設定
-            actor.GetProperty().SetOpacity(0.7)  # 不透明度を少し下げて見やすくする
-
-            # タグ付けのためにUserTransformを設定
-            transform = vtk.vtkTransform()
-            actor.SetUserTransform(transform)
-
-            assembly.AddPart(actor)
-            print(f"Added {plane} circle")
-
-        print(f"Point coordinate creation completed")
-
     def calculate_sphere_radius(self):
         # ビューポートのサイズを取得
         viewport_size = self.renderer.GetSize()
@@ -1378,10 +1278,6 @@ class MainWindow(QMainWindow):
             scaled_radius /= aspect_ratio
             
         return scaled_radius
-
-    def calculate_screen_diagonal(self):
-        viewport_size = self.renderer.GetSize()
-        return math.sqrt(viewport_size[0]**2 + viewport_size[1]**2)
 
     def calculate_properties(self):
         # 優先順位: Volume > Density > Mass > Inertia
@@ -1997,29 +1893,6 @@ class MainWindow(QMainWindow):
         return f'<inertia ixx="{ixx:.8f}" ixy="{ixy:.8f}" ixz="{ixz:.8f}" iyy="{iyy:.8f}" iyz="{iyz:.8f}" izz="{izz:.8f}"/>'
 
 
-    def apply_camera_rotation(self, camera):
-        # カメラの現在の位置と焦点を取得
-        position = list(camera.GetPosition())
-        focal_point = self.absolute_origin
-        
-        # 回転行列を作成
-        transform = vtk.vtkTransform()
-        transform.PostMultiply()
-        transform.Translate(*focal_point)
-        transform.RotateZ(self.camera_rotation[2])  # Roll
-        transform.RotateX(self.camera_rotation[0])  # Pitch
-        transform.RotateY(self.camera_rotation[1])  # Yaw
-        transform.Translate(*[-x for x in focal_point])
-        
-        # カメラの位置を回転
-        new_position = transform.TransformPoint(position)
-        camera.SetPosition(new_position)
-        
-        # カメラの上方向を更新
-        up = [0, 0, 1]
-        new_up = transform.TransformVector(up)
-        camera.SetViewUp(new_up)
-
     def add_axes(self):
         if not hasattr(self, 'axes_actors'):
             self.axes_actors = []
@@ -2167,98 +2040,72 @@ class MainWindow(QMainWindow):
     def show_point(self, index):
         """ポイントを表示（XMLロード時にも使用）"""
         if not self.point_checkboxes[index].isChecked():
+            print(f"DEBUG: show_point({index}) - checkbox not checked")
             return
 
         if self.point_actors[index] is None:
-            self.point_actors[index] = vtk.vtkAssembly()
-            self.create_point_coordinate(self.point_actors[index], [0, 0, 0])
+            print(f"DEBUG: Creating new actor for Point {index+1}")
+            self.point_actors[index] = create_crosshair_marker(
+                coords=[0, 0, 0],
+                radius_scale=self.calculate_sphere_radius()
+            )
             self.renderer.AddActor(self.point_actors[index])
-        
+            print(f"DEBUG: Actor created and added for Point {index+1}")
+
         self.point_actors[index].SetPosition(self.point_coords[index])
         self.point_actors[index].VisibilityOn()
         self.update_point_display(index)
+        print(f"DEBUG: Point {index+1} shown at {self.point_coords[index]}")
 
     def rotate_camera(self, angle, rotation_type):
         # Don't start new animation if one is already running
         if self.is_animating:
             return
 
-        self.target_rotation = (self.current_rotation + angle) % 360
-        self.rotation_per_frame = angle / self.total_animation_frames
-        self.animation_frames = 0
-        self.current_rotation_type = self.rotation_types[rotation_type]
-        self.target_angle = angle  # Store target angle for precise completion
-        self.pending_rotation_update = (self.rotation_types[rotation_type], angle)  # Store for later update
-        self.is_animating = True  # Block further input
-        self.animation_timer.start(1000 // 60)
+        if self.animated_rotation.start_rotation(angle, rotation_type):
+            self.target_rotation = (self.current_rotation + angle) % 360
+            self.animation_frames = 0
+            self.current_rotation_type = self.rotation_types[rotation_type]
+            self.target_angle = angle  # Store target angle for precise completion
+            self.is_animating = True  # Block further input
+            self.animation_timer.start(1000 // 60)
+            self.camera_rotation[self.rotation_types[rotation_type]] += angle
+            self.camera_rotation[self.rotation_types[rotation_type]] %= 360
 
     def animate_rotation(self):
         self.animation_frames += 1
 
-        camera = self.renderer.GetActiveCamera()
-        position = list(camera.GetPosition())
-        focal_point = self.absolute_origin
-        view_up = list(camera.GetViewUp())
-
-        forward = [focal_point[i] - position[i] for i in range(3)]
-        right = [
-            view_up[1] * forward[2] - view_up[2] * forward[1],
-            view_up[2] * forward[0] - view_up[0] * forward[2],
-            view_up[0] * forward[1] - view_up[1] * forward[0]
-        ]
-
-        if self.current_rotation_type == self.rotation_types['yaw']:
-            axis = view_up
-        elif self.current_rotation_type == self.rotation_types['pitch']:
-            axis = right
-        else:  # roll
-            axis = forward
-
-        # On the last frame, apply the exact remaining angle to ensure precise 90-degree rotation
-        if self.animation_frames >= self.total_animation_frames:
-            # Calculate exact remaining angle
-            remaining_angle = self.target_angle - (self.rotation_per_frame * (self.animation_frames - 1))
-            rotation_angle = remaining_angle
-        else:
-            rotation_angle = self.rotation_per_frame
-
-        rotation_matrix = vtk.vtkTransform()
-        rotation_matrix.Translate(*focal_point)
-        rotation_matrix.RotateWXYZ(rotation_angle, axis)
-        rotation_matrix.Translate(*[-x for x in focal_point])
-
-        new_position = rotation_matrix.TransformPoint(position)
-        new_up = rotation_matrix.TransformVector(view_up)
-
-        camera.SetPosition(new_position)
-        camera.SetViewUp(new_up)
+        # Delegate to utility class for rotation
+        animation_continues = self.animated_rotation.animate_frame()
 
         # Render using offscreen rendering
         self.render_to_image()
 
-        # Stop animation after last frame
-        if self.animation_frames >= self.total_animation_frames:
+        # Stop animation when utility class indicates completion
+        if not animation_continues:
             self.animation_timer.stop()
             self.current_rotation = self.target_rotation
-            # Update camera_rotation only when animation completes
-            if hasattr(self, 'pending_rotation_update') and self.pending_rotation_update:
-                rotation_type, angle = self.pending_rotation_update
-                self.camera_rotation[rotation_type] += angle
-                self.camera_rotation[rotation_type] %= 360
-                self.pending_rotation_update = None
             self.is_animating = False  # Allow new input
 
     def toggle_point(self, state, index):
         """ポイントの表示/非表示を切り替え"""
+        print(f"DEBUG: toggle_point({state}, {index}) - Point {index+1}")
         if state == Qt.CheckState.Checked.value:
+            print(f"DEBUG: Checked - creating/showing Point {index+1}")
             if self.point_actors[index] is None:
-                self.point_actors[index] = vtk.vtkAssembly()
-                self.create_point_coordinate(self.point_actors[index], [0, 0, 0])
+                print(f"DEBUG: Creating new crosshair marker for Point {index+1}")
+                self.point_actors[index] = create_crosshair_marker(
+                    coords=[0, 0, 0],
+                    radius_scale=self.calculate_sphere_radius()
+                )
                 self.renderer.AddActor(self.point_actors[index])
+                print(f"DEBUG: Crosshair marker created and added for Point {index+1}")
             self.point_actors[index].SetPosition(self.point_coords[index])
             self.point_actors[index].VisibilityOn()
             self.renderer.AddActor(self.point_actors[index])
+            print(f"DEBUG: Point {index+1} positioned at {self.point_coords[index]}")
         else:
+            print(f"DEBUG: Unchecked - hiding Point {index+1}")
             if self.point_actors[index]:
                 self.point_actors[index].VisibilityOff()
                 self.renderer.RemoveActor(self.point_actors[index])
@@ -2273,12 +2120,65 @@ class MainWindow(QMainWindow):
                 self.com_sphere_actor.VisibilityOff()
 
             if self.com_cursor_actor is None:
+                # Center of Mass用の赤い円マーカーを作成
                 self.com_cursor_actor = vtk.vtkAssembly()
-                self.create_com_coordinate(self.com_cursor_actor, [0, 0, 0])
+                origin = [0, 0, 0]
+                axis_length = self.calculate_sphere_radius() * 36
+                circle_radius = self.calculate_sphere_radius()
+
+                # XYZ軸の作成（RGB配色）
+                colors = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]
+                for i, color in enumerate(colors):
+                    for direction in [1, -1]:
+                        line_source = vtk.vtkLineSource()
+                        line_source.SetPoint1(
+                            origin[0] - (axis_length / 2) * (i == 0) * direction,
+                            origin[1] - (axis_length / 2) * (i == 1) * direction,
+                            origin[2] - (axis_length / 2) * (i == 2) * direction
+                        )
+                        line_source.SetPoint2(
+                            origin[0] + (axis_length / 2) * (i == 0) * direction,
+                            origin[1] + (axis_length / 2) * (i == 1) * direction,
+                            origin[2] + (axis_length / 2) * (i == 2) * direction
+                        )
+                        mapper = vtk.vtkPolyDataMapper()
+                        mapper.SetInputConnection(line_source.GetOutputPort())
+                        actor = vtk.vtkActor()
+                        actor.SetMapper(mapper)
+                        actor.GetProperty().SetColor(color)
+                        actor.GetProperty().SetLineWidth(2)
+                        self.com_cursor_actor.AddPart(actor)
+
+                # 3つの円を作成（赤色）
+                for i in range(3):
+                    circle = vtk.vtkRegularPolygonSource()
+                    circle.SetNumberOfSides(50)
+                    circle.SetRadius(circle_radius)
+                    circle.SetCenter(origin[0], origin[1], origin[2])
+                    if i == 0:
+                        circle.SetNormal(0, 0, 1)  # XY平面
+                    elif i == 1:
+                        circle.SetNormal(0, 1, 0)  # XZ平面
+                    else:
+                        circle.SetNormal(1, 0, 0)  # YZ平面
+
+                    mapper = vtk.vtkPolyDataMapper()
+                    mapper.SetInputConnection(circle.GetOutputPort())
+                    actor = vtk.vtkActor()
+                    actor.SetMapper(mapper)
+                    actor.GetProperty().SetColor(1, 0, 0)  # 赤色
+                    actor.GetProperty().SetRepresentationToWireframe()
+                    actor.GetProperty().SetLineWidth(6)
+                    actor.GetProperty().SetOpacity(0.7)
+                    self.com_cursor_actor.AddPart(actor)
+
                 self.renderer.AddActor(self.com_cursor_actor)
+                print("DEBUG: Center of Mass red marker created")
+
             self.com_cursor_actor.SetPosition(self.com_coords)
             self.com_cursor_actor.VisibilityOn()
             self.renderer.AddActor(self.com_cursor_actor)
+            print(f"DEBUG: Center of Mass marker shown at {self.com_coords}")
         else:
             # チェックなし時：十字付き円を非表示、赤い球を表示
             if self.com_cursor_actor:
@@ -2390,11 +2290,6 @@ class MainWindow(QMainWindow):
         else:
             return 5  # デフォルトの長さ
 
-    def hide_point(self, index):
-        if self.point_actors[index]:
-            self.point_actors[index].VisibilityOff()
-        self.render_to_image()
-
     def set_point(self, index):
         try:
             x = float(self.point_inputs[index][0].text())
@@ -2410,27 +2305,6 @@ class MainWindow(QMainWindow):
             print(f"Point {index+1} set to: ({x}, {y}, {z})")
         except ValueError:
             print(f"Invalid input for Point {index+1}. Please enter valid numbers for coordinates.")
-
-    def move_point(self, index, dx, dy, dz):
-        new_position = [
-            self.point_coords[index][0] + dx,
-            self.point_coords[index][1] + dy,
-            self.point_coords[index][2] + dz
-        ]
-        self.point_coords[index] = new_position
-        self.update_point_display(index)
-        print(f"Point {index+1} moved to: ({new_position[0]:.6f}, {new_position[1]:.6f}, {new_position[2]:.6f})")
-
-    def move_point_screen(self, index, direction, step):
-        move_vector = direction * step
-        new_position = [
-            self.point_coords[index][0] + move_vector[0],
-            self.point_coords[index][1] + move_vector[1],
-            self.point_coords[index][2] + move_vector[2]
-        ]
-        self.point_coords[index] = new_position
-        self.update_point_display(index)
-        print(f"Point {index+1} moved to: ({new_position[0]:.6f}, {new_position[1]:.6f}, {new_position[2]:.6f})")
 
     def move_com_screen(self, direction, step):
         """Center of Massをスクリーン座標系で移動"""
@@ -2609,26 +2483,6 @@ class MainWindow(QMainWindow):
 
         self.update_all_points_size()
         self.render_to_image()
-
-    def get_mirrored_filename(self, original_path):
-        dir_path = os.path.dirname(original_path)
-        filename = os.path.basename(original_path)
-        name, ext = os.path.splitext(filename)
-        
-        # ファイル名の先頭を確認して適切な新しいファイル名を生成
-        if name.startswith('L_'):
-            new_name = 'R_' + name[2:]
-        elif name.startswith('l_'):
-            new_name = 'r_' + name[2:]
-        elif name.startswith('R_'):
-            new_name = 'L_' + name[2:]
-        elif name.startswith('r_'):
-            new_name = 'l_' + name[2:]
-        else:
-            new_name = 'mirrored_' + name
-        
-        return os.path.join(dir_path, new_name + ext)
-
 
     def export_mirror_stl_xml(self):
         """3DモデルファイルをY軸でミラーリングし、対応するXMLファイルも生成する（STL/DAE対応）"""
@@ -3009,8 +2863,10 @@ class MainWindow(QMainWindow):
 
                     # ポイントの表示を設定
                     if self.point_actors[i] is None:
-                        self.point_actors[i] = vtk.vtkAssembly()
-                        self.create_point_coordinate(self.point_actors[i], [0, 0, 0])
+                        self.point_actors[i] = create_crosshair_marker(
+                            coords=[0, 0, 0],
+                            radius_scale=self.calculate_sphere_radius()
+                        )
 
                     self.point_actors[i].SetPosition(self.point_coords[i])
                     self.renderer.AddActor(self.point_actors[i])
@@ -3036,19 +2892,20 @@ class MainWindow(QMainWindow):
             rgba_str = color_element.get('rgba')
             if rgba_str:
                 try:
-                    r, g, b, _ = map(float, rgba_str.split())
-                    
+                    r, g, b, a = map(float, rgba_str.split())
+
                     self.color_inputs[0].setText(f"{r:.3f}")
                     self.color_inputs[1].setText(f"{g:.3f}")
                     self.color_inputs[2].setText(f"{b:.3f}")
-                    
-                    self.update_color_sample()
-                    
+                    if len(self.color_inputs) >= 4:
+                        self.color_inputs[3].setText(f"{a:.3f}")
+
                     if self.stl_actor:
                         self.stl_actor.GetProperty().SetColor(r, g, b)
+                        self.stl_actor.GetProperty().SetOpacity(a)
                         self.render_to_image()
-                    
-                    print(f"Material color loaded and applied: R={r:.3f}, G={g:.3f}, B={b:.3f}")
+
+                    print(f"Material color loaded and applied: RGBA({r:.3f}, {g:.3f}, {b:.3f}, {a:.3f})")
                 except (ValueError, IndexError) as e:
                     print(f"Warning: Invalid color format in XML: {rgba_str}")
                     print(f"Error details: {e}")
@@ -3091,22 +2948,22 @@ class MainWindow(QMainWindow):
                     rgba_str = color_element.get('rgba')
                     if rgba_str:
                         try:
-                            r, g, b, _ = map(float, rgba_str.split())
+                            r, g, b, a = map(float, rgba_str.split())
                             # 色情報を入力フィールドに設定
                             self.color_inputs[0].setText(f"{r:.3f}")
                             self.color_inputs[1].setText(f"{g:.3f}")
                             self.color_inputs[2].setText(f"{b:.3f}")
-                            
-                            # カラーサンプルの更新
-                            self.update_color_sample()
-                            
+                            if len(self.color_inputs) >= 4:
+                                self.color_inputs[3].setText(f"{a:.3f}")
+
                             # STLモデルに色を適用
                             if hasattr(self, 'stl_actor') and self.stl_actor:
                                 self.stl_actor.GetProperty().SetColor(r, g, b)
+                                self.stl_actor.GetProperty().SetOpacity(a)
                                 self.render_to_image()
-                            
+
                             has_parameters = True
-                            print(f"Loaded color: R={r:.3f}, G={g:.3f}, B={b:.3f}")
+                            print(f"Loaded color: RGBA({r:.3f}, {g:.3f}, {b:.3f}, {a:.3f})")
                         except ValueError as e:
                             print(f"Error parsing color values: {e}")
 
@@ -3357,21 +3214,21 @@ class MainWindow(QMainWindow):
                     rgba_str = color_element.get('rgba')
                     if rgba_str:
                         try:
-                            r, g, b, _ = map(float, rgba_str.split())
-                            
+                            r, g, b, a = map(float, rgba_str.split())
+
                             # インプットフィールドに値を設定
                             self.color_inputs[0].setText(f"{r:.3f}")
                             self.color_inputs[1].setText(f"{g:.3f}")
                             self.color_inputs[2].setText(f"{b:.3f}")
-                            
-                            # カラーサンプルを更新
-                            self.update_color_sample()
-                            
+                            if len(self.color_inputs) >= 4:
+                                self.color_inputs[3].setText(f"{a:.3f}")
+
                             # STLモデルに色を適用
                             self.stl_actor.GetProperty().SetColor(r, g, b)
+                            self.stl_actor.GetProperty().SetOpacity(a)
                             self.render_to_image()
-                            
-                            print(f"Material color loaded and applied: R={r:.3f}, G={g:.3f}, B={b:.3f}")
+
+                            print(f"Material color loaded and applied: RGBA({r:.3f}, {g:.3f}, {b:.3f}, {a:.3f})")
                         except (ValueError, IndexError) as e:
                             print(f"Warning: Invalid color format in XML: {rgba_str}")
                             print(f"Error details: {e}")
@@ -3651,10 +3508,12 @@ class MainWindow(QMainWindow):
     def bulk_convert_l_to_r(self):
         """
         フォルダ内の'l_'または'L_'で始まるSTL/OBJ/DAEファイルを処理し、
-        対応する'r_'または'R_'ファイルを生成する。
-        既存のファイルは上書きせずスキップする。
+        XZ平面を中心とした左右対称の'r_'または'R_'ファイルとXMLを生成する。
+        既存のファイルは上書きする。
         """
         try:
+            import re
+
             # フォルダ選択ダイアログを表示
             folder_path = QFileDialog.getExistingDirectory(
                 self, "Select Folder for Bulk Conversion")
@@ -3665,25 +3524,46 @@ class MainWindow(QMainWindow):
 
             # 処理したファイルの数を追跡
             processed_count = 0
+            collider_count = 0
             # 生成されたファイルのリストを保存
             generated_files = []
 
+            # l_*_collider パターン（l_で始まり_collider.拡張子で終わる）
+            # 例: l_hipjoint_upper_collider.stl, l_elbow_collider.dae
+            collider_pattern = re.compile(r'^l_.+_collider\.(stl|obj|dae)$', re.IGNORECASE)
+
             # フォルダ内のすべてのSTL/OBJ/DAEファイルを検索
+            print("\n=== Searching for l_ prefix files ===")
+            print("Collider pattern: l_*_collider.(stl|obj|dae)")
+            print("Examples: l_hipjoint_upper_collider.stl, l_elbow_collider.dae")
+            print("")
+
             for file_name in os.listdir(folder_path):
                 if file_name.lower().startswith(('l_', 'L_')) and file_name.lower().endswith(('.stl', '.obj', '.dae')):
+                    # コライダーファイルかどうかを判定
+                    is_collider = collider_pattern.match(file_name.lower())
+                    file_type = "COLLIDER" if is_collider else "mesh"
+
+                    print(f"✓ Found {file_type}: {file_name}")
                     stl_path = os.path.join(folder_path, file_name)
 
-                    # 新しいファイル名を生成
+                    # 新しいファイル名を生成（l_ を r_ に変換）
                     new_name = 'R_' + file_name[2:] if file_name.startswith('L_') else 'r_' + file_name[2:]
                     new_name_without_ext = os.path.splitext(new_name)[0]
                     new_stl_path = os.path.join(folder_path, new_name)
                     new_xml_path = os.path.splitext(new_stl_path)[0] + '.xml'
 
+                    print(f"  → Mesh: {new_name}")
+                    print(f"  → XML:  {os.path.basename(new_xml_path)}")
+                    if is_collider:
+                        # コライダーの場合、XMLファイル名のパターンを明示
+                        print(f"  → Pattern match: r_.*_collider.xml ✓")
+
                     # 既存ファイルがある場合は上書き
                     if os.path.exists(new_stl_path) or os.path.exists(new_xml_path):
-                        print(f"Overwriting existing file: {file_name}")
+                        print(f"  ⚠ Overwriting existing files")
 
-                    print(f"Processing: {stl_path}")
+                    print(f"\nProcessing: {stl_path}")
 
                     try:
                         # Use common utility function to load mesh
@@ -3813,12 +3693,14 @@ class MainWindow(QMainWindow):
                             f.write(urdf_content)
 
                         processed_count += 1
+                        if is_collider:
+                            collider_count += 1
                         # 生成されたファイルをリストに追加
                         generated_files.append({
                             'mesh': new_stl_path,
                             'xml': new_xml_path
                         })
-                        print(f"Converted: {file_name} -> {new_name}")
+                        print(f"Converted {file_type}: {file_name} -> {new_name}")
                         print(f"Created XML: {new_xml_path}")
 
                     except Exception as e:
@@ -3826,17 +3708,169 @@ class MainWindow(QMainWindow):
                         traceback.print_exc()
                         continue
 
+            # ===== Phase 2: Process standalone XML files (without mesh) =====
+            print("\n=== Searching for standalone collider XML files ===")
+            xml_collider_pattern = re.compile(r'^l_.+_collider\.xml$', re.IGNORECASE)
+            xml_only_count = 0
+
+            # すでに処理されたXMLのリスト（メッシュと一緒に処理されたもの）
+            processed_xml_names = set()
+            for item in generated_files:
+                if 'xml' in item:
+                    processed_xml_names.add(os.path.basename(item['xml']))
+
+            for file_name in os.listdir(folder_path):
+                if xml_collider_pattern.match(file_name.lower()):
+                    # 既にメッシュと一緒に処理されていないかチェック
+                    output_xml_name = 'R_' + file_name[2:] if file_name.startswith('L_') else 'r_' + file_name[2:]
+                    if output_xml_name in processed_xml_names:
+                        continue  # 既に処理済み
+
+                    xml_path = os.path.join(folder_path, file_name)
+                    new_xml_name = output_xml_name
+                    new_xml_path = os.path.join(folder_path, new_xml_name)
+
+                    print(f"✓ Found standalone XML: {file_name}")
+                    print(f"  → Will create: {new_xml_name}")
+
+                    try:
+                        # XMLファイルを読み込み
+                        tree = ET.parse(xml_path)
+                        xml_data = tree.getroot()
+
+                        # 物理パラメータを取得
+                        mass_element = xml_data.find(".//mass")
+                        volume_element = xml_data.find(".//volume")
+
+                        mass = float(mass_element.get('value')) if mass_element is not None else 1.0
+                        volume = float(volume_element.get('value')) if volume_element is not None else 1.0
+
+                        # 重心位置を取得して反転
+                        com_element = xml_data.find(".//center_of_mass")
+                        if com_element is not None and com_element.text:
+                            x, y, z = map(float, com_element.text.strip().split())
+                            center_of_mass = [x, -y, z]  # Y座標のみ反転
+                        else:
+                            # inertialのorigin要素から取得
+                            inertial_origin = xml_data.find(".//inertial/origin")
+                            if inertial_origin is not None:
+                                xyz = inertial_origin.get('xyz')
+                                x, y, z = map(float, xyz.split())
+                                center_of_mass = [x, -y, z]
+                            else:
+                                center_of_mass = [0, 0, 0]
+
+                        # 色情報を取得
+                        color_element = xml_data.find(".//material/color")
+                        if color_element is not None:
+                            rgba_str = color_element.get('rgba')
+                            hex_color = xml_data.find(".//material").get('name')
+                        else:
+                            rgba_str = "1.0 1.0 1.0 1.0"
+                            hex_color = "#FFFFFF"
+
+                        # イナーシャテンソルを取得して反転
+                        inertia_element = xml_data.find(".//inertia")
+                        if inertia_element is not None:
+                            ixx = float(inertia_element.get('ixx', 0))
+                            iyy = float(inertia_element.get('iyy', 0))
+                            izz = float(inertia_element.get('izz', 0))
+                            ixy = float(inertia_element.get('ixy', 0))
+                            ixz = float(inertia_element.get('ixz', 0))
+                            iyz = float(inertia_element.get('iyz', 0))
+                            # Y軸ミラーの場合、ixyとiyzの符号を反転
+                            inertia_str = f'ixx="{ixx:.12e}" ixy="{-ixy:.12e}" ixz="{ixz:.12e}" iyy="{iyy:.12e}" iyz="{-iyz:.12e}" izz="{izz:.12e}"'
+                        else:
+                            inertia_str = 'ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"'
+
+                        # リンク名を生成
+                        base_name = os.path.splitext(new_xml_name)[0]
+
+                        # XMLファイルの内容を生成
+                        urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urdf_part>
+    <material name="{hex_color}">
+        <color rgba="{rgba_str}" />
+    </material>
+    <link name="{base_name}">
+        <visual>
+            <origin xyz="{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}" rpy="0 0 0"/>
+            <material name="{hex_color}" />
+        </visual>
+        <inertial>
+            <origin xyz="{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}"/>
+            <mass value="{mass:.12f}"/>
+            <volume value="{volume:.12f}"/>
+            <inertia {inertia_str} />
+        </inertial>
+        <center_of_mass>{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}</center_of_mass>
+    </link>"""
+
+                        # ポイントデータを反転してコピー
+                        points = xml_data.findall('.//point')
+                        for point in points:
+                            xyz_element = point.find('point_xyz')
+                            if xyz_element is not None and xyz_element.text:
+                                try:
+                                    x, y, z = map(float, xyz_element.text.strip().split())
+                                    mirrored_y = -y  # Y座標のみ反転
+                                    point_name = point.get('name')
+                                    urdf_content += f"""
+    <point name="{point_name}" type="fixed">
+        <point_xyz>{x:.6f} {mirrored_y:.6f} {z:.6f}</point_xyz>
+    </point>"""
+                                except ValueError:
+                                    print(f"Error processing point coordinates in XML")
+
+                        # 軸情報を取得して適用
+                        axis_element = xml_data.find('.//joint/axis')
+                        if axis_element is not None:
+                            axis_str = axis_element.get('xyz')
+                            mirrored_axis = self.mirror_axis_value(axis_str)
+                        else:
+                            mirrored_axis = "1 0 0"
+
+                        urdf_content += f"""
+    <joint>
+        <axis xyz="{mirrored_axis}" />
+    </joint>
+</urdf_part>"""
+
+                        # XMLファイルを保存
+                        with open(new_xml_path, "w") as f:
+                            f.write(urdf_content)
+
+                        xml_only_count += 1
+                        generated_files.append({
+                            'mesh': None,
+                            'xml': new_xml_path
+                        })
+                        print(f"Converted standalone XML: {file_name} -> {new_xml_name}")
+
+                    except Exception as e:
+                        print(f"Error processing standalone XML {file_name}: {str(e)}")
+                        traceback.print_exc()
+                        continue
+
             # 処理完了メッセージ
-            if processed_count > 0:
-                print(f"\nBulk conversion completed.")
-                print(f"Processed: {processed_count} files")
+            total_processed = processed_count + xml_only_count
+            if total_processed > 0:
+                regular_count = processed_count - collider_count
+                print(f"\n=== Bulk conversion completed ===")
+                print(f"Total processed: {total_processed} files")
+                print(f"  - Regular meshes: {regular_count} files")
+                print(f"  - Colliders (mesh+XML): {collider_count} files")
+                if xml_only_count > 0:
+                    print(f"  - Standalone collider XMLs: {xml_only_count} files")
+                print(f"All files mirrored across XZ plane (Y-axis flip)")
                 # ダイアログボックスで生成されたファイルのリストを表示
                 dialog = BulkConversionCompleteDialog(generated_files, folder_path, self)
                 dialog.exec()
             else:
-                print("\nNo files were processed. Make sure there are STL/DAE files with 'l_' or 'L_' prefix in the selected folder.")
+                print("\n=== No matching files found ===")
+                print("Looking for files with 'l_' prefix and extensions: .stl, .obj, .dae")
                 QMessageBox.information(self, "No Files Found",
-                    "No files were processed.\nMake sure there are STL/DAE files with 'l_' or 'L_' prefix in the selected folder.")
+                    "No files with 'l_' or 'L_' prefix were found in the selected folder.\nSupported formats: STL, OBJ, DAE")
 
         except Exception as e:
             print(f"Error during bulk conversion: {str(e)}")
@@ -3910,76 +3944,53 @@ class MainWindow(QMainWindow):
         self.stl_actor.SetUserTransform(transform)
         self.render_to_image()
 
-    def update_color_sample(self):
-        """カラーサンプルの表示を更新"""
-        try:
-            rgb_values = [min(255, max(0, int(float(input.text()) * 255))) 
-                        for input in self.color_inputs]
-            self.color_sample.setStyleSheet(
-                f"background-color: rgb({rgb_values[0]},{rgb_values[1]},{rgb_values[2]}); "
-                f"border: 1px solid black;"
-            )
+    def _on_color_changed(self, rgba_color):
+        """
+        KitchenColorPicker callback when color changes.
 
-            # STLモデルに色を適用
-            if hasattr(self, 'stl_actor') and self.stl_actor:
-                rgb_normalized = [v / 255.0 for v in rgb_values]
-                self.stl_actor.GetProperty().SetColor(*rgb_normalized)
-                self.render_to_image()
-
-        except ValueError:
-            pass
-
-    def show_color_picker(self):
-        """カラーピッカーを表示"""
-        try:
-            current_color = QtGui.QColor(
-                *[min(255, max(0, int(float(input.text()) * 255))) 
-                for input in self.color_inputs]
-            )
-        except ValueError:
-            current_color = QtGui.QColor(255, 255, 255)
-        
-        color = QtWidgets.QColorDialog.getColor(
-            initial=current_color,
-            parent=self,
-            options=QtWidgets.QColorDialog.DontUseNativeDialog
-        )
-        
-        if color.isValid():
-            for i, component in enumerate([color.red(), color.green(), color.blue()]):
-                self.color_inputs[i].setText(f"{component / 255:.3f}")
-            
-            if self.current_node:
-                self.current_node.node_color = [
-                    color.red() / 255.0,
-                    color.green() / 255.0,
-                    color.blue() / 255.0
-                ]
-                self.apply_color_to_stl()
+        Args:
+            rgba_color: RGBA color list [r, g, b, a] in 0-1 range
+        """
+        # Apply color to 3D model automatically
+        self.apply_color_to_stl()
 
     def apply_color_to_stl(self):
-        """選択された色を3Dモデルに適用"""
+        """選択された色を3Dモデルに適用（RGBA対応）"""
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
             print("No 3D model has been loaded.")
             return
 
         try:
-            # RGB値を取得（0-1の範囲）
-            rgb_values = [float(input.text()) for input in self.color_inputs]
+            # RGBA値を取得（0-1の範囲）
+            rgba_values = [float(input.text()) for input in self.color_inputs]
 
             # 値の範囲チェック
-            rgb_values = [max(0.0, min(1.0, value)) for value in rgb_values]
+            rgba_values = [max(0.0, min(1.0, value)) for value in rgba_values]
 
-            # メッシュカラーとして保存（アルファ値も含む）
-            self.mesh_color = rgb_values + [1.0]  # RGBAとして保存
+            # メッシュカラーとして保存（RGBA形式）
+            if len(rgba_values) == 3:
+                # RGBのみの場合、Alpha=1.0を追加
+                self.mesh_color = rgba_values + [1.0]
+            else:
+                # RGBAの場合、そのまま保存
+                self.mesh_color = rgba_values
 
             # 色が手動で変更されたことをマーク
             self.color_manually_changed = True
 
-            # STLモデルの色を変更
-            self.stl_actor.GetProperty().SetColor(*rgb_values)
+            # STLモデルの色を変更（RGB）
+            self.stl_actor.GetProperty().SetColor(*rgba_values[:3])
+
+            # 透明度を設定（Alpha）
+            if len(rgba_values) >= 4:
+                self.stl_actor.GetProperty().SetOpacity(rgba_values[3])
+                print(f"Applied color: RGBA({rgba_values[0]:.3f}, {rgba_values[1]:.3f}, "
+                      f"{rgba_values[2]:.3f}, {rgba_values[3]:.3f})")
+            else:
+                self.stl_actor.GetProperty().SetOpacity(1.0)
+                print(f"Applied color: RGB({rgba_values[0]:.3f}, {rgba_values[1]:.3f}, {rgba_values[2]:.3f})")
+
             self.render_to_image()
-            print(f"Applied color: RGB({rgb_values[0]:.3f}, {rgb_values[1]:.3f}, {rgb_values[2]:.3f})")
 
         except ValueError as e:
             print(f"Error: Invalid color value - {str(e)}")
@@ -4181,11 +4192,6 @@ class MainWindow(QMainWindow):
 
         return super().eventFilter(obj, event)
 
-    def rotate_camera_mouse(self, dx, dy):
-        """Rotate camera based on mouse drag"""
-        self.camera_controller.rotate_azimuth_elevation(dx, dy, sensitivity=CAMERA_ROTATION_SENSITIVITY)
-        self.render_to_image()
-
     def pan_camera(self, dx, dy):
         """Pan camera based on mouse drag with Shift"""
         self.camera_controller.pan(dx, dy, pan_speed_factor=CAMERA_PAN_SPEED_FACTOR)
@@ -4339,10 +4345,26 @@ class BulkConversionCompleteDialog(QDialog):
         layout = QVBoxLayout()
         layout.setSpacing(10)
 
+        # ファイルタイプごとのカウント
+        mesh_count = sum(1 for f in generated_files if f['mesh'] is not None)
+        xml_only_count = sum(1 for f in generated_files if f['mesh'] is None)
+
         # メッセージラベルを作成
-        title_label = QLabel(f"Batch conversion completed! {len(generated_files)} file(s) processed:")
-        title_label.setStyleSheet("font-weight: bold; font-size: 12pt;")
+        title_label = QLabel(f"✓ Batch Conversion Complete!")
+        title_label.setStyleSheet("font-weight: bold; font-size: 14pt; color: #2ecc71;")
         layout.addWidget(title_label)
+
+        # 統計情報を表示
+        stats_text = f"Total: {len(generated_files)} pair(s) created"
+        if mesh_count > 0:
+            stats_text += f"\n  • Mesh files: {mesh_count}"
+        if xml_only_count > 0:
+            stats_text += f"\n  • Standalone XMLs: {xml_only_count}"
+        stats_text += "\n  • Mirrored across XZ plane (Y-axis flip)"
+
+        stats_label = QLabel(stats_text)
+        stats_label.setStyleSheet("font-size: 11pt; margin: 5px 0px;")
+        layout.addWidget(stats_label)
 
         # ディレクトリパスを表示
         dir_label = QLabel(f"Directory: {folder_path}")
@@ -4350,17 +4372,31 @@ class BulkConversionCompleteDialog(QDialog):
         dir_label.setWordWrap(True)
         layout.addWidget(dir_label)
 
+        # 区切り線
+        separator = QFrame()
+        separator.setFrameShape(QFrame.HLine)
+        separator.setFrameShadow(QFrame.Sunken)
+        layout.addWidget(separator)
+
+        # ファイルリストのヘッダー
+        list_header = QLabel("Generated Files:")
+        list_header.setStyleSheet("font-weight: bold; font-size: 11pt; margin-top: 5px;")
+        layout.addWidget(list_header)
+
         # スクロール可能なテキストエリアを作成
         text_edit = QTextEdit()
         text_edit.setReadOnly(True)
-        text_edit.setStyleSheet("QTextEdit { font-family: monospace; }")
+        text_edit.setStyleSheet("QTextEdit { font-family: monospace; background-color: #f5f5f5; }")
 
         # 生成されたファイルのリストをテキストとして構築（ファイル名のみ）
         file_list_text = ""
         for i, file_pair in enumerate(generated_files, 1):
-            mesh_filename = os.path.basename(file_pair['mesh'])
+            # メッシュファイルがある場合のみ追加（スタンドアロンXMLの場合はNone）
+            if file_pair['mesh'] is not None:
+                mesh_filename = os.path.basename(file_pair['mesh'])
+                file_list_text += f"{mesh_filename}\n"
+
             xml_filename = os.path.basename(file_pair['xml'])
-            file_list_text += f"{mesh_filename}\n"
             file_list_text += f"{xml_filename}\n"
             # ファイルペア間に空行を追加（最後のセット以外）
             if i < len(generated_files):
