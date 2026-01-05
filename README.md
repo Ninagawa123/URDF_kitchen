@@ -98,5 +98,5 @@ urdf_kitchen_utils.py  は他のコードと同じディレクトリにおいて
 https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb  
   
 <a href="https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb">
-  <img src="docs/urdf_kitchen.png" alt="URDF Kitchenロゴ" width="400">
+  <img width="400" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_banner202550406.png">  
 </a>
