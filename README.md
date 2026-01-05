@@ -1,5 +1,5 @@
 # URDF_kitchen beta2!  
-<img width="600" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_banner202550406.png">  
+<img width="600" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_beta2_banner20260101.png">  
   
 URDF_kitchenは、ロボットモデルの記述方式であるURDFやMJCFの作成をサポートするPythonツール群です。  
 Meshファイルにジョイントポイントを設定し、ノードで接続していく方式となっており、GUIで直感的にロボットファイルを組み立てることができます。  
