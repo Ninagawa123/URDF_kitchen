@@ -21,7 +21,7 @@ MeshSourcer, PartsEditor, Assemblerの3つのツールを起動できるラウ�
 作業はフローはMeshSourcerでパーツの下拵えをし、PartsEditorで接続部分を設定、Assemblerで組み立てて仕上げるという流れになります。  
   
 ### STEP 1 -  仕込み -  "MeshSourcer"  
-<img width="500" alt="urdf_kitchen_beta" src="docs/MeshSourcer_beta2_img1">  
+<img width="500" alt="urdf_kitchen_beta" src="docs/MeshSourcer_beta2_img1.png">  
 組み立ての準備の工程として、まずお手持ちのCADでロボットの部品を動くまとまりごとにユニット化し、可動の起点を原点として出力しておきます。  
 MeshSourcerはそれをサポートするツールで、下記の処理が可能です。  
 
