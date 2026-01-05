@@ -43,15 +43,15 @@ urdfをプラモデルのように組み立てられるツールです。
 また、Jointの各種パラメータも設定することができます。  
 こちらも、左側だけ設定や組み立てを行えば、右側は自動で組み立てることができます。  
 作業途中のファイルを保存する機能や、回転軸を確認する機能などもあります。  
-URDFとMJCFを出力することができます。  
   
+URDFとMJCFをエクスポートすることができます。  
 完成したURDFのチェックは、Garrett Johnsonが作成したブラウザツールで可能です。  
 ツール内にもリンクのボタンを設置しています。  
-  
+    
 https://gkjohnson.github.io/urdf-loaders/javascript/example/bundle/  
   
 # Install  
-python 3.11 と M4 Macの組み合わせで動作確認をしています。
+python 3.11 と M4 Macの組み合わせで動作確認をしています。  
   
 ### libraryとpip  
   
