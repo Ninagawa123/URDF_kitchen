@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-File Name: urdf_kitchen.py
+File Name: urdf_kitchen_Launcher.py
 Description: Small utility window to launch URDF Kitchen applications.
 
 Author      : Ninagawa123
