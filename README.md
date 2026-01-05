@@ -23,6 +23,7 @@ MeshSourcer, PartsEditor, Assemblerの3つのツールを起動できるラウ�
 <img width="500" alt="urdf_kitchen_beta" src="docs/StlSourcer.png">  
 組み立ての準備の工程として、まずお手持ちのCADでロボットの部品を動くまとまりごとにユニット化し、可動の起点を原点として出力しておきます。  
 MeshSourcerはそれをサポートするツールで、下記の処理が可能です。  
+
 - .stl, .dae, .objの読み込み  
 - .stl, .dae, .objへの書き出し  
 - Meshの中心点や座標軸の入れ替え  
