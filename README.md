@@ -16,7 +16,7 @@ URDF,MJCFを読み込むことも可能となり、既存のファイルをGUI�
 # Tools  
   
 ### STEP 0 -  仕込み -  "Launcher"  
-<img width="300" alt="urdf_kitchen_beta" src="docs/URDF_kitchen_laucher_beta2_img1.png">  
+<img width="200" alt="urdf_kitchen_beta" src="docs/URDF_kitchen_laucher_beta2_img1.png">  
 MeshSourcer, PartsEditor, Assemblerの3つのツールを起動できるラウンチャーです。  
 作業はフローはMeshSourcerでパーツの下拵えをし、PartsEditorで接続部分を設定、Assemblerで組み立てて仕上げるという流れになります。  
   
