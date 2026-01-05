@@ -4,7 +4,7 @@ Description: A Python script for reconfiguring the center coordinates and axis d
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan  1, 2026
+Update.     : Jan  4, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -48,7 +48,7 @@ from urdf_kitchen_utils import (
     OffscreenRenderer, CameraController, AnimatedCameraRotation,
     AdaptiveMarkerSize, create_crosshair_marker, MouseDragState,
     calculate_arrow_key_step, get_mesh_file_filter, load_mesh_to_polydata,
-    save_polydata_to_mesh,
+    save_polydata_to_mesh, calculate_inertia_with_trimesh,
     is_apple_silicon, setup_qt_environment_for_apple_silicon,
     setup_signal_handlers, setup_signal_processing_timer,
     euler_to_quaternion, quaternion_to_euler, quaternion_to_matrix,
@@ -73,6 +73,14 @@ except ImportError:
         print("  pip install --upgrade vtk")
         import sys
         sys.exit(1)
+
+# Camera control constants (matching PartsEditor)
+CAMERA_ROTATION_SENSITIVITY = 0.5
+CAMERA_PAN_SPEED_FACTOR = 0.001
+CAMERA_ZOOM_FACTOR = 0.1
+CAMERA_ZOOM_IN_SCALE = 0.9
+CAMERA_ZOOM_OUT_SCALE = 1.1
+MOUSE_ZOOM_PAN_SCALE = 2.0
 
 class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
     def __init__(self, parent=None):
@@ -184,7 +192,7 @@ class GlobalKeyEventFilter(QObject):
 class MainWindow(VTKViewerBase, QMainWindow):
     def __init__(self):
         QMainWindow.__init__(self)
-        self.setWindowTitle("URDF kitchen - MeshSourcer v0.1.0")
+        self.setWindowTitle("URDF kitchen - MeshSourcer v0.1.0 -")
         self.resize(1000, 680)  # Wider window, 680px height
 
         self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
@@ -314,7 +322,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         # Wireframe mode state
         self.wireframe_mode = False
-        self.wireframe_actor = None
         self.original_stl_color = None  # Store original color
         self._toggling_wireframe = False  # Lock for wireframe toggle
 
@@ -333,9 +340,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         self.animation_timer = QTimer()
         self.animation_timer.timeout.connect(self.animate_rotation)
-        self.animation_frames = 0
-        self.total_animation_frames = 12
-        self.rotation_per_frame = 0
         self.target_rotation = 0
         self.is_animating = False  # Flag to block input during animation
         self.target_angle = 0  # Target rotation angle for precise stopping
@@ -405,6 +409,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.file_name_label.setText(f"File: {self.pending_file_to_load}")
                 self.current_stl_path = self.pending_file_to_load
                 self.pending_file_to_load = None
+                # Render to display the loaded file
+                self.render_to_image()
             except Exception as e:
                 print(f"Error loading pending file: {e}")
                 import traceback
@@ -643,6 +649,17 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.collider_type_combo.setFocusPolicy(Qt.NoFocus)
         self.collider_type_combo.currentTextChanged.connect(self.on_collider_type_changed)
         type_layout.addWidget(self.collider_type_combo)
+
+        # Add spacer to push Load Collider button to the right
+        type_layout.addStretch()
+
+        # Load Collider button on the right end
+        load_collider_button = QPushButton("Load Collider")
+        load_collider_button.setFocusPolicy(Qt.NoFocus)
+        load_collider_button.clicked.connect(self.load_collider)
+        load_collider_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        type_layout.addWidget(load_collider_button)
+
         collider_layout.addLayout(type_layout)
 
         # Position inputs with checkbox (moved to be right after Show/Type)
@@ -1400,10 +1417,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
         elif 'volume' in values and 'density' in values:
             values['mass'] = values['volume'] * values['density']
 
-        # Inertiaの計算 (簡略化した例: 立方体と仮定)
-        if 'mass' in values and 'volume' in values:
-            side_length = np.cbrt(values['volume'])
-            values['inertia'] = (1/6) * values['mass'] * side_length**2
+        # Inertia計算は削除（精密計算が必要な場合はcalculate_inertia_with_trimesh使用）
+        # 簡略化された立方体仮定の計算は使用しない
 
         # 結果を入力フィールドに反映
         for prop in priority_order:
@@ -1422,27 +1437,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.point_actors[index].SetPosition(self.point_coords[index])
                 self.renderer.AddActor(self.point_actors[index])
 
-    def update_all_points(self):
-        pass
-
     def calculate_sphere_radius(self):
         return AdaptiveMarkerSize.calculate_sphere_radius(self.renderer)
-
-    def calculate_properties(self):
-        try:
-            volume = float(self.volume_label.text().split(': ')[1])
-            density = 1.0
-            mass = volume * density
-            side_length = np.cbrt(volume)
-            inertia = (1/6) * mass * side_length**2
-
-            print(f"Volume: {volume:.6f} m^3")
-            print(f"Density: {density:.6f} kg/m^3")
-            print(f"Mass: {mass:.6f} kg")
-            print(f"Inertia: {inertia:.6f} kg·m^2")
-
-        except ValueError:
-            print("Error calculating properties. Please ensure the volume is a valid number.")
 
     def add_axes(self):
         if not hasattr(self, 'axis_actors'):
@@ -1539,7 +1535,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             try:
                 self.show_stl(file_path)
-                self.reset_camera()
+                # Camera is already fitted by show_stl(), no need to reset
 
                 # Reset all Center Position points to origin
                 for i in range(self.num_points):
@@ -1596,7 +1592,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         print(f"Model loaded: {file_path}")
         print(f"Bounds: [{self.model_bounds[0]:.4f}, {self.model_bounds[1]:.4f}], [{self.model_bounds[2]:.4f}, {self.model_bounds[3]:.4f}], [{self.model_bounds[4]:.4f}, {self.model_bounds[5]:.4f}]")
 
-        QTimer.singleShot(500, self._delayed_render)
+        # Render is handled by caller (e.g., load_stl_file)
 
     def show_absolute_origin(self):
         sphere = vtk.vtkSphereSource()
@@ -1630,8 +1626,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         if self.animated_rotation.start_rotation(angle, rotation_type):
             self.target_rotation = (self.current_rotation + angle) % 360
-            self.animation_frames = 0
-            self.current_rotation_type = self.rotation_types[rotation_type]
             self.target_angle = angle  # Store target angle for precise completion
             self.is_animating = True  # Block further input
             self.animation_timer.start(1000 // 60)
@@ -1639,8 +1633,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             self.camera_rotation[self.rotation_types[rotation_type]] %= 360
 
     def animate_rotation(self):
-        self.animation_frames += 1
-
         # Delegate to utility class for rotation
         animation_continues = self.animated_rotation.animate_frame()
 
@@ -2247,25 +2239,116 @@ class MainWindow(VTKViewerBase, QMainWindow):
             import traceback
             traceback.print_exc()
 
-    def export_urdf(self):
-        print("URDF export functionality will be implemented here")
+    def load_collider(self):
+        """Load collider from XML file"""
+        # Ask user for file location
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Collider", "", "XML Files (*.xml)")
+        if not file_path:
+            return
 
-    def set_point(self, index):
         try:
-            x = float(self.point_inputs[index][0].text())
-            y = float(self.point_inputs[index][1].text())
-            z = float(self.point_inputs[index][2].text())
-            self.point_coords[index] = [x, y, z]
+            import xml.etree.ElementTree as ET
 
-            if self.point_checkboxes[index].isChecked():
-                self.show_point(index)
-            else:
-                self.update_point_display(index)
+            # Parse XML file
+            tree = ET.parse(file_path)
+            root = tree.getroot()
 
-            print(f"Point {index+1} set to: ({x}, {y}, {z})")
-        except ValueError:
-            print(
-                f"Invalid input for Point {index+1}. Please enter valid numbers for coordinates.")
+            # Verify it's a urdf_kitchen_collider file
+            if root.tag != "urdf_kitchen_collider":
+                print(f"Error: Not a valid urdf_kitchen_collider file")
+                return
+
+            # Get collider element
+            collider_elem = root.find("collider")
+            if collider_elem is None:
+                print(f"Error: No collider element found")
+                return
+
+            # Get collider type
+            collider_type = collider_elem.get("type")
+            if collider_type not in ["box", "sphere", "cylinder", "capsule"]:
+                print(f"Error: Unknown collider type: {collider_type}")
+                return
+
+            # Set collider type in combo box
+            index = self.collider_type_combo.findText(collider_type)
+            if index >= 0:
+                self.collider_type_combo.setCurrentIndex(index)
+
+            # Get geometry parameters
+            geometry_elem = collider_elem.find("geometry")
+            if geometry_elem is not None:
+                if collider_type == "box":
+                    size_x = float(geometry_elem.get("size_x", "1.0"))
+                    size_y = float(geometry_elem.get("size_y", "1.0"))
+                    size_z = float(geometry_elem.get("size_z", "1.0"))
+                    self.collider_params[collider_type] = [size_x, size_y, size_z]
+                elif collider_type == "sphere":
+                    radius = float(geometry_elem.get("radius", "0.5"))
+                    self.collider_params[collider_type] = [radius]
+                elif collider_type in ["cylinder", "capsule"]:
+                    radius = float(geometry_elem.get("radius", "0.5"))
+                    length = float(geometry_elem.get("length", "1.0"))
+                    self.collider_params[collider_type] = [radius, length]
+
+            # Get position
+            position_elem = collider_elem.find("position")
+            if position_elem is not None:
+                x = float(position_elem.get("x", "0.0"))
+                y = float(position_elem.get("y", "0.0"))
+                z = float(position_elem.get("z", "0.0"))
+                self.collider_position = [x, y, z]
+
+                # Update position input fields
+                self.collider_position_inputs[0].setText(f"{x:.4f}")
+                self.collider_position_inputs[1].setText(f"{y:.4f}")
+                self.collider_position_inputs[2].setText(f"{z:.4f}")
+
+            # Get rotation
+            rotation_elem = collider_elem.find("rotation")
+            if rotation_elem is not None:
+                roll = float(rotation_elem.get("roll", "0.0"))
+                pitch = float(rotation_elem.get("pitch", "0.0"))
+                yaw = float(rotation_elem.get("yaw", "0.0"))
+                self.collider_rotation = [roll, pitch, yaw]
+
+                # Update rotation input fields
+                self.collider_rotation_inputs[0].setText(f"{roll:.2f}")
+                self.collider_rotation_inputs[1].setText(f"{pitch:.2f}")
+                self.collider_rotation_inputs[2].setText(f"{yaw:.2f}")
+
+                # Convert RPY to quaternion for internal use
+                import math
+                r, p, y_val = math.radians(roll), math.radians(pitch), math.radians(yaw)
+                cy = math.cos(y_val * 0.5)
+                sy = math.sin(y_val * 0.5)
+                cp = math.cos(p * 0.5)
+                sp = math.sin(p * 0.5)
+                cr = math.cos(r * 0.5)
+                sr = math.sin(r * 0.5)
+
+                w = cr * cp * cy + sr * sp * sy
+                x_q = sr * cp * cy - cr * sp * sy
+                y_q = cr * sp * cy + sr * cp * sy
+                z_q = cr * cp * sy - sr * sp * cy
+                self.collider_rotation_quaternion = np.array([w, x_q, y_q, z_q])
+
+            # Update parameter input fields
+            self.update_collider_param_inputs()
+
+            # Update collider visualization
+            self.update_collider_display()
+
+            print(f"Collider loaded from: {file_path}")
+            print(f"  Type: {collider_type}")
+            print(f"  Position: {self.collider_position}")
+            print(f"  Rotation: {self.collider_rotation}")
+
+        except Exception as e:
+            print(f"Error loading collider: {e}")
+            import traceback
+            traceback.print_exc()
 
     def fit_camera_to_model(self):
         if not self.model_bounds:
@@ -2700,15 +2783,15 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         return True
 
             elif event.type() == QEvent.Wheel:
-                # Handle trackpad/mouse wheel
+                # Handle trackpad/mouse wheel - ZOOM ONLY
                 delta_y = event.angleDelta().y()
-                delta_x = event.angleDelta().x()
 
-                # Vertical scroll = Zoom
-                if abs(delta_y) > abs(delta_x):
-                    self.zoom_camera(delta_y)
-                # Horizontal scroll is disabled (no rotation)
-                # This prevents accidental rotation when using trackpad 2-finger horizontal swipe
+                # Only handle vertical scroll for zoom
+                # Ignore horizontal scroll to prevent unwanted rotation
+                if delta_y != 0:
+                    # Get mouse position for zoom center
+                    mouse_pos = event.position() if hasattr(event, 'position') else event.pos()
+                    self.zoom_camera(delta_y, mouse_pos)
 
                 return True
 
@@ -2743,13 +2826,105 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
     def pan_camera(self, dx, dy):
         """Pan camera based on mouse drag with Shift"""
-        self.camera_controller.pan(dx, dy, pan_speed_factor=0.001)
+        self.camera_controller.pan(dx, dy, pan_speed_factor=CAMERA_PAN_SPEED_FACTOR)
         self.render_to_image()
 
-    def zoom_camera(self, delta):
-        """Zoom camera based on mouse wheel"""
-        self.camera_controller.zoom(delta, zoom_factor=0.1)
+    def zoom_camera(self, delta, mouse_pos=None):
+        """Zoom camera based on mouse wheel, centered on mouse position"""
+        # If mouse position not provided, use simple zoom from CameraController
+        if mouse_pos is None:
+            self.camera_controller.zoom(delta, zoom_factor=CAMERA_ZOOM_FACTOR)
+            self.render_to_image()
+            return
+
+        # Mouse-centered zoom implementation
+        camera = self.renderer.GetActiveCamera()
+        current_scale = camera.GetParallelScale()
+
+        if delta > 0:
+            new_scale = current_scale * CAMERA_ZOOM_IN_SCALE
+            zoom_factor = CAMERA_ZOOM_IN_SCALE
+        else:
+            new_scale = current_scale * CAMERA_ZOOM_OUT_SCALE
+            zoom_factor = CAMERA_ZOOM_OUT_SCALE
+
+        # Get display size
+        display_width = self.vtk_display.width()
+        display_height = self.vtk_display.height()
+
+        # Convert mouse position to normalized coordinates
+        mouse_x = mouse_pos.x()
+        mouse_y = mouse_pos.y()
+
+        # Calculate offset from center
+        center_x = display_width / 2.0
+        center_y = display_height / 2.0
+        offset_x = (mouse_x - center_x) / display_width
+        offset_y = (center_y - mouse_y) / display_height  # Y is inverted
+
+        # Get camera orientation vectors
+        focal_point = camera.GetFocalPoint()
+        position = camera.GetPosition()
+        view_up = camera.GetViewUp()
+
+        # Calculate right and up vectors (camera coordinate system)
+        view_dir = np.array([focal_point[i] - position[i] for i in range(3)])
+        view_dir = view_dir / np.linalg.norm(view_dir)
+        up_vec = np.array(view_up)
+        right_vec = np.cross(view_dir, up_vec)
+        right_vec = right_vec / np.linalg.norm(right_vec)
+
+        # Recalculate up vector to ensure orthogonality
+        up_vec = np.cross(right_vec, view_dir)
+        up_vec = up_vec / np.linalg.norm(up_vec)
+
+        # Calculate pan offset based on current scale and mouse offset
+        pan_scale = current_scale * MOUSE_ZOOM_PAN_SCALE
+        pan_offset_x = offset_x * pan_scale * (1.0 - zoom_factor)
+        pan_offset_y = offset_y * pan_scale * (1.0 - zoom_factor)
+
+        # Move focal point and position towards mouse cursor
+        new_focal = [
+            focal_point[0] + right_vec[0] * pan_offset_x + up_vec[0] * pan_offset_y,
+            focal_point[1] + right_vec[1] * pan_offset_x + up_vec[1] * pan_offset_y,
+            focal_point[2] + right_vec[2] * pan_offset_x + up_vec[2] * pan_offset_y
+        ]
+
+        new_position = [
+            position[0] + right_vec[0] * pan_offset_x + up_vec[0] * pan_offset_y,
+            position[1] + right_vec[1] * pan_offset_x + up_vec[1] * pan_offset_y,
+            position[2] + right_vec[2] * pan_offset_x + up_vec[2] * pan_offset_y
+        ]
+
+        camera.SetFocalPoint(new_focal)
+        camera.SetPosition(new_position)
+
+        camera.SetParallelScale(new_scale)
+        self.renderer.ResetCameraClippingRange()
         self.render_to_image()
+
+    def move_point_screen(self, point_index, screen_axis, distance):
+        """Move a point along a screen axis by a given distance"""
+        if point_index >= len(self.point_coords):
+            return
+
+        # Get current point coordinates
+        current = np.array(self.point_coords[point_index])
+
+        # Move along the screen axis
+        new_coords = current + np.array(screen_axis) * distance
+
+        # Update point coordinates
+        self.point_coords[point_index] = new_coords.tolist()
+
+        # Update display
+        self.update_point_display(point_index)
+
+        # If point is visible, update its position
+        if self.point_checkboxes[point_index].isChecked():
+            self.show_point(point_index)
+
+        print(f"Point {point_index+1} moved to: ({new_coords[0]:.6f}, {new_coords[1]:.6f}, {new_coords[2]:.6f})")
 
     def closeEvent(self, event):
         """Override QMainWindow's closeEvent to properly cleanup VTK resources"""
@@ -2838,42 +3013,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
         if button_text == "Set Front as X":
             self.transform_stl_to_camera_view()
 
-    def transform_stl_to_front_view(self):
-        if not self.stl_actor:
-            print("No STL model is loaded.")
-            return
-
-        current_transform = self.stl_actor.GetMatrix()
-        current_x = [current_transform.GetElement(0, 0),
-                    current_transform.GetElement(1, 0),
-                    current_transform.GetElement(2, 0)]
-
-        needs_flip = current_x[0] < 0
-        transform_matrix = np.eye(4)
-
-        if needs_flip:
-            transform_matrix[0, 0] = -1
-
-        center = np.array(self.stl_actor.GetCenter())
-
-        transform = vtk.vtkTransform()
-        transform.PostMultiply()
-        transform.Translate(-center[0], -center[1], -center[2])
-
-        if needs_flip:
-            transform.RotateY(180)
-
-        transform.Translate(center[0], center[1], center[2])
-
-        transform_filter = vtk.vtkTransformPolyDataFilter()
-        transform_filter.SetTransform(transform)
-        transform_filter.SetInputData(self.stl_actor.GetMapper().GetInput())
-        transform_filter.Update()
-
-        new_mapper = vtk.vtkPolyDataMapper()
-        new_mapper.SetInputData(transform_filter.GetOutput())
-        self.stl_actor.SetMapper(new_mapper)
-
     def handle_set_reset(self):
         sender = self.sender()
         button_text = sender.text()
@@ -2889,9 +3028,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             self.update_all_points_size()
             # Update display after resetting markers
             self.render_to_image()
-
-    def add_axes_widget(self):
-        return None
 
     def update_axes_widget(self, new_x, new_y, new_z):
         if hasattr(self, 'axes_widget') and self.axes_widget is not None:

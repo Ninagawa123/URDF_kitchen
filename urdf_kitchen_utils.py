@@ -4,7 +4,7 @@ Description: Shared utilities for URDF Kitchen tools (Assembler, MeshSourcer, Pa
 
 Author      : Ninagawa123
 Created On  : Dec 28, 2025
-Update.     : Jan  1, 2026
+Update.     : Jan  4, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -23,8 +23,186 @@ pip install pycollada
 import vtk
 from vtk.util.numpy_support import vtk_to_numpy
 import numpy as np
+from PySide6 import QtWidgets, QtGui, QtCore
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtCore import Qt
+
+
+# ============================================================================
+# COLOR DIALOG UTILITIES
+# ============================================================================
+
+class CustomColorDialog(QtWidgets.QColorDialog):
+    """カスタムカラーボックスの選択機能を持つカラーダイアログ
+
+    このクラスは、QColorDialogを拡張して、カスタムカラーボックスに
+    選択枠を表示する機能を追加します。ユーザーがどのカスタムカラー
+    スロットに色を保存するかを視覚的に確認できます。
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.selected_custom_color_index = 0  # 選択されたカスタムカラーのインデックス
+        self.custom_color_well_array = None  # カスタムカラーのQWellArray
+        self._setup_done = False  # セットアップ完了フラグ
+
+    def showEvent(self, event):
+        """ダイアログが表示されたときにカスタムカラーボックスをセットアップ"""
+        super().showEvent(event)
+        if not self._setup_done:
+            # ダイアログが完全に表示された後にセットアップ
+            QtCore.QTimer.singleShot(300, self._setup_custom_color_boxes)
+
+    def _setup_custom_color_boxes(self):
+        """カスタムカラーのQWellArrayを見つけてイベントフィルタを設定"""
+        def find_custom_well_array(widget, depth=0):
+            """再帰的にカスタムカラーのQWellArrayを探す"""
+            class_name = widget.metaObject().className()
+
+            # QtPrivate::QWellArrayで、サイズが224x48のものがカスタムカラー
+            if class_name == 'QtPrivate::QWellArray':
+                size = widget.size()
+                if size.height() == 48:  # カスタムカラーの高さは48
+                    self.custom_color_well_array = widget
+                    # イベントフィルタをインストール
+                    widget.installEventFilter(self)
+                    return True
+
+            # 子ウィジェットも探索
+            for child in widget.children():
+                if isinstance(child, QtWidgets.QWidget):
+                    if find_custom_well_array(child, depth + 1):
+                        return True
+            return False
+
+        if find_custom_well_array(self):
+            self._setup_done = True
+            # 初期状態で最初のセルに選択枠を表示
+            self._draw_selection_border()
+            # "Add to Custom Colors"ボタンを見つけてオーバーライド
+            self._setup_add_button()
+        else:
+            # 見つからない場合、もう一度遅延して試す
+            if not self._setup_done:
+                QtCore.QTimer.singleShot(500, self._setup_custom_color_boxes)
+
+    def _setup_add_button(self):
+        """Add to Custom Colorsボタンを見つけてクリックハンドラをオーバーライド"""
+        # QPushButtonを全て探して、適切なボタンを見つける
+        buttons = self.findChildren(QtWidgets.QPushButton)
+        for button in buttons:
+            # ボタンのテキストや位置でAdd to Custom Colorsボタンを特定
+            # 通常、カスタムカラーのQWellArrayの下にあるボタン
+            if button.text() or True:  # テキストの有無に関わらず全ボタンをチェック
+                # ボタンの位置がカスタムカラーQWellArrayの近くかチェック
+                if self.custom_color_well_array:
+                    well_array_geo = self.custom_color_well_array.geometry()
+                    button_geo = button.geometry()
+                    # カスタムカラーの下にあるボタン（Y座標が近い）
+                    if abs(button_geo.y() - (well_array_geo.y() + well_array_geo.height())) < 50:
+                        if button_geo.width() > 100:  # 幅が広いボタン
+                            # クリック時の処理をオーバーライド
+                            button.clicked.disconnect()
+                            button.clicked.connect(self._add_custom_color)
+                            self._add_button = button
+                            break
+
+    def eventFilter(self, obj, event):
+        """カスタムカラーQWellArrayのクリックイベントを監視"""
+        if obj == self.custom_color_well_array:
+            if event.type() == QtCore.QEvent.MouseButtonPress:
+                # クリック位置からセルのインデックスを計算
+                pos = event.position().toPoint()
+                # QWellArrayは通常8列x2行（16色）のグリッド
+                # ウィジェットの実際のサイズを取得
+                width = self.custom_color_well_array.width()
+                height = self.custom_color_well_array.height()
+
+                # セルサイズを計算（境界線を考慮）
+                cell_width = width / 8.0
+                cell_height = height / 2.0
+
+                col = int(pos.x() / cell_width)
+                row = int(pos.y() / cell_height)
+
+                # 範囲チェック
+                col = max(0, min(7, col))
+                row = max(0, min(1, row))
+
+                # インデックスを計算
+                # Qtのカスタムカラーは列優先順序（column-major）で格納されている
+                # index = col * rows + row (rows = 2)
+                index = col * 2 + row
+                self.selected_custom_color_index = index
+                # 選択枠を再描画
+                self._draw_selection_border()
+            elif event.type() == QtCore.QEvent.Paint:
+                # ペイントイベントの後に選択枠を描画
+                QtCore.QTimer.singleShot(0, self._draw_selection_border)
+
+        return super().eventFilter(obj, event)
+
+    def _add_custom_color(self):
+        """現在の色を選択中のカスタムカラースロットに追加"""
+        current_color = self.currentColor()
+        # 選択中のインデックスにカラーを設定
+        QtWidgets.QColorDialog.setCustomColor(self.selected_custom_color_index, current_color)
+        # QWellArrayを強制的に更新
+        if self.custom_color_well_array:
+            self.custom_color_well_array.update()
+            self.custom_color_well_array.repaint()
+        # 選択インデックスは変更しない
+
+    def _draw_selection_border(self):
+        """選択されたカスタムカラーセルに枠を描画"""
+        if not self.custom_color_well_array:
+            return
+
+        # QWellArrayのサイズを取得
+        width = self.custom_color_well_array.width()
+        height = self.custom_color_well_array.height()
+
+        # セルサイズを計算（float型で正確に）
+        cell_width = width / 8.0
+        cell_height = height / 2.0
+
+        # 選択されたセルの位置を計算
+        # Qtのカスタムカラーは列優先順序（column-major）で格納
+        # index = col * 2 + row なので逆算すると:
+        col = self.selected_custom_color_index // 2
+        row = self.selected_custom_color_index % 2
+
+        # QWellArrayの各セルには境界線がある
+        # 枠をセルの内側に配置
+        BORDER_WIDTH = 2  # セルの境界線の幅
+
+        # 位置を計算（境界線の内側に配置）
+        x = int(col * cell_width) + BORDER_WIDTH
+        y = int(row * cell_height) + BORDER_WIDTH
+
+        # サイズを計算（境界線を除いた領域）
+        next_x = int((col + 1) * cell_width)
+        next_y = int((row + 1) * cell_height)
+        frame_width = next_x - x - BORDER_WIDTH
+        frame_height = next_y - y - BORDER_WIDTH
+
+        # QWellArrayに直接描画するためにペイントイベントをオーバーライド
+        # 代わりに、子ウィジェットとして枠を表示するQFrameを作成
+        if not hasattr(self, '_selection_frame'):
+            self._selection_frame = QtWidgets.QFrame(self.custom_color_well_array)
+            self._selection_frame.setStyleSheet("border: 3px solid #4080FF; background: transparent;")
+            self._selection_frame.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
+
+        # 選択枠の位置とサイズを更新
+        self._selection_frame.setGeometry(x, y, frame_width, frame_height)
+        self._selection_frame.show()
+        self._selection_frame.raise_()
+
+    def setCustomColor(self, index, color):
+        """カスタムカラーを設定（選択中のインデックスを使用）"""
+        # 選択中のインデックスにカラーを設定
+        super().setCustomColor(self.selected_custom_color_index, color)
+        # 選択インデックスは変更しない（連打しても同じ場所に設定される）
 
 
 # ============================================================================
@@ -1041,6 +1219,459 @@ def calculate_inertia_tetrahedral(poly_data, density, center_of_mass):
 
 
 # ============================================================================
+# PARALLEL AXIS THEOREM (平行軸の定理)
+# ============================================================================
+
+def parallel_axis_transform(inertia_at_com, mass, displacement):
+    """
+    平行軸の定理を使用して、重心における慣性テンソルを任意の点における慣性テンソルに変換する。
+
+    Formula:
+        I_P = I_COM + m * (||d||² * E - d ⊗ d)
+
+    Args:
+        inertia_at_com: numpy.ndarray - 重心における3x3慣性テンソル
+        mass: float - 質量 (kg)
+        displacement: array-like - 重心から目標点へのベクトル [dx, dy, dz] (m)
+
+    Returns:
+        numpy.ndarray: 目標点における3x3慣性テンソル
+
+    Example:
+        >>> I_com = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
+        >>> mass = 1.0
+        >>> d = [1.0, 0.0, 0.0]  # X軸方向に1m移動
+        >>> I_p = parallel_axis_transform(I_com, mass, d)
+    """
+    import numpy as np
+
+    d = np.array(displacement, dtype=float)
+    d_squared = np.dot(d, d)  # ||d||²
+
+    # 単位行列
+    E = np.eye(3)
+
+    # d ⊗ d (外積、dyadic product)
+    d_outer_d = np.outer(d, d)
+
+    # Steiner項: m * (||d||² * E - d ⊗ d)
+    steiner_term = mass * (d_squared * E - d_outer_d)
+
+    # 変換
+    inertia_at_point = inertia_at_com + steiner_term
+
+    return inertia_at_point
+
+
+def inverse_parallel_axis_transform(inertia_at_point, mass, displacement):
+    """
+    平行軸の定理の逆変換：任意の点における慣性テンソルを重心における慣性テンソルに変換する。
+
+    Formula:
+        I_COM = I_P - m * (||d||² * E - d ⊗ d)
+
+    Args:
+        inertia_at_point: numpy.ndarray - 任意の点における3x3慣性テンソル
+        mass: float - 質量 (kg)
+        displacement: array-like - 重心から目標点へのベクトル [dx, dy, dz] (m)
+
+    Returns:
+        numpy.ndarray: 重心における3x3慣性テンソル
+
+    Example:
+        >>> I_p = np.array([[2, 0, 0], [0, 2, 0], [0, 0, 1]])
+        >>> mass = 1.0
+        >>> d = [1.0, 0.0, 0.0]
+        >>> I_com = inverse_parallel_axis_transform(I_p, mass, d)
+    """
+    import numpy as np
+
+    d = np.array(displacement, dtype=float)
+    d_squared = np.dot(d, d)
+
+    E = np.eye(3)
+    d_outer_d = np.outer(d, d)
+
+    # Steiner項を引く
+    steiner_term = mass * (d_squared * E - d_outer_d)
+    inertia_at_com = inertia_at_point - steiner_term
+
+    return inertia_at_com
+
+
+# ============================================================================
+# MIRRORING UTILITIES (ミラーリング変換)
+# ============================================================================
+
+def mirror_inertia_tensor_y_axis(inertia_tensor, center_of_mass):
+    """
+    Y軸ミラーリングに対応する慣性テンソルとCOMの変換（テンソル変換のみ）。
+
+    Y軸ミラー変換:
+        R = diag(1, -1, 1)
+        I' = R @ I @ R.T
+        COM' = [x, -y, z]
+
+    符号変化:
+        - ixy と iyz の符号が反転
+        - 対角成分 (ixx, iyy, izz) は不変
+        - ixz は不変
+
+    Args:
+        inertia_tensor: numpy.ndarray - 3x3慣性テンソル
+        center_of_mass: array-like - 重心座標 [x, y, z]
+
+    Returns:
+        tuple: (mirrored_inertia_tensor, mirrored_com)
+            - mirrored_inertia_tensor: 3x3 numpy.ndarray
+            - mirrored_com: list [x, -y, z]
+
+    Example:
+        >>> I = np.array([[1, 0.1, 0.2], [0.1, 2, 0.3], [0.2, 0.3, 3]])
+        >>> com = [1.0, 2.0, 3.0]
+        >>> I_mirror, com_mirror = mirror_inertia_tensor_y_axis(I, com)
+        >>> # I_mirror の ixy と iyz が符号反転
+        >>> # com_mirror = [1.0, -2.0, 3.0]
+    """
+    import numpy as np
+
+    # ミラー変換行列 (Y軸反転)
+    R = np.diag([1.0, -1.0, 1.0])
+
+    # テンソル変換: I' = R @ I @ R.T
+    mirrored_tensor = R @ inertia_tensor @ R.T
+
+    # COM変換: [x, y, z] → [x, -y, z]
+    com = np.array(center_of_mass, dtype=float)
+    mirrored_com = [com[0], -com[1], com[2]]
+
+    return mirrored_tensor, mirrored_com
+
+
+# ============================================================================
+# UNIFIED INERTIA CALCULATION WITH TRIMESH
+# ============================================================================
+
+def calculate_inertia_with_trimesh(
+    mesh_file_path,
+    mass=None,
+    density=None,
+    reference_point=None,
+    auto_repair=True,
+    unit_scale=1.0,
+    # 後方互換性のため（非推奨）
+    center_of_mass=None,
+    use_trimesh_com=False
+):
+    """
+    trimeshライブラリを使用した統合的な慣性テンソル計算関数（改訂版）。
+
+    物理的に正確な慣性テンソル計算を提供します：
+    - 平行軸の定理を使用して任意の原点での慣性テンソルを計算
+    - Sceneの場合はunit_scale未指定時に警告（単位系の曖昧さを注意喚起）
+    - watertightでないメッシュでは物理量を捏造しない
+
+    処理フロー:
+    1. trimeshでメッシュファイルを読み込み（Sceneはunit_scale=1.0をデフォルト）
+    2. 必要に応じてメッシュを自動修復
+    3. trimeshで体積と重心を計算（物理量の基準）
+    4. VTKで慣性テンソルを計算（四面体分解法）
+    5. 平行軸の定理で任意の原点に変換
+
+    Args:
+        mesh_file_path: str - メッシュファイルのパス (.stl, .obj, .dae)
+        mass: float or None - 質量 (kg)。Noneの場合はdensityから計算
+        density: float or None - 密度 (kg/m³)。massとdensityの両方がNoneの場合はエラー
+        reference_point: array-like or None - 慣性テンソルの原点 [x, y, z] (m)
+            Noneの場合は重心が原点
+        auto_repair: bool - メッシュの自動修復を行うかどうか (default: True)
+        unit_scale: float - Sceneの場合の単位スケール (例: 0.001でmmをmに変換)
+            デフォルト: 1.0 (スケーリングなし)。Sceneファイルで未指定の場合は警告を表示。
+        center_of_mass: array-like or None - **非推奨** reference_pointを使用してください
+        use_trimesh_com: bool - **非推奨** reference_point=Noneで同じ動作
+
+    Returns:
+        dict: {
+            'success': bool - 計算成功フラグ
+            'inertia_tensor': numpy.ndarray - 3x3慣性テンソル行列（reference_point周り）
+            'inertia_at_com': numpy.ndarray - 3x3慣性テンソル行列（重心周り）
+            'volume': float - 体積 (m³)
+            'mass': float - 質量 (kg)
+            'density': float - 密度 (kg/m³)
+            'center_of_mass': list - 重心座標 [x, y, z] (m)
+            'reference_point': list - 慣性テンソルの原点 [x, y, z] (m)
+            'is_watertight': bool - メッシュが閉じているか
+            'repair_performed': bool - 修復が実行されたか
+            'is_scene': bool - Sceneとして読み込まれたか
+            'unit_scale_used': float or None - 使用された単位スケール
+            'error_message': str or None - エラーメッセージ
+        }
+
+    Raises:
+        ValueError: Sceneの場合にunit_scaleが指定されていない
+        ValueError: massとdensityの両方がNone
+        ValueError: watertightでないメッシュ（auto_repair失敗後）
+
+    Example:
+        >>> # 基本的な使用例（重心周りの慣性テンソル）
+        >>> result = calculate_inertia_with_trimesh('part.stl', mass=1.0)
+
+        >>> # 任意の原点周りの慣性テンソル
+        >>> result = calculate_inertia_with_trimesh(
+        ...     'part.stl', mass=1.0, reference_point=[0, 0, 0])
+
+        >>> # Sceneの場合（unit_scale必須）
+        >>> result = calculate_inertia_with_trimesh(
+        ...     'assembly.dae', density=1000.0, unit_scale=0.001)  # mm→m
+
+        >>> # 後方互換性（非推奨）
+        >>> result = calculate_inertia_with_trimesh(
+        ...     'part.stl', mass=1.0, center_of_mass=[0, 0, 0])  # reference_pointを推奨
+    """
+    import os
+    import numpy as np
+
+    # 後方互換性の処理
+    if center_of_mass is not None:
+        if reference_point is None:
+            reference_point = center_of_mass
+            print("⚠ Warning: 'center_of_mass' parameter is deprecated. Use 'reference_point' instead.")
+        else:
+            print("⚠ Warning: Both 'center_of_mass' and 'reference_point' specified. Using 'reference_point'.")
+
+    if use_trimesh_com and reference_point is not None:
+        print("⚠ Warning: 'use_trimesh_com=True' is ignored when 'reference_point' is specified.")
+
+    # 結果を格納する辞書
+    result = {
+        'success': False,
+        'inertia_tensor': None,
+        'inertia_at_com': None,
+        'volume': 0.0,
+        'mass': 0.0,
+        'density': 0.0,
+        'center_of_mass': [0.0, 0.0, 0.0],
+        'trimesh_com': [0.0, 0.0, 0.0],  # 後方互換性
+        'reference_point': [0.0, 0.0, 0.0],
+        'is_watertight': False,
+        'repair_performed': False,
+        'is_scene': False,
+        'unit_scale_used': None,
+        'error_message': None
+    }
+
+    try:
+        # trimeshのインポート確認
+        try:
+            import trimesh
+        except ImportError:
+            result['error_message'] = "trimesh library not available. Install with: pip install trimesh"
+            return result
+
+        # 入力検証
+        if not os.path.exists(mesh_file_path):
+            result['error_message'] = f"Mesh file not found: {mesh_file_path}"
+            return result
+
+        if mass is None and density is None:
+            result['error_message'] = "Either mass or density must be provided"
+            return result
+
+        print(f"\n{'='*60}")
+        print(f"INERTIA CALCULATION WITH TRIMESH")
+        print(f"{'='*60}")
+        print(f"File: {mesh_file_path}")
+        print(f"Mass: {mass}")
+        print(f"Density: {density}")
+        print(f"Reference point: {reference_point}")
+        print(f"Auto-repair: {auto_repair}")
+        print(f"Unit scale: {unit_scale}")
+
+        # Step 1: メッシュ読み込み（Scene処理を厳格化）
+        loaded_mesh = trimesh.load(mesh_file_path)
+
+        # Scene処理（unit_scale確認）
+        if isinstance(loaded_mesh, trimesh.Scene):
+            result['is_scene'] = True
+            print(f"\n⚠ Loaded as Scene (contains multiple meshes or materials)")
+
+            # unit_scaleがデフォルト値の場合は警告
+            if unit_scale == 1.0:
+                print(f"  ⚠ WARNING: unit_scale not specified (using default 1.0)")
+                print(f"     Scene files may have ambiguous units.")
+                print(f"     Please verify units are correct, or specify unit_scale explicitly.")
+                print(f"     Example: unit_scale=0.001 for mm→m conversion")
+
+            print(f"  Unit scale: {unit_scale}")
+            result['unit_scale_used'] = unit_scale
+
+            # Sceneをメッシュに結合
+            mesh = loaded_mesh.dump(concatenate=True)
+
+            # スケール適用（1.0でも明示的に適用）
+            mesh.apply_scale(unit_scale)
+            if unit_scale != 1.0:
+                print(f"  ✓ Applied unit scale: {unit_scale}")
+            else:
+                print(f"  No scaling applied (unit_scale=1.0)")
+        else:
+            # 単一メッシュ
+            mesh = loaded_mesh
+            print(f"\n✓ Loaded as single Mesh")
+
+        print(f"\nMesh properties:")
+        print(f"  Vertices: {len(mesh.vertices)}")
+        print(f"  Faces: {len(mesh.faces)}")
+        print(f"  Volume (trimesh): {mesh.volume:.9f} m³")
+        print(f"  Is watertight: {mesh.is_watertight}")
+
+        result['is_watertight'] = mesh.is_watertight
+
+        # Step 2: 自動修復
+        if auto_repair and not mesh.is_watertight:
+            print(f"\n{'='*60}")
+            print(f"MESH REPAIR")
+            print(f"{'='*60}")
+            result['repair_performed'] = True
+
+            try:
+                if hasattr(mesh, 'fix_normals'):
+                    print("  ✓ Fixing normals...")
+                    mesh.fix_normals()
+
+                if hasattr(mesh, 'remove_duplicate_faces'):
+                    print("  ✓ Removing duplicate faces...")
+                    mesh.remove_duplicate_faces()
+
+                if hasattr(mesh, 'remove_degenerate_faces'):
+                    print("  ✓ Removing degenerate faces...")
+                    mesh.remove_degenerate_faces()
+
+                if hasattr(mesh, 'fill_holes'):
+                    print("  ✓ Filling holes...")
+                    mesh.fill_holes()
+
+                result['is_watertight'] = mesh.is_watertight
+                print(f"\nRepair result:")
+                print(f"  Vertices: {len(mesh.vertices)}")
+                print(f"  Faces: {len(mesh.faces)}")
+                print(f"  Is watertight: {mesh.is_watertight}")
+
+                if mesh.is_watertight:
+                    print("  ✓ Mesh successfully repaired!")
+                else:
+                    print("  ⚠ Mesh still not watertight after repair")
+
+            except Exception as repair_error:
+                print(f"  ✗ Mesh repair failed: {str(repair_error)}")
+
+        # watertightでない場合は警告（計算は続行）
+        if not mesh.is_watertight:
+            print(f"\n⚠ WARNING: Mesh is not watertight!")
+            print(f"  Physical properties may not be accurate.")
+
+        # Step 3: VTKポリデータに変換して体積計算
+        # trimeshメッシュオブジェクトを直接VTKに変換（unit_scaleが反映される）
+        poly_data, vtk_volume = trimesh_to_vtk_polydata(mesh)
+
+        print(f"\n{'='*60}")
+        print(f"VOLUME CALCULATION")
+        print(f"{'='*60}")
+        print(f"  Trimesh volume: {mesh.volume:.9f} m³")
+        print(f"  VTK volume: {vtk_volume:.9f} m³")
+
+        # VTK体積を使用（より信頼性が高い）
+        result['volume'] = vtk_volume
+
+        # Step 4: trimeshで重心を計算
+        trimesh_com = mesh.center_mass
+        print(f"\nCenter of mass (trimesh): [{trimesh_com[0]:.6f}, {trimesh_com[1]:.6f}, {trimesh_com[2]:.6f}]")
+
+        result['center_of_mass'] = list(trimesh_com)
+        result['trimesh_com'] = list(trimesh_com)  # 後方互換性
+
+        # Step 5: 質量と密度の計算
+        if mass is None:
+            mass = vtk_volume * density
+            print(f"\nMass calculated from density: {mass:.6f} kg")
+        elif density is None:
+            density = mass / vtk_volume if vtk_volume > 0 else 0
+            print(f"\nDensity calculated from mass: {density:.6f} kg/m³")
+
+        result['mass'] = mass
+        result['density'] = density
+
+        # Step 6: 重心周りの慣性テンソルを計算（VTK四面体分解法）
+        print(f"\n{'='*60}")
+        print(f"INERTIA TENSOR CALCULATION (at COM)")
+        print(f"{'='*60}")
+        print(f"  Method: Tetrahedral decomposition (VTK)")
+        print(f"  Mass: {mass:.6f} kg")
+        print(f"  Density: {density:.6f} kg/m³")
+
+        inertia_at_com, volume_integral = calculate_inertia_tetrahedral(
+            poly_data, density, list(trimesh_com)
+        )
+
+        # 体積の検証
+        volume_ratio = volume_integral / vtk_volume if vtk_volume > 0 else 0
+        print(f"\nVolume verification:")
+        print(f"  Volume from integration: {volume_integral:.9f} m³")
+        print(f"  VTK volume: {vtk_volume:.9f} m³")
+        print(f"  Ratio: {volume_ratio:.4f}")
+
+        if abs(volume_ratio - 1.0) > 0.01:
+            print(f"  ⚠ Volume mismatch detected (ratio = {volume_ratio:.4f})")
+
+        result['inertia_at_com'] = inertia_at_com
+
+        print(f"\nInertia tensor (at COM):")
+        print(inertia_at_com)
+
+        # Step 7: reference_pointが指定されている場合は平行軸の定理で変換
+        if reference_point is not None:
+            ref_pt = np.array(reference_point, dtype=float)
+            displacement = ref_pt - np.array(trimesh_com)
+
+            print(f"\n{'='*60}")
+            print(f"PARALLEL AXIS TRANSFORM")
+            print(f"{'='*60}")
+            print(f"  Reference point: [{ref_pt[0]:.6f}, {ref_pt[1]:.6f}, {ref_pt[2]:.6f}]")
+            print(f"  Center of mass:  [{trimesh_com[0]:.6f}, {trimesh_com[1]:.6f}, {trimesh_com[2]:.6f}]")
+            print(f"  Displacement:    [{displacement[0]:.6f}, {displacement[1]:.6f}, {displacement[2]:.6f}]")
+
+            inertia_at_ref = parallel_axis_transform(inertia_at_com, mass, displacement)
+
+            result['inertia_tensor'] = inertia_at_ref
+            result['reference_point'] = list(ref_pt)
+
+            print(f"\nInertia tensor (at reference point):")
+            print(inertia_at_ref)
+        else:
+            # reference_pointが指定されていない場合は重心周りのテンソルを使用
+            result['inertia_tensor'] = inertia_at_com
+            result['reference_point'] = list(trimesh_com)
+
+        result['success'] = True
+
+        print(f"\n{'='*60}")
+        print(f"✓ CALCULATION COMPLETED SUCCESSFULLY")
+        print(f"{'='*60}")
+
+        return result
+
+    except Exception as e:
+        result['error_message'] = str(e)
+        print(f"\n{'='*60}")
+        print(f"✗ ERROR")
+        print(f"{'='*60}")
+        print(f"{str(e)}")
+        import traceback
+        traceback.print_exc()
+        return result
+
+
+# ============================================================================
 # MESH FILE I/O UTILITIES
 # ============================================================================
 
@@ -1066,6 +1697,58 @@ def get_mesh_file_filter(trimesh_available=True):
         return "3D Model Files (*.stl *.obj *.dae);;STL Files (*.stl);;OBJ Files (*.obj);;COLLADA Files (*.dae);;All Files (*)"
     else:
         return "3D Model Files (*.stl *.obj);;STL Files (*.stl);;OBJ Files (*.obj);;All Files (*)"
+
+
+def trimesh_to_vtk_polydata(trimesh_mesh):
+    """
+    Convert trimesh mesh object to VTK PolyData.
+
+    This function converts a trimesh mesh (after Scene processing and unit_scale)
+    directly to VTK PolyData, preserving all transformations.
+
+    Args:
+        trimesh_mesh: trimesh.Trimesh - Trimesh mesh object
+
+    Returns:
+        tuple: (poly_data, volume)
+            - poly_data: vtkPolyData - VTK mesh
+            - volume: float - Mesh volume (m^3)
+
+    Example:
+        >>> import trimesh
+        >>> mesh = trimesh.load('model.stl')
+        >>> mesh.apply_scale(0.001)  # mm to m
+        >>> poly_data, volume = trimesh_to_vtk_polydata(mesh)
+    """
+    import vtk
+    import numpy as np
+
+    # Create VTK points
+    vtk_points = vtk.vtkPoints()
+    for vertex in trimesh_mesh.vertices:
+        vtk_points.InsertNextPoint(vertex)
+
+    # Create VTK cells (triangles)
+    vtk_cells = vtk.vtkCellArray()
+    for face in trimesh_mesh.faces:
+        triangle = vtk.vtkTriangle()
+        triangle.GetPointIds().SetId(0, int(face[0]))
+        triangle.GetPointIds().SetId(1, int(face[1]))
+        triangle.GetPointIds().SetId(2, int(face[2]))
+        vtk_cells.InsertNextCell(triangle)
+
+    # Create PolyData
+    poly_data = vtk.vtkPolyData()
+    poly_data.SetPoints(vtk_points)
+    poly_data.SetPolys(vtk_cells)
+
+    # Calculate volume
+    mass_properties = vtk.vtkMassProperties()
+    mass_properties.SetInputData(poly_data)
+    mass_properties.Update()
+    volume = mass_properties.GetVolume()
+
+    return poly_data, volume
 
 
 def load_mesh_to_polydata(file_path):
@@ -1671,6 +2354,82 @@ def mirror_physical_properties_y_axis(inertia_dict, inertial_origin_dict):
     return mirrored_inertia, mirrored_origin
 
 
+def mirror_inertia_tensor_left_right(inertia_dict):
+    """
+    左右反転（Y軸ミラーリング）のための慣性テンソルの符号反転
+    
+    左右対称なパーツ（l_* と r_*）を作成する際に使用します。
+    Y軸でミラーリングする場合、以下の符号反転を行います：
+    - ixy: 符号反転（-1倍）
+    - iyz: 符号反転（-1倍）
+    - ixx, iyy, izz, ixz: 変化なし
+    
+    Args:
+        inertia_dict: dict - 慣性テンソルの辞書
+            {'ixx': float, 'iyy': float, 'izz': float,
+             'ixy': float, 'ixz': float, 'iyz': float}
+    
+    Returns:
+        dict: 左右反転後の慣性テンソル辞書（新しい辞書を返す）
+    
+    Example:
+        >>> inertia = {'ixx': 0.001, 'iyy': 0.002, 'izz': 0.003,
+        ...            'ixy': 0.0001, 'ixz': 0.0002, 'iyz': 0.0003}
+        >>> mirrored = mirror_inertia_tensor_left_right(inertia)
+        >>> print(mirrored['ixy'])  # -0.0001
+        >>> print(mirrored['iyz'])  # -0.0003
+        >>> print(mirrored['ixx'])  # 0.001 (変化なし)
+    """
+    if inertia_dict is None or not isinstance(inertia_dict, dict):
+        return None
+    
+    # 新しい辞書を作成（元の辞書を変更しない）
+    mirrored_inertia = inertia_dict.copy()
+    
+    # Y軸ミラーリング: ixyとiyzの符号を反転
+    if 'ixy' in mirrored_inertia:
+        mirrored_inertia['ixy'] = -inertia_dict['ixy']
+    if 'iyz' in mirrored_inertia:
+        mirrored_inertia['iyz'] = -inertia_dict['iyz']
+    # ixx, iyy, izz, ixzはそのまま
+    
+    return mirrored_inertia
+
+
+def mirror_center_of_mass_left_right(center_of_mass):
+    """
+    左右反転（Y軸ミラーリング）のためのCenter of MassのY座標符号反転
+    
+    左右対称なパーツ（l_* と r_*）を作成する際に使用します。
+    Y軸でミラーリングする場合、Y座標のみを符号反転します：
+    [x, y, z] → [x, -y, z]
+    
+    Args:
+        center_of_mass: list or array-like - Center of Mass座標 [x, y, z]
+    
+    Returns:
+        list: 左右反転後のCenter of Mass座標 [x, -y, z]（新しいリストを返す）
+    
+    Example:
+        >>> com = [0.1, 0.2, 0.3]
+        >>> mirrored_com = mirror_center_of_mass_left_right(com)
+        >>> print(mirrored_com)  # [0.1, -0.2, 0.3]
+    """
+    if center_of_mass is None:
+        return None
+    
+    # リストまたは配列をリストに変換
+    if hasattr(center_of_mass, '__iter__') and not isinstance(center_of_mass, str):
+        com_list = list(center_of_mass)
+        if len(com_list) >= 3:
+            # 新しいリストを作成（元のリストを変更しない）
+            return [com_list[0], -com_list[1], com_list[2]]
+        else:
+            return com_list.copy()
+    else:
+        return center_of_mass
+
+
 def calculate_mirrored_physical_properties_from_mesh(mesh_file_path, mass, density=1.0):
     """
     メッシュファイルからY軸ミラーリングされた物理プロパティを計算
@@ -2151,13 +2910,12 @@ class KitchenColorPicker:
 
     def show_color_picker(self):
         """
-        Show Qt color picker dialog.
+        Show CustomColorDialog with selection border for custom colors.
 
-        Opens a non-native color dialog with the current color selected.
+        Opens a custom color dialog with the current color selected.
         Updates RGBA inputs and triggers callback if a new color is chosen.
         Supports alpha channel if enable_alpha is True.
         """
-        from PySide6.QtWidgets import QColorDialog
         from PySide6.QtGui import QColor
 
         try:
@@ -2168,41 +2926,37 @@ class KitchenColorPicker:
         except (ValueError, IndexError):
             current_qcolor = QColor(255, 255, 255, 255)
 
-        # Configure dialog options
-        options = QColorDialog.DontUseNativeDialog
+        # Use CustomColorDialog instead of standard QColorDialog
+        dialog = CustomColorDialog(current_qcolor, self.parent_widget)
+        dialog.setOption(QtWidgets.QColorDialog.DontUseNativeDialog, True)
         if self.enable_alpha:
-            options |= QColorDialog.ShowAlphaChannel
+            dialog.setOption(QtWidgets.QColorDialog.ShowAlphaChannel, True)
 
-        # Show color dialog
-        color = QColorDialog.getColor(
-            initial=current_qcolor,
-            parent=self.parent_widget,
-            options=options
-        )
+        if dialog.exec() == QtWidgets.QDialog.Accepted:
+            color = dialog.currentColor()
+            if color.isValid():
+                # Update RGBA inputs
+                new_color = [
+                    color.red() / 255.0,
+                    color.green() / 255.0,
+                    color.blue() / 255.0,
+                    color.alpha() / 255.0
+                ]
 
-        if color.isValid():
-            # Update RGBA inputs
-            new_color = [
-                color.red() / 255.0,
-                color.green() / 255.0,
-                color.blue() / 255.0,
-                color.alpha() / 255.0
-            ]
+                # Update input fields (only RGB if alpha is disabled)
+                num_inputs = 4 if self.enable_alpha else 3
+                for i in range(num_inputs):
+                    self.color_inputs[i].setText(f"{new_color[i]:.3f}")
 
-            # Update input fields (only RGB if alpha is disabled)
-            num_inputs = 4 if self.enable_alpha else 3
-            for i in range(num_inputs):
-                self.color_inputs[i].setText(f"{new_color[i]:.3f}")
+                # Update internal state
+                self.current_color = new_color
 
-            # Update internal state
-            self.current_color = new_color
+                # Update visual sample
+                self._update_color_sample()
 
-            # Update visual sample
-            self._update_color_sample()
-
-            # Trigger callback
-            if self.on_color_changed:
-                self.on_color_changed(self.current_color)
+                # Trigger callback
+                if self.on_color_changed:
+                    self.on_color_changed(self.current_color)
 
     def get_color(self):
         """

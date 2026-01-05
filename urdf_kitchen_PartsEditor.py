@@ -4,7 +4,7 @@ Description: A Python script for configuring connection points of parts for urdf
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan  1, 2026
+Update.     : Jan  4, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -48,7 +48,7 @@ from Qt import QtWidgets, QtCore, QtGui
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QMainWindow, QVBoxLayout, QWidget,
     QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout,
-    QTextEdit, QButtonGroup, QRadioButton, QColorDialog, QDialog, QMessageBox, QFrame
+    QTextEdit, QButtonGroup, QRadioButton, QDialog, QMessageBox, QFrame
 )
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QTextOption, QColor, QPalette
@@ -59,7 +59,8 @@ from urdf_kitchen_utils import (
     OffscreenRenderer, CameraController, AnimatedCameraRotation,
     AdaptiveMarkerSize, create_crosshair_marker, MouseDragState,
     calculate_arrow_key_step, calculate_inertia_tensor,
-    calculate_inertia_tetrahedral, get_mesh_file_filter,
+    calculate_inertia_with_trimesh,
+    get_mesh_file_filter,
     load_mesh_to_polydata, save_polydata_to_mesh,
     setup_signal_handlers, setup_signal_processing_timer, setup_dark_theme,
     VTKViewerBase, KitchenColorPicker
@@ -329,8 +330,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.point_actors = [None] * self.num_points
         self.point_checkboxes = []
         self.point_inputs = []
-        self.point_set_buttons = []
-        self.point_reset_buttons = []
 
         self.com_coords = [0.0, 0.0, 0.0]  # Center of Mass座標
         self.com_sphere_actor = None  # 赤い球（チェックなし時）
@@ -702,6 +701,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
             label = QLabel(label_text)
             input_field = QLineEdit("0.000000")
             setattr(self, f"{prop_name}_input", input_field)
+            
+            # リターンキーで値を適用
+            if prop_name == "volume":
+                input_field.returnPressed.connect(self.apply_volume_value)
+            elif prop_name == "density":
+                input_field.returnPressed.connect(self.apply_density_value)
+            elif prop_name == "mass":
+                input_field.returnPressed.connect(self.apply_mass_value)
 
             grid_layout.addWidget(checkbox, current_row, 0)
             grid_layout.addWidget(label, current_row, 1)
@@ -1207,14 +1214,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             if prop in values:
                 input_field.setText(f"{values[prop]:.12f}")
 
-    def _update_point_visibility(self, index):
-        """Override base class to add checkbox-based visibility control"""
-        if self.point_checkboxes[index].isChecked():
-            self.point_actors[index].VisibilityOn()
-        else:
-            self.point_actors[index].VisibilityOff()
-            self.renderer.RemoveActor(self.point_actors[index])
-
     def update_all_points_size(self, obj=None, event=None):
         """ポイントのサイズを更新（可視性の厳密な管理を追加）"""
         for index, actor in enumerate(self.point_actors):
@@ -1672,28 +1671,18 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
     def calculate_inertia_tensor(self):
         """
-        三角形メッシュの慣性テンソルを計算する（四面体分解法を使用）。
-        重心位置を考慮し、正確なイナーシャを算出する。
+        三角形メッシュの慣性テンソルを計算する（統合関数を使用）。
 
-        This implementation uses the tetrahedral decomposition method described in:
-        "Fast and Accurate Computation of Polyhedral Mass Properties" by Brian Mirtich (1996)
+        urdf_kitchen_utils.calculate_inertia_with_trimesh() を使用して、
+        trimeshとVTKのハイブリッド方式で高精度に計算します。
 
         Returns:
             numpy.ndarray: 3x3の慣性テンソル行列
             None: エラーが発生した場合
         """
-        if not hasattr(self, 'stl_actor') or not self.stl_actor:
-            print("No 3D model is loaded.")
+        if not hasattr(self, 'stl_file_path') or not self.stl_file_path:
+            print("No 3D model file is loaded.")
             return None
-
-        # ポリデータを取得
-        poly_data = self.stl_actor.GetMapper().GetInput()
-
-        # 体積と質量を取得して表示
-        mass_properties = vtk.vtkMassProperties()
-        mass_properties.SetInputData(poly_data)
-        mass_properties.Update()
-        total_volume = mass_properties.GetVolume()
 
         # Get density (try from input field, fall back to default)
         try:
@@ -1702,31 +1691,38 @@ class MainWindow(VTKViewerBase, QMainWindow):
             print("Warning: Could not read density, using 1.0")
             density = 1.0
 
-        mass = total_volume * density
-        print(f"Volume: {total_volume:.6f}, Density: {density:.6f}, Mass: {mass:.6f}")
+        # UIから重心を取得（チェックボックスの状態により決定）
+        center_of_mass = None
+        if hasattr(self, 'com_checkbox') and self.com_checkbox.isChecked():
+            # COMがチェックされている場合は、UIの値を使用
+            center_of_mass = self.get_center_of_mass()
+            if center_of_mass is None:
+                print("Error getting center of mass from UI")
+                return None
 
-        # UIまたは計算から重心を取得
-        center_of_mass = self.get_center_of_mass()
-        if center_of_mass is None:
-            print("Error getting center of mass")
-            return None
-
-        com = np.array(center_of_mass)
-        print(f"Center of Mass: [{com[0]:.6f}, {com[1]:.6f}, {com[2]:.6f}]")
-
-        # Use shared tetrahedral decomposition method from urdf_kitchen_utils
-        inertia_tensor, volume_integral = calculate_inertia_tetrahedral(
-            poly_data, density, center_of_mass
+        # 統合関数を使用して慣性テンソルを計算
+        result = calculate_inertia_with_trimesh(
+            mesh_file_path=self.stl_file_path,
+            mass=None,  # densityから計算
+            center_of_mass=center_of_mass,
+            density=density,
+            auto_repair=True
         )
 
-        # Verify volume calculation
-        print(f"Volume from integration: {volume_integral:.6f} (expected: {total_volume:.6f})")
-        volume_ratio = volume_integral / total_volume if total_volume > 0 else 0
-        if abs(volume_ratio - 1.0) > 0.01:
-            print(f"Warning: Volume mismatch! Ratio = {volume_ratio:.4f}")
-            print("This may indicate non-closed mesh or incorrect orientation")
+        # エラーチェック
+        if not result['success']:
+            print(f"Error calculating inertia: {result['error_message']}")
+            return None
 
-        # Display results
+        # 結果を表示
+        print(f"Volume: {result['volume']:.6f}, Density: {density:.6f}, Mass: {result['mass']:.6f}")
+        print(f"Center of Mass (used): [{result['center_of_mass'][0]:.6f}, {result['center_of_mass'][1]:.6f}, {result['center_of_mass'][2]:.6f}]")
+        print(f"Center of Mass (trimesh): [{result['trimesh_com'][0]:.6f}, {result['trimesh_com'][1]:.6f}, {result['trimesh_com'][2]:.6f}]")
+        print(f"Watertight: {'Yes' if result['is_watertight'] else 'No'}")
+        if result['repair_performed']:
+            print("Mesh repair was performed")
+
+        inertia_tensor = result['inertia_tensor']
         print("\nCalculated Inertia Tensor (about Center of Mass):")
         print(inertia_tensor)
 
@@ -1988,25 +1984,12 @@ class MainWindow(VTKViewerBase, QMainWindow):
         mass = volume * density  # 体積 × 密度 = 質量
         self.mass_input.setText(f"{mass:.12f}")
 
-        # イナーシャを計算（簡略化：立方体と仮定）
-        #side_length = np.cbrt(volume)
-        #inertia = (1/6) * mass * side_length**2
-        #self.inertia_input.setText(f"{inertia:.12f}")
-
-        # 慣性テンソルを計算
-        inertia_tensor = self.calculate_inertia_tensor()
-
         # カメラのフィッティングと描画更新
         self.fit_camera_to_model()
         self.update_all_points()
 
-        # プロパティを更新
+        # プロパティを更新（慣性テンソルと重心を計算）
         self.calculate_and_update_properties()
-
-        # 重心を計算して表示
-        center_of_mass = self.calculate_center_of_mass()
-        # 重心を計算して表示
-        self.calculate_center_of_mass()
         
         # 境界ボックスを出力
         print(f"STL model bounding box: [{self.model_bounds[0]:.6f}, {self.model_bounds[1]:.6f}], [{self.model_bounds[2]:.6f}, {self.model_bounds[3]:.6f}], [{self.model_bounds[4]:.6f}, {self.model_bounds[5]:.6f}]")
@@ -2290,22 +2273,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
         else:
             return 5  # デフォルトの長さ
 
-    def set_point(self, index):
-        try:
-            x = float(self.point_inputs[index][0].text())
-            y = float(self.point_inputs[index][1].text())
-            z = float(self.point_inputs[index][2].text())
-            self.point_coords[index] = [x, y, z]
-
-            if self.point_checkboxes[index].isChecked():
-                self.show_point(index)
-            else:
-                self.update_point_display(index)
-
-            print(f"Point {index+1} set to: ({x}, {y}, {z})")
-        except ValueError:
-            print(f"Invalid input for Point {index+1}. Please enter valid numbers for coordinates.")
-
     def move_com_screen(self, direction, step):
         """Center of Massをスクリーン座標系で移動"""
         move_vector = direction * step
@@ -2370,10 +2337,44 @@ class MainWindow(VTKViewerBase, QMainWindow):
         except (ValueError, IndexError) as e:
             print(f"Error parsing Center of Mass input: {e}")
 
-    def update_all_points(self):
-        for i in range(self.num_points):
-            if self.point_actors[i]:
-                self.update_point_display(i)
+    def apply_volume_value(self):
+        """Volumeのインプットフィールドでリターンキーが押された時の処理"""
+        try:
+            volume_value = float(self.volume_input.text())
+            print(f"Volume value applied: {volume_value:.6f}")
+            # 値が変数やメモリに採用され有効な値として適用される
+            # 必要に応じて計算をトリガー
+            if self.volume_checkbox.isChecked():
+                # チェックされている場合、値は固定として扱われる
+                pass
+        except ValueError:
+            print(f"Error: Invalid volume input. Please enter a valid number.")
+
+    def apply_density_value(self):
+        """Densityのインプットフィールドでリターンキーが押された時の処理"""
+        try:
+            density_value = float(self.density_input.text())
+            print(f"Density value applied: {density_value:.6f}")
+            # 値が変数やメモリに採用され有効な値として適用される
+            # 必要に応じて計算をトリガー
+            if self.density_checkbox.isChecked():
+                # チェックされている場合、値は固定として扱われる
+                pass
+        except ValueError:
+            print(f"Error: Invalid density input. Please enter a valid number.")
+
+    def apply_mass_value(self):
+        """Massのインプットフィールドでリターンキーが押された時の処理"""
+        try:
+            mass_value = float(self.mass_input.text())
+            print(f"Mass value applied: {mass_value:.6f}")
+            # 値が変数やメモリに採用され有効な値として適用される
+            # 必要に応じて計算をトリガー
+            if self.mass_checkbox.isChecked():
+                # チェックされている場合、値は固定として扱われる
+                pass
+        except ValueError:
+            print(f"Error: Invalid mass input. Please enter a valid number.")
 
     def fit_camera_to_model(self):
         """STLモデルが画面にフィットするようにカメラの距離のみを調整"""
@@ -2449,31 +2450,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             vertical_axis = 'y'
 
         return horizontal_axis, vertical_axis, screen_right, screen_up
-
-    def handle_set_reset(self):
-        sender = self.sender()
-        is_set = sender.text() == "Set Point"
-
-        for i, checkbox in enumerate(self.point_checkboxes):
-            if checkbox.isChecked():
-                if is_set:
-                    try:
-                        new_coords = [float(self.point_inputs[i][j].text()) for j in range(3)]
-                        if new_coords != self.point_coords[i]:
-                            self.point_coords[i] = new_coords
-                            self.update_point_display(i)
-                            print(f"Point {i+1} set to: {new_coords}")
-                        else:
-                            print(f"Point {i+1} coordinates unchanged")
-                    except ValueError:
-                        print(f"Invalid input for Point {i+1}. Please enter valid numbers.")
-                else:  # Reset
-                    self.reset_point_to_origin(i)
-
-        if not is_set:
-            self.update_all_points_size()
-
-        self.render_to_image()
 
     def handle_reset_only(self):
         """チェックされたポイントを原点にリセット"""
@@ -2602,15 +2578,27 @@ class MainWindow(VTKViewerBase, QMainWindow):
             # XMLファイルを確認し読み込む
             xml_path = os.path.splitext(self.stl_file_path)[0] + '.xml'
             xml_data = None
+            mass_value_str = "0.0"
+            volume_value_str = "0.0"
+            mass = 0.0
+            volume = 0.0
+            center_of_mass = [0.0, 0.0, 0.0]
+            rgba_str = "1.0 1.0 1.0 1.0"
+            hex_color = "#FFFFFF"
             if os.path.exists(xml_path):
                 try:
                     tree = ET.parse(xml_path)
                     xml_data = tree.getroot()
                     print(f"Found and loaded XML file: {xml_path}")
 
-                    # XMLから物理パラメータを取得
-                    mass = float(xml_data.find(".//mass").get('value'))
-                    volume = float(xml_data.find(".//volume").get('value'))
+                    # XMLから物理パラメータを取得（元のフォーマットを保持）
+                    mass_element = xml_data.find(".//mass")
+                    mass_value_str = mass_element.get('value') if mass_element is not None else "0.0"
+                    mass = float(mass_value_str)  # 計算用
+                    
+                    volume_element = xml_data.find(".//volume")
+                    volume_value_str = volume_element.get('value') if volume_element is not None else "0.0"
+                    volume = float(volume_value_str)  # 計算用
                     
                     # 重心位置を取得（center_of_mass要素から）
                     com_element = xml_data.find(".//center_of_mass")
@@ -2701,10 +2689,31 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 writer.SetInputData(normal_generator.GetOutput())
                 writer.Write()
 
-            print("\nCalculating inertia tensor for mirrored model...")
-            # イナーシャテンソルを計算
-            inertia_tensor = self.calculate_inertia_tensor_for_mirrored(
-                normal_generator.GetOutput(), mass, center_of_mass)
+            # イナーシャテンソルを取得してミラーリング変換
+            print("\nProcessing inertia tensor for mirrored model...")
+            inertia_element = None
+            if xml_data is not None:
+                inertia_element = xml_data.find(".//inertia")
+            
+            if inertia_element is not None:
+                # 元のXMLからイナーシャテンソルを取得してミラーリング変換
+                ixx = float(inertia_element.get('ixx', 0))
+                iyy = float(inertia_element.get('iyy', 0))
+                izz = float(inertia_element.get('izz', 0))
+                ixy = float(inertia_element.get('ixy', 0))
+                ixz = float(inertia_element.get('ixz', 0))
+                iyz = float(inertia_element.get('iyz', 0))
+                # Y軸ミラーの場合、ixyとiyzの符号を反転
+                inertia_str = f'ixx="{ixx:.12f}" ixy="{-ixy:.12f}" ixz="{ixz:.12f}" iyy="{iyy:.12f}" iyz="{-iyz:.12f}" izz="{izz:.12f}"'
+                print(f"Mirrored inertia tensor from XML: ixx={ixx:.6f}, iyy={iyy:.6f}, izz={izz:.6f}, ixy={-ixy:.6f}, ixz={ixz:.6f}, iyz={-iyz:.6f}")
+            else:
+                # 元のXMLにイナーシャ情報がない場合、メッシュから計算
+                print("Warning: No inertia data in XML, calculating from mesh...")
+                inertia_tensor = self.calculate_inertia_tensor_for_mirrored(
+                    normal_generator.GetOutput(), mass, center_of_mass)
+                # format_inertia_for_urdfの戻り値から<inertia と/>を削除
+                inertia_formatted = self.format_inertia_for_urdf(inertia_tensor)
+                inertia_str = inertia_formatted.replace('<inertia ', '').replace('/>', '').strip()
 
             # XMLファイルの内容を生成
             print(f"\nGenerating XML content...")
@@ -2720,9 +2729,9 @@ class MainWindow(VTKViewerBase, QMainWindow):
         </visual>
         <inertial>
             <origin xyz="{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}"/>
-            <mass value="{mass:.12f}"/>
-            <volume value="{volume:.12f}"/>
-            {self.format_inertia_for_urdf(inertia_tensor)}
+            <mass value="{mass_value_str}"/>
+            <volume value="{volume_value_str}"/>
+            <inertia {inertia_str} />
         </inertial>
         <center_of_mass>{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}</center_of_mass>
     </link>"""
@@ -2801,14 +2810,130 @@ class MainWindow(VTKViewerBase, QMainWindow):
             with open(mirrored_xml_path, "w") as f:
                 f.write(urdf_content)
 
+            # 対応するcollider XMLファイルを処理
+            # 元のファイル名からcollider XMLのパスを生成
+            original_name_base = os.path.splitext(original_filename)[0]
+            collider_xml_path = os.path.join(original_dir, original_name_base + '_collider.xml')
+            
+            if os.path.exists(collider_xml_path):
+                print(f"\nFound collider XML: {collider_xml_path}")
+                try:
+                    # 新しいcollider XMLファイル名を生成
+                    new_collider_xml_name = new_name + '_collider.xml'
+                    new_collider_xml_path = os.path.join(original_dir, new_collider_xml_name)
+                    
+                    # コライダーXMLファイルを読み込み
+                    tree = ET.parse(collider_xml_path)
+                    root = tree.getroot()
+                    
+                    if root.tag != 'urdf_kitchen_collider':
+                        print(f"  ⚠ Warning: Invalid collider XML format (expected 'urdf_kitchen_collider'), skipping")
+                    else:
+                        collider_elem = root.find('collider')
+                        if collider_elem is None:
+                            print(f"  ⚠ Warning: No collider element found, skipping")
+                        else:
+                            # コライダータイプを取得
+                            collider_type = collider_elem.get('type', 'box')
+                            
+                            # ジオメトリ情報を取得
+                            geometry_elem = collider_elem.find('geometry')
+                            geometry_attrs = {}
+                            if geometry_elem is not None:
+                                geometry_attrs = dict(geometry_elem.attrib)
+                            
+                            # 位置情報を取得してxz平面で反転（y座標を反転）
+                            position_elem = collider_elem.find('position')
+                            if position_elem is not None:
+                                x = float(position_elem.get('x', '0.0'))
+                                y = float(position_elem.get('y', '0.0'))
+                                z = float(position_elem.get('z', '0.0'))
+                                mirrored_y = -y  # Y座標を反転
+                            else:
+                                x, y, z = 0.0, 0.0, 0.0
+                                mirrored_y = 0.0
+                            
+                            # 回転情報を取得（RollとYawを反転、Pitchはそのまま）
+                            rotation_elem = collider_elem.find('rotation')
+                            if rotation_elem is not None:
+                                roll = float(rotation_elem.get('roll', '0.0'))
+                                pitch = float(rotation_elem.get('pitch', '0.0'))
+                                yaw = float(rotation_elem.get('yaw', '0.0'))
+                                # RollとYawを反転、Pitchはそのまま
+                                mirrored_roll = -roll
+                                mirrored_pitch = pitch  # Pitchは反転しない
+                                mirrored_yaw = -yaw
+                            else:
+                                roll, pitch, yaw = 0.0, 0.0, 0.0
+                                mirrored_roll = 0.0
+                                mirrored_pitch = 0.0
+                                mirrored_yaw = 0.0
+                            
+                            # 新しいコライダーXMLファイルを作成
+                            new_root = ET.Element('urdf_kitchen_collider')
+                            new_collider_elem = ET.SubElement(new_root, 'collider')
+                            new_collider_elem.set('type', collider_type)
+                            
+                            # ジオメトリ要素を追加
+                            if geometry_attrs:
+                                new_geometry_elem = ET.SubElement(new_collider_elem, 'geometry')
+                                for key, value in geometry_attrs.items():
+                                    new_geometry_elem.set(key, value)
+                            
+                            # 位置要素を追加（y座標を反転）
+                            new_position_elem = ET.SubElement(new_collider_elem, 'position')
+                            new_position_elem.set('x', f"{x:.6f}")
+                            new_position_elem.set('y', f"{mirrored_y:.6f}")
+                            new_position_elem.set('z', f"{z:.6f}")
+                            
+                            # 回転要素を追加（RollとYawを反転、Pitchはそのまま）
+                            new_rotation_elem = ET.SubElement(new_collider_elem, 'rotation')
+                            new_rotation_elem.set('roll', f"{mirrored_roll:.6f}")
+                            new_rotation_elem.set('pitch', f"{mirrored_pitch:.6f}")
+                            new_rotation_elem.set('yaw', f"{mirrored_yaw:.6f}")
+                            print(f"  Mirrored rotation: Roll={roll:.4f}->{mirrored_roll:.4f}, Pitch={pitch:.4f}->{mirrored_pitch:.4f}, Yaw={yaw:.4f}->{mirrored_yaw:.4f}")
+                            
+                            # mesh_file要素があればコピー（l_をr_に置換）
+                            mesh_file_elem = collider_elem.find('mesh_file')
+                            if mesh_file_elem is not None and mesh_file_elem.text:
+                                new_mesh_file_elem = ET.SubElement(new_collider_elem, 'mesh_file')
+                                original_mesh_name = mesh_file_elem.text
+                                if 'l_' in original_mesh_name.lower():
+                                    mirrored_mesh_name = 'r_' + original_mesh_name[2:] if original_mesh_name.startswith('l_') else 'R_' + original_mesh_name[2:]
+                                    new_mesh_file_elem.text = mirrored_mesh_name
+                                    print(f"  Mirrored mesh_file reference: {original_mesh_name} -> {mirrored_mesh_name}")
+                                else:
+                                    new_mesh_file_elem.text = original_mesh_name
+                            
+                            # XMLファイルを保存
+                            new_tree = ET.ElementTree(new_root)
+                            ET.indent(new_tree, space="    ")
+                            new_tree.write(new_collider_xml_path, encoding='utf-8', xml_declaration=True)
+                            print(f"  ✓ Created collider XML: {new_collider_xml_name}")
+                except Exception as e:
+                    print(f"  ✗ Error processing collider XML: {str(e)}")
+                    traceback.print_exc()
+            else:
+                print(f"\nNo collider XML found: {collider_xml_path}")
+
             print("\nMirror export completed successfully:")
             file_type = "DAE file" if output_ext == '.dae' else "STL file"
             print(f"{file_type}: {mirrored_stl_path}")
             print(f"XML file: {mirrored_xml_path}")
 
+            # ダイアログボックスで出力内容を表示
+            dialog = ResultDialog(mirrored_stl_path, mirrored_xml_path, self)
+            dialog.exec()
+
         except Exception as e:
             print(f"\nAn error occurred during mirror export: {str(e)}")
             traceback.print_exc()
+            # エラーダイアログも表示
+            QMessageBox.critical(
+                self,
+                "Export Error",
+                f"An error occurred during mirror export:\n{str(e)}"
+            )
         
 
     def calculate_inertia_tensor_for_mirrored(self, poly_data, mass, center_of_mass):
@@ -3271,29 +3396,38 @@ class MainWindow(VTKViewerBase, QMainWindow):
     def reload_files(self):
         """現在読み込まれているMeshファイルとXMLファイルを再読み込みする"""
         try:
+            print("\n" + "="*60)
+            print("RELOADING FILES")
+            print("="*60)
+
+            # 現在のファイルパスを保存
+            mesh_path = getattr(self, 'stl_file_path', None)
+            xml_path = getattr(self, 'xml_file_path', None)
+
+            if not mesh_path and not xml_path:
+                print("No files to reload. Please load files first.")
+                return
+
             reload_count = 0
 
             # Meshファイルの再読み込み
-            if hasattr(self, 'stl_file_path') and self.stl_file_path:
-                if os.path.exists(self.stl_file_path):
-                    print(f"Reloading mesh file: {self.stl_file_path}")
-                    self.show_stl(self.stl_file_path)
-                    reload_count += 1
-                else:
-                    print(f"Warning: Mesh file not found: {self.stl_file_path}")
+            if mesh_path and os.path.exists(mesh_path):
+                print(f"\n[1/2] Reloading mesh file: {mesh_path}")
+                self.show_stl(mesh_path)
+                reload_count += 1
+            elif mesh_path:
+                print(f"Warning: Mesh file not found: {mesh_path}")
             else:
                 print("No mesh file to reload")
 
             # XMLファイルの再読み込み
-            if hasattr(self, 'xml_file_path') and self.xml_file_path:
-                if os.path.exists(self.xml_file_path):
-                    print(f"Reloading XML file: {self.xml_file_path}")
+            if xml_path and os.path.exists(xml_path):
+                print(f"\n[2/2] Reloading XML file: {xml_path}")
 
+                try:
                     # XMLファイルを解析
-                    tree = ET.parse(self.xml_file_path)
+                    tree = ET.parse(xml_path)
                     root = tree.getroot()
-
-                    print("Processing XML file...")
 
                     # XMLからパラメータを読み込む
                     has_parameters = self.load_parameters_from_xml(root)
@@ -3302,142 +3436,40 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     if not has_parameters:
                         self.calculate_and_update_properties()
 
-                    # 全てのポイントをリセット
-                    print("Resetting all points...")
-                    for i in range(self.num_points):
-                        # テキストフィールドをクリア
-                        self.point_inputs[i][0].setText("0.000000")
-                        self.point_inputs[i][1].setText("0.000000")
-                        self.point_inputs[i][2].setText("0.000000")
+                    # ポイントデータを読み込む（既存のヘルパー関数を使用）
+                    points_with_data = self._load_points_from_xml(root)
 
-                        # 内部座標データをリセット
-                        self.point_coords[i] = [0, 0, 0]
+                    # カラー情報を適用（既存のヘルパー関数を使用）
+                    self._apply_color_from_xml(root)
 
-                        # チェックボックスを解除
-                        self.point_checkboxes[i].setChecked(False)
+                    # 表示を更新
+                    self._refresh_display()
 
-                        # 3Dビューのポイントを非表示にし、アクターを削除
-                        if self.point_actors[i]:
-                            self.point_actors[i].VisibilityOff()
-                            self.renderer.RemoveActor(self.point_actors[i])
-                            self.point_actors[i] = None
-
-                    print("All points have been reset")
-
-                    # データが設定されたポイントを追跡
-                    points_with_data = set()
-
-                    # 各ポイントの座標を読み込む
-                    points = root.findall('./point')
-                    print(f"Found {len(points)} points in XML")
-
-                    for i, point in enumerate(points):
-                        xyz_element = point.find('point_xyz')
-                        if xyz_element is not None and xyz_element.text:
-                            try:
-                                # 座標テキストを分割して数値に変換
-                                x, y, z = map(float, xyz_element.text.strip().split())
-                                print(f"Point {i+1}: {x}, {y}, {z}")
-
-                                # テキストフィールドに値を設定
-                                self.point_inputs[i][0].setText(f"{x:.6f}")
-                                self.point_inputs[i][1].setText(f"{y:.6f}")
-                                self.point_inputs[i][2].setText(f"{z:.6f}")
-
-                                # 内部の座標データを更新
-                                self.point_coords[i] = [x, y, z]
-
-                                # チェックボックスを有効化
-                                self.point_checkboxes[i].setChecked(True)
-
-                                # ポイントの表示を設定
-                                if self.point_actors[i] is None:
-                                    self.point_actors[i] = vtk.vtkAssembly()
-                                    self.create_point_coordinate(self.point_actors[i], [0, 0, 0])
-
-                                self.point_actors[i].SetPosition(self.point_coords[i])
-                                self.renderer.AddActor(self.point_actors[i])
-                                self.point_actors[i].VisibilityOn()
-
-                                points_with_data.add(i)
-                                print(f"Set point {i+1} coordinates: x={x:.6f}, y={y:.6f}, z={z:.6f}")
-                            except Exception as e:
-                                print(f"Error loading point {i+1}: {str(e)}")
-                                traceback.print_exc()
-
-                    # ポイント名の読み込み
-                    for i, point in enumerate(points):
-                        name_element = point.find('name')
-                        if name_element is not None and name_element.text:
-                            self.point_names[i].setText(name_element.text)
-                            print(f"Set point {i+1} name: {name_element.text}")
-
-                    # ポイントタイプの読み込み
-                    for i, point in enumerate(points):
-                        type_element = point.find('type')
-                        if type_element is not None and type_element.text:
-                            self.point_types[i].setCurrentText(type_element.text)
-                            print(f"Set point {i+1} type: {type_element.text}")
-
-                    # カラー情報の処理
-                    color_element = root.find(".//color")
-                    if color_element is not None:
-                        rgba_str = color_element.get('rgba')
-                        if rgba_str:
-                            try:
-                                r, g, b, a = map(float, rgba_str.split())
-                                self.mesh_color = [r, g, b, a]
-                                if hasattr(self, 'stl_actor') and self.stl_actor:
-                                    self.stl_actor.GetProperty().SetColor(r, g, b)
-                                    self.stl_actor.GetProperty().SetOpacity(a)
-                                    self.render_to_image()
-                            except (ValueError, IndexError) as e:
-                                print(f"Warning: Invalid color format in XML: {rgba_str}")
-                                print(f"Error details: {e}")
-
-                    # 軸情報の処理
-                    axis_element = root.find(".//axis")
-                    if axis_element is not None:
-                        xyz_str = axis_element.get('xyz')
-                        if xyz_str:
-                            try:
-                                x, y, z = map(float, xyz_str.split())
-                                if x == 1:
-                                    self.radio_buttons[0].setChecked(True)
-                                elif y == 1:
-                                    self.radio_buttons[1].setChecked(True)
-                                elif z == 1:
-                                    self.radio_buttons[2].setChecked(True)
-                            except ValueError:
-                                print(f"Warning: Invalid axis format in XML: {xyz_str}")
-
-                    # 表示の更新
-                    if hasattr(self, 'renderer'):
-                        self.renderer.ResetCamera()
-                        self.update_all_points()
-
-                        # STLモデルが存在する場合、カメラをフィット
-                        if hasattr(self, 'stl_actor') and self.stl_actor:
-                            self.fit_camera_to_model()
-
-                        self.renderer.ResetCameraClippingRange()
-                        self.render_to_image()
-
-                    print(f"XML file has been reloaded: {self.xml_file_path}")
-                    print(f"Number of set points: {len(points_with_data)}")
+                    print(f"✓ XML file reloaded successfully")
+                    if points_with_data:
+                        print(f"  Loaded {len(points_with_data)} points")
                     reload_count += 1
-                else:
-                    print(f"Warning: XML file not found: {self.xml_file_path}")
+
+                except ET.ParseError as e:
+                    print(f"Error: Failed to parse XML file: {e}")
+                except Exception as e:
+                    print(f"Error: Failed to load XML file: {e}")
+                    traceback.print_exc()
+            elif xml_path:
+                print(f"Warning: XML file not found: {xml_path}")
             else:
                 print("No XML file to reload")
 
+            # 完了メッセージ
+            print("\n" + "="*60)
             if reload_count > 0:
-                print(f"Reload completed: {reload_count} file(s) reloaded")
+                print(f"✓ Reload completed: {reload_count} file(s) reloaded")
             else:
-                print("No files were reloaded. Please load files first.")
+                print("⚠ No files were reloaded")
+            print("="*60 + "\n")
 
         except Exception as e:
-            print(f"An error occurred while reloading files: {str(e)}")
+            print(f"\n✗ An error occurred while reloading files: {str(e)}")
             traceback.print_exc()
 
     def refresh_view(self):
@@ -3591,15 +3623,27 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         # 対応するXMLファイルを探す
                         xml_path = os.path.splitext(stl_path)[0] + '.xml'
                         xml_data = None
+                        mass_value_str = "0.0"
+                        volume_value_str = "0.0"
+                        mass = 0.0
+                        volume = 0.0
+                        center_of_mass = [0.0, 0.0, 0.0]
+                        rgba_str = "1.0 1.0 1.0 1.0"
+                        hex_color = "#FFFFFF"
                         if os.path.exists(xml_path):
                             try:
                                 tree = ET.parse(xml_path)
                                 xml_data = tree.getroot()
                                 print(f"Found and loaded XML file: {xml_path}")
 
-                                # XMLから物理パラメータを取得
-                                mass = float(xml_data.find(".//mass").get('value'))
-                                volume = float(xml_data.find(".//volume").get('value'))
+                                # XMLから物理パラメータを取得（元のフォーマットを保持）
+                                mass_element = xml_data.find(".//mass")
+                                mass_value_str = mass_element.get('value') if mass_element is not None else "0.0"
+                                mass = float(mass_value_str)  # 計算用
+                                
+                                volume_element = xml_data.find(".//volume")
+                                volume_value_str = volume_element.get('value') if volume_element is not None else "0.0"
+                                volume = float(volume_value_str)  # 計算用
                                 
                                 # 重心位置を取得（center_of_mass要素から）
                                 com_element = xml_data.find(".//center_of_mass")
@@ -3630,9 +3674,29 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         # Use common utility function to save mesh
                         save_polydata_to_mesh(new_stl_path, normal_generator.GetOutput())
 
-                        # イナーシャテンソルを計算
-                        inertia_tensor = self.calculate_inertia_tensor_for_mirrored(
-                            normal_generator.GetOutput(), mass, center_of_mass)
+                        # イナーシャテンソルを取得してミラーリング変換
+                        inertia_element = None
+                        if xml_data is not None:
+                            inertia_element = xml_data.find(".//inertia")
+                        
+                        if inertia_element is not None:
+                            # 元のXMLからイナーシャテンソルを取得してミラーリング変換
+                            ixx = float(inertia_element.get('ixx', 0))
+                            iyy = float(inertia_element.get('iyy', 0))
+                            izz = float(inertia_element.get('izz', 0))
+                            ixy = float(inertia_element.get('ixy', 0))
+                            ixz = float(inertia_element.get('ixz', 0))
+                            iyz = float(inertia_element.get('iyz', 0))
+                            # Y軸ミラーの場合、ixyとiyzの符号を反転
+                            inertia_str = f'ixx="{ixx:.12f}" ixy="{-ixy:.12f}" ixz="{ixz:.12f}" iyy="{iyy:.12f}" iyz="{-iyz:.12f}" izz="{izz:.12f}"'
+                        else:
+                            # 元のXMLにイナーシャ情報がない場合、メッシュから計算
+                            print("Warning: No inertia data in XML, calculating from mesh...")
+                            inertia_tensor = self.calculate_inertia_tensor_for_mirrored(
+                                normal_generator.GetOutput(), mass, center_of_mass)
+                            # format_inertia_for_urdfの戻り値から<inertia と/>を削除
+                            inertia_formatted = self.format_inertia_for_urdf(inertia_tensor)
+                            inertia_str = inertia_formatted.replace('<inertia ', '').replace('/>', '').strip()
 
                         # XMLファイルの内容を生成
                         urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
@@ -3647,9 +3711,9 @@ class MainWindow(VTKViewerBase, QMainWindow):
         </visual>
         <inertial>
             <origin xyz="{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}"/>
-            <mass value="{mass:.12f}"/>
-            <volume value="{volume:.12f}"/>
-            {self.format_inertia_for_urdf(inertia_tensor)}
+            <mass value="{mass_value_str}"/>
+            <volume value="{volume_value_str}"/>
+            <inertia {inertia_str} />
         </inertial>
         <center_of_mass>{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}</center_of_mass>
     </link>"""
@@ -3779,7 +3843,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                             ixz = float(inertia_element.get('ixz', 0))
                             iyz = float(inertia_element.get('iyz', 0))
                             # Y軸ミラーの場合、ixyとiyzの符号を反転
-                            inertia_str = f'ixx="{ixx:.12e}" ixy="{-ixy:.12e}" ixz="{ixz:.12e}" iyy="{iyy:.12e}" iyz="{-iyz:.12e}" izz="{izz:.12e}"'
+                            inertia_str = f'ixx="{ixx:.12f}" ixy="{-ixy:.12f}" ixz="{ixz:.12f}" iyy="{iyy:.12f}" iyz="{-iyz:.12f}" izz="{izz:.12f}"'
                         else:
                             inertia_str = 'ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"'
 
@@ -3852,8 +3916,114 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         traceback.print_exc()
                         continue
 
+            # ===== Phase 3: Process collider XML files (l_*_collider.xml) =====
+            print("\n=== Searching for collider XML files (l_*_collider.xml) ===")
+            collider_xml_pattern = re.compile(r'^l_.+_collider\.xml$', re.IGNORECASE)
+            collider_xml_count = 0
+
+            for file_name in os.listdir(folder_path):
+                if collider_xml_pattern.match(file_name.lower()):
+                    collider_xml_path = os.path.join(folder_path, file_name)
+                    new_collider_xml_name = 'R_' + file_name[2:] if file_name.startswith('L_') else 'r_' + file_name[2:]
+                    new_collider_xml_path = os.path.join(folder_path, new_collider_xml_name)
+
+                    print(f"✓ Found collider XML: {file_name}")
+                    print(f"  → Will create: {new_collider_xml_name}")
+
+                    try:
+                        # コライダーXMLファイルを読み込み
+                        tree = ET.parse(collider_xml_path)
+                        root = tree.getroot()
+
+                        if root.tag != 'urdf_kitchen_collider':
+                            print(f"  ⚠ Warning: Invalid collider XML format (expected 'urdf_kitchen_collider'), skipping")
+                            continue
+
+                        collider_elem = root.find('collider')
+                        if collider_elem is None:
+                            print(f"  ⚠ Warning: No collider element found, skipping")
+                            continue
+
+                        # コライダータイプを取得
+                        collider_type = collider_elem.get('type', 'box')
+
+                        # ジオメトリ情報を取得
+                        geometry_elem = collider_elem.find('geometry')
+                        geometry_attrs = {}
+                        if geometry_elem is not None:
+                            geometry_attrs = dict(geometry_elem.attrib)
+
+                        # 位置情報を取得してxz平面で反転（y座標を反転）
+                        position_elem = collider_elem.find('position')
+                        if position_elem is not None:
+                            x = float(position_elem.get('x', '0.0'))
+                            y = float(position_elem.get('y', '0.0'))
+                            z = float(position_elem.get('z', '0.0'))
+                            mirrored_y = -y  # Y座標を反転
+                        else:
+                            x, y, z = 0.0, 0.0, 0.0
+                            mirrored_y = 0.0
+
+                        # 回転情報を取得してxz平面で反転
+                        # xz平面で反転する場合、rollとyawはそのまま、pitchは反転
+                        rotation_elem = collider_elem.find('rotation')
+                        if rotation_elem is not None:
+                            roll = float(rotation_elem.get('roll', '0.0'))
+                            pitch = float(rotation_elem.get('pitch', '0.0'))
+                            yaw = float(rotation_elem.get('yaw', '0.0'))
+                            # RollとYawを反転、Pitchはそのまま
+                            mirrored_roll = -roll
+                            mirrored_pitch = pitch  # Pitchは反転しない
+                            mirrored_yaw = -yaw
+                        else:
+                            roll, pitch, yaw = 0.0, 0.0, 0.0
+                            mirrored_roll = 0.0
+                            mirrored_pitch = 0.0
+                            mirrored_yaw = 0.0
+
+                        # 新しいコライダーXMLファイルを作成
+                        new_root = ET.Element('urdf_kitchen_collider')
+                        new_collider_elem = ET.SubElement(new_root, 'collider')
+                        new_collider_elem.set('type', collider_type)
+
+                        # ジオメトリ要素を追加
+                        if geometry_attrs:
+                            new_geometry_elem = ET.SubElement(new_collider_elem, 'geometry')
+                            for key, value in geometry_attrs.items():
+                                new_geometry_elem.set(key, value)
+
+                        # 位置要素を追加（y座標を反転）
+                        new_position_elem = ET.SubElement(new_collider_elem, 'position')
+                        new_position_elem.set('x', f"{x:.6f}")
+                        new_position_elem.set('y', f"{mirrored_y:.6f}")
+                        new_position_elem.set('z', f"{z:.6f}")
+
+                        # 回転要素を追加（RollとYawを反転、Pitchはそのまま）
+                        new_rotation_elem = ET.SubElement(new_collider_elem, 'rotation')
+                        new_rotation_elem.set('roll', f"{mirrored_roll:.6f}")
+                        new_rotation_elem.set('pitch', f"{mirrored_pitch:.6f}")
+                        new_rotation_elem.set('yaw', f"{mirrored_yaw:.6f}")
+                        print(f"  Mirrored rotation: Roll={roll:.4f}->{mirrored_roll:.4f}, Pitch={pitch:.4f}->{mirrored_pitch:.4f}, Yaw={yaw:.4f}->{mirrored_yaw:.4f}")
+
+                        # XMLファイルを保存
+                        new_tree = ET.ElementTree(new_root)
+                        ET.indent(new_tree, space="    ")
+                        new_tree.write(new_collider_xml_path, encoding='utf-8', xml_declaration=True)
+                        print(f"  ✓ Created collider XML: {new_collider_xml_name}")
+
+                        collider_xml_count += 1
+                        generated_files.append({
+                            'mesh': None,
+                            'xml': new_collider_xml_path
+                        })
+
+                    except Exception as e:
+                        print(f"  ✗ Error processing collider XML {file_name}: {str(e)}")
+                        traceback.print_exc()
+                        continue
+
             # 処理完了メッセージ
-            total_processed = processed_count + xml_only_count
+            total_processed = processed_count + xml_only_count + collider_xml_count
             if total_processed > 0:
                 regular_count = processed_count - collider_count
                 print(f"\n=== Bulk conversion completed ===")
@@ -3862,6 +4032,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 print(f"  - Colliders (mesh+XML): {collider_count} files")
                 if xml_only_count > 0:
                     print(f"  - Standalone collider XMLs: {xml_only_count} files")
+                if collider_xml_count > 0:
+                    print(f"  - Collider XML files (l_*_collider.xml): {collider_xml_count} files")
                 print(f"All files mirrored across XZ plane (Y-axis flip)")
                 # ダイアログボックスで生成されたファイルのリストを表示
                 dialog = BulkConversionCompleteDialog(generated_files, folder_path, self)
