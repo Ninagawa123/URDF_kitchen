@@ -16,28 +16,29 @@ URDF,MJCFを読み込むことも可能となり、既存のファイルをGUI�
 # Tools  
   
 ### STEP 0 -  仕込み -  "Launcher"  
+<img width="300" alt="urdf_kitchen_beta" src="docs/URDF_kitchen_laucher_beta2_img1.png">  
 MeshSourcer, PartsEditor, Assemblerの3つのツールを起動できるラウンチャーです。  
 作業はフローはMeshSourcerでパーツの下拵えをし、PartsEditorで接続部分を設定、Assemblerで組み立てて仕上げるという流れになります。  
   
 ### STEP 1 -  仕込み -  "MeshSourcer"  
-<img width="500" alt="urdf_kitchen_beta" src="docs/StlSourcer.png">  
+<img width="500" alt="urdf_kitchen_beta" src="docs/MeshSourcer_beta2_img1">  
 組み立ての準備の工程として、まずお手持ちのCADでロボットの部品を動くまとまりごとにユニット化し、可動の起点を原点として出力しておきます。  
 MeshSourcerはそれをサポートするツールで、下記の処理が可能です。  
 
 - .stl, .dae, .objの読み込み  
-- .stl, .dae, .objへの書き出し  
+- .stl, .dae, .objへの書き出し, 複数ファイル一括変換  
 - Meshの中心点や座標軸の入れ替え  
 - Meshに該当する簡易Colliderの作成(Box, Cylinder, Sphere, Capsule)  
   
 ### STEP 2 - 調理 - "PartsEditor"  
-<img width="500" alt="urdf_kitchen_beta" src="docs/PartsEditor.png">  
+<img width="500" alt="urdf_kitchen_beta" src="docs/PartsEditor_beta2_img1.png">  
 ユニットのMeshファイルを見ながら次のパーツを接続するジョイントポイントを設定するツールです。  
 ジョイントポイントは8つまで設定でき、回転軸や色なども設定や確認ができます。  
 左右対称のロボットの場合、左側のパーツさえ設定すれば右側は自動で出力できます。  
 設定ファイルはパーツと対になるxmlとして保存できます。  
   
 ### STEP 3 - 盛り付け - "Assembler"  
-<img width="500" alt="urdf_kitchen_beta" src="docs/Assembler.png">  
+<img width="500" alt="urdf_kitchen_beta" src="docs/Assembler_beta2_img1.png">  
 urdfをプラモデルのように組み立てられるツールです。  
 設定ファイルをまとめて読み込み、パーツ同士をノードでポチポチと接続していきます。  
 また、Jointの各種パラメータも設定することができます。  
