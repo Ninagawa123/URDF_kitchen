@@ -45,8 +45,9 @@ import math
 from urdf_kitchen_utils import (
     OffscreenRenderer, CameraController, MouseDragState,
     setup_signal_handlers, setup_signal_processing_timer, setup_dark_theme,
+    load_mesh_to_polydata, save_polydata_to_mesh,
     calculate_inertia_tensor, calculate_inertia_with_trimesh,
-    get_mesh_file_filter, load_mesh_to_polydata,
+    get_mesh_file_filter,
     mirror_physical_properties_y_axis, calculate_mirrored_physical_properties_from_mesh,
     mirror_inertia_tensor_left_right, mirror_center_of_mass_left_right,
     euler_to_quaternion, quaternion_to_euler, quaternion_to_matrix, format_float_no_exp,
@@ -8988,6 +8989,42 @@ class CustomNodeGraph(NodeGraph):
                 print("URDF export cancelled")
                 return False
 
+            # メッシュファイル形式を選択
+            mesh_format_dialog = QtWidgets.QDialog(self.widget)
+            mesh_format_dialog.setWindowTitle("Select Mesh Format")
+            mesh_format_dialog.setModal(True)
+            layout = QtWidgets.QVBoxLayout()
+            
+            label = QtWidgets.QLabel("Select mesh file format for export:")
+            layout.addWidget(label)
+            
+            format_group = QtWidgets.QButtonGroup()
+            stl_radio = QtWidgets.QRadioButton(".stl (STL)")
+            stl_radio.setChecked(True)  # デフォルトは.stl
+            dae_radio = QtWidgets.QRadioButton(".dae (COLLADA)")
+            format_group.addButton(stl_radio, 0)
+            format_group.addButton(dae_radio, 1)
+            
+            layout.addWidget(stl_radio)
+            layout.addWidget(dae_radio)
+            
+            button_box = QtWidgets.QDialogButtonBox(
+                QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+            )
+            button_box.accepted.connect(mesh_format_dialog.accept)
+            button_box.rejected.connect(mesh_format_dialog.reject)
+            layout.addWidget(button_box)
+            
+            mesh_format_dialog.setLayout(layout)
+            
+            if mesh_format_dialog.exec() != QtWidgets.QDialog.Accepted:
+                print("URDF export cancelled (format selection)")
+                return False
+            
+            # 選択された形式を取得
+            selected_format = ".stl" if stl_radio.isChecked() else ".dae"
+            print(f"Selected mesh format: {selected_format}")
+
             # [ロボット名]_descriptionディレクトリを作成
             description_dir = os.path.join(parent_dir, f"{clean_name}_description")
 
@@ -9044,24 +9081,41 @@ class CustomNodeGraph(NodeGraph):
                         file_ext = os.path.splitext(stl_filename)[1].lower()
 
                         try:
-                            # .daeファイルの場合は色情報を埋め込んで保存
-                            if file_ext == '.dae' and hasattr(node, 'node_color'):
-                                self._copy_dae_with_color(source_path, dest_path, node.node_color)
-                                stl_files_copied.append(stl_filename)
-                                print(f"Copied mesh with color: {stl_filename}")
-                            else:
-                                # STLファイルやその他のファイルは通常コピー
-                                shutil.copy2(source_path, dest_path)
-                                stl_files_copied.append(stl_filename)
-                                print(f"Copied mesh: {stl_filename}")
+                            # メッシュファイルを読み込んで、選択された形式で保存
+                            poly_data, volume, extracted_color = load_mesh_to_polydata(source_path)
+                            
+                            # ファイル名の拡張子を選択された形式に変更
+                            base_name = os.path.splitext(stl_filename)[0]
+                            new_filename = f"{base_name}{selected_format}"
+                            dest_path = os.path.join(meshes_dir, new_filename)
+                            
+                            # ノードの色情報を取得
+                            mesh_color = None
+                            color_manually_changed = False
+                            if hasattr(node, 'node_color'):
+                                mesh_color = node.node_color
+                                color_manually_changed = True
+                            
+                            # 選択された形式で保存
+                            save_polydata_to_mesh(
+                                dest_path, 
+                                poly_data, 
+                                mesh_color=mesh_color,
+                                color_manually_changed=color_manually_changed
+                            )
+                            
+                            stl_files_copied.append(new_filename)
+                            print(f"Converted and saved mesh: {stl_filename} -> {new_filename}")
                         except Exception as e:
                             stl_files_failed.append((stl_filename, str(e)))
-                            print(f"Failed to copy mesh {stl_filename}: {str(e)}")
+                            print(f"Failed to convert mesh {stl_filename}: {str(e)}")
+                            import traceback
+                            traceback.print_exc()
                     else:
                         stl_files_failed.append((os.path.basename(source_path), "Source file not found"))
                         print(f"Mesh file not found: {source_path}")
 
-                # コリジョンメッシュファイルもコピー
+                # コリジョンメッシュファイルも変換して保存
                 if hasattr(node, 'collider_enabled') and node.collider_enabled:
                     if hasattr(node, 'collider_type') and node.collider_type == 'mesh':
                         if hasattr(node, 'collider_mesh') and node.collider_mesh:
@@ -9073,18 +9127,25 @@ class CustomNodeGraph(NodeGraph):
                                 collider_source_path = node.collider_mesh
                             
                             if os.path.exists(collider_source_path):
-                                collider_filename = os.path.basename(collider_source_path)
-                                collider_dest_path = os.path.join(meshes_dir, collider_filename)
+                                collider_original_filename = os.path.basename(collider_source_path)
+                                # ファイル名の拡張子を選択された形式に変更
+                                collider_base_name = os.path.splitext(collider_original_filename)[0]
+                                collider_new_filename = f"{collider_base_name}{selected_format}"
+                                collider_dest_path = os.path.join(meshes_dir, collider_new_filename)
                                 
-                                # 既にコピー済みでない場合のみコピー
-                                if collider_filename not in stl_files_copied:
+                                # 既にコピー済みでない場合のみ変換
+                                if collider_new_filename not in stl_files_copied:
                                     try:
-                                        shutil.copy2(collider_source_path, collider_dest_path)
-                                        stl_files_copied.append(collider_filename)
-                                        print(f"Copied collider mesh: {collider_filename}")
+                                        # メッシュファイルを読み込んで、選択された形式で保存
+                                        collider_poly_data, collider_volume, _ = load_mesh_to_polydata(collider_source_path)
+                                        save_polydata_to_mesh(collider_dest_path, collider_poly_data)
+                                        stl_files_copied.append(collider_new_filename)
+                                        print(f"Converted and saved collider mesh: {collider_original_filename} -> {collider_new_filename}")
                                     except Exception as e:
-                                        stl_files_failed.append((collider_filename, str(e)))
-                                        print(f"Failed to copy collider mesh {collider_filename}: {str(e)}")
+                                        stl_files_failed.append((collider_original_filename, str(e)))
+                                        print(f"Failed to convert collider mesh {collider_original_filename}: {str(e)}")
+                                        import traceback
+                                        traceback.print_exc()
                             else:
                                 stl_files_failed.append((os.path.basename(collider_source_path), "Collider mesh file not found"))
                                 print(f"Collider mesh file not found: {collider_source_path}")
@@ -9180,7 +9241,7 @@ class CustomNodeGraph(NodeGraph):
             )
             return False
 
-    def _write_tree_structure(self, file, node, parent_node, visited_nodes, materials):
+    def _write_tree_structure(self, file, node, parent_node, visited_nodes, materials, mesh_format=".stl"):
         """ツリー構造を順番に出力"""
         if node in visited_nodes:
             return
@@ -9211,11 +9272,11 @@ class CustomNodeGraph(NodeGraph):
                         file.write('\n')
                         
                         # 次にリンクを出力
-                        self._write_link(file, child_node, materials)
+                        self._write_link(file, child_node, materials, mesh_format)
                         file.write('\n')
                     
                     # 再帰的に子ノードを処理
-                    self._write_tree_structure(file, child_node, node, visited_nodes, materials)
+                    self._write_tree_structure(file, child_node, node, visited_nodes, materials, mesh_format)
 
     def _is_base_link_at_defaults(self, base_node):
         """base_linkがすべてデフォルト値かチェック"""
@@ -12420,7 +12481,7 @@ class CustomNodeGraph(NodeGraph):
                 return f' scale="{scale[0]} {scale[1]} {scale[2]}"'
         return ''
 
-    def _write_urdf_collision(self, file, node, package_path, mesh_dir_name):
+    def _write_urdf_collision(self, file, node, package_path, mesh_dir_name, mesh_format=".stl"):
         """Write collision geometry for URDF"""
         # Check if collider is enabled
         if not getattr(node, 'collider_enabled', False):
@@ -12479,7 +12540,10 @@ class CustomNodeGraph(NodeGraph):
             file.write('      <geometry>\n')
             visual_dir = os.path.dirname(node.stl_file)
             collider_absolute = os.path.join(visual_dir, node.collider_mesh)
-            collider_filename = os.path.basename(collider_absolute)
+            collider_original_filename = os.path.basename(collider_absolute)
+            # ファイル名の拡張子を選択された形式に変更
+            collider_base_name = os.path.splitext(collider_original_filename)[0]
+            collider_filename = f"{collider_base_name}{mesh_format}"
             collider_package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{collider_filename}"
             file.write(f'        <mesh filename="{collider_package_path}"/>\n')
             file.write('      </geometry>\n')
@@ -12493,7 +12557,7 @@ class CustomNodeGraph(NodeGraph):
 
         file.write('    </collision>\n')
 
-    def _write_link(self, file, node, materials):
+    def _write_link(self, file, node, materials, mesh_format=".stl"):
         """リンクの出力"""
         try:
             file.write(f'  <link name="{node.name()}">\n')
@@ -12525,8 +12589,11 @@ class CustomNodeGraph(NodeGraph):
                             mesh_dir_name = dir_name
 
                     # メインのビジュアル
-                    stl_filename = os.path.basename(node.stl_file)
-                    package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{stl_filename}"
+                    # 元のファイル名の拡張子を選択された形式に変更
+                    original_filename = os.path.basename(node.stl_file)
+                    base_name = os.path.splitext(original_filename)[0]
+                    mesh_filename = f"{base_name}{mesh_format}"
+                    package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{mesh_filename}"
 
                     file.write('    <visual>\n')
                     # Visual originを出力（デフォルト値でない場合のみ）
@@ -12555,8 +12622,11 @@ class CustomNodeGraph(NodeGraph):
                             dec_node = connected_port.node()
                             if hasattr(dec_node, 'massless_decoration') and dec_node.massless_decoration:
                                 if hasattr(dec_node, 'stl_file') and dec_node.stl_file:
-                                    dec_stl = os.path.basename(dec_node.stl_file)
-                                    dec_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{dec_stl}"
+                                    # 装飾パーツのファイル名も選択された形式に変更
+                                    dec_original = os.path.basename(dec_node.stl_file)
+                                    dec_base_name = os.path.splitext(dec_original)[0]
+                                    dec_mesh_filename = f"{dec_base_name}{mesh_format}"
+                                    dec_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{dec_mesh_filename}"
 
                                     # ポイント座標を取得（ジョイント位置）
                                     origin_xyz = "0 0 0"
@@ -12581,7 +12651,7 @@ class CustomNodeGraph(NodeGraph):
                                     file.write('    </visual>\n')
 
                     # コリジョン (新しいヘルパー関数を使用)
-                    self._write_urdf_collision(file, node, package_path, mesh_dir_name)
+                    self._write_urdf_collision(file, node, package_path, mesh_dir_name, mesh_format)
 
                 except Exception as e:
                     print(f"Error processing STL file for node {node.name()}: {str(e)}")
