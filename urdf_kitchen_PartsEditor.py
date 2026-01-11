@@ -4,7 +4,7 @@ Description: A Python script for configuring connection points of parts for urdf
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan  4, 2026
+Update.     : Jan 11, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -327,6 +327,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         self.num_points = 8  # ポイントの数を8に設定
         self.point_coords = [list(self.absolute_origin) for _ in range(self.num_points)]
+        self.point_angles = [[0.0, 0.0, 0.0] for _ in range(self.num_points)]  # Body angles for each point (degrees)
         self.point_actors = [None] * self.num_points
         self.point_checkboxes = []
         self.point_inputs = []
@@ -436,7 +437,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         """Handle IPC data received from Assembler"""
         try:
             data = socket.readAll().data().decode('utf-8')
-            print(f"Received IPC request: {data}")
+            print(f"Received IPC request: {data[:100]}...")  # 長いメッセージの場合は最初の100文字のみ表示
 
             # Parse the file path from the request
             if data.startswith("LOAD:"):
@@ -450,6 +451,27 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     socket.write(b"OK")
                 else:
                     socket.write(b"ERROR: File not found")
+            elif data.startswith("LOAD_JSON:"):
+                # JSON形式でコライダーデータを含むメッセージ
+                import json
+                json_str = data[10:].strip()  # "LOAD_JSON:"の後の部分
+                try:
+                    message_data = json.loads(json_str)
+                    stl_file = message_data.get('stl_file')
+                    collider_info = message_data.get('collider')
+                    
+                    if stl_file and os.path.exists(stl_file):
+                        # Load the file with collider data
+                        self.load_file_from_external(stl_file, collider_info)
+                        # Bring window to front and focus
+                        self.raise_()
+                        self.activateWindow()
+                        socket.write(b"OK")
+                    else:
+                        socket.write(b"ERROR: File not found")
+                except json.JSONDecodeError as e:
+                    print(f"Error parsing JSON: {e}")
+                    socket.write(b"ERROR: Invalid JSON format")
             else:
                 socket.write(b"ERROR: Unknown command")
 
@@ -459,8 +481,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
             import traceback
             traceback.print_exc()
 
-    def load_file_from_external(self, stl_path):
-        """Load 3D model and XML file from external request (Assembler)"""
+    def load_file_from_external(self, stl_path, collider_info=None):
+        """Load 3D model and XML file from external request (Assembler)
+        
+        Args:
+            stl_path: Path to STL file
+            collider_info: Optional collider information dict with 'type' and 'xml_path' or 'mesh_path'
+        """
         try:
             print(f"Loading file from external request: {stl_path}")
 
@@ -507,6 +534,32 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.calculate_and_update_properties()
                 self.refresh_view()
                 self.reset_camera()
+
+            # コライダー情報がある場合、コライダーXMLファイルを確認
+            if collider_info:
+                if collider_info.get('type') == 'primitive' and collider_info.get('xml_path'):
+                    collider_xml_path = collider_info['xml_path']
+                    if os.path.exists(collider_xml_path):
+                        print(f"Collider XML file created by Assembler: {collider_xml_path}")
+                        print(f"  This file will be available when saving from PartsEditor")
+                        # コライダーXMLファイルは既にSTLファイルと同じディレクトリに作成されているので、
+                        # PartsEditorが保存時にこのファイルを認識できる
+                    else:
+                        print(f"Warning: Collider XML file not found: {collider_xml_path}")
+                elif collider_info.get('type') == 'mesh' and collider_info.get('mesh_path'):
+                    print(f"Collider mesh specified: {os.path.basename(collider_info['mesh_path'])}")
+                    # メッシュコライダーの場合は、PartsEditorでは直接処理しない
+                    # （Assemblerで管理される）
+            
+            # コライダーXMLファイルが存在する場合、自動的に読み込む（Assemblerから作成されたもの）
+            # STLファイルと同じディレクトリに_collider.xmlがあるか確認
+            stl_dir = os.path.dirname(stl_path)
+            stl_basename = os.path.splitext(os.path.basename(stl_path))[0]
+            auto_collider_xml_path = os.path.join(stl_dir, f"{stl_basename}_collider.xml")
+            
+            if os.path.exists(auto_collider_xml_path):
+                print(f"Found collider XML file: {os.path.basename(auto_collider_xml_path)}")
+                print(f"  This collider data will be preserved when saving from PartsEditor")
 
         except Exception as e:
             print(f"Error loading file from external request: {e}")
@@ -790,39 +843,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
         grid_layout.addWidget(spacer, current_row, 0, 1, 3)
         current_row += 1
 
-        # Axis layout
-        axis_layout = QHBoxLayout()
-        
-        # ラジオボタンのグループを作成
-        self.axis_group = QButtonGroup(self)
-        axis_label = QLabel("Axis:")
-        axis_layout.addWidget(axis_label)
-        
-        # ラジオボタンの作成
-        radio_texts = ["X:roll", "Y:pitch", "Z:yaw", "fixed"]  # fixedを追加
-        self.radio_buttons = []
-        for i, text in enumerate(radio_texts):
-            radio = QRadioButton(text)
-            self.axis_group.addButton(radio, i)
-            axis_layout.addWidget(radio)
-            self.radio_buttons.append(radio)
-        self.radio_buttons[0].setChecked(True)
-
-        # Rotate Testボタン
-        self.rotate_test_button = QPushButton("Rotate Test")
-        self.rotate_test_button.pressed.connect(self.start_rotation_test)
-        self.rotate_test_button.released.connect(self.stop_rotation_test)
-        axis_layout.addWidget(self.rotate_test_button)
-        
-        grid_layout.addLayout(axis_layout, current_row, 0, 1, 3)
-        current_row += 1
-
-        # 回転テスト用の変数
-        self.rotation_timer = QTimer()
-        self.rotation_timer.timeout.connect(self.update_test_rotation)
-        self.original_transform = None
-        self.test_rotation_angle = 0
-
         # Color layout using KitchenColorPicker
         color_layout = QHBoxLayout()
 
@@ -852,9 +872,80 @@ class MainWindow(VTKViewerBase, QMainWindow):
             color_input.returnPressed.connect(self.apply_color_to_stl)
 
         color_layout.addStretch()
-        
+
         # カラーレイアウトを追加
         grid_layout.addLayout(color_layout, current_row, 0, 1, 3)
+        current_row += 1
+
+        # Axis layout
+        axis_layout = QHBoxLayout()
+
+        # ラジオボタンのグループを作成
+        self.axis_group = QButtonGroup(self)
+        axis_label = QLabel("Axis:")
+        axis_layout.addWidget(axis_label)
+
+        # ラジオボタンの作成
+        radio_texts = ["X:roll", "Y:pitch", "Z:yaw", "fixed"]  # fixedを追加
+        self.radio_buttons = []
+        for i, text in enumerate(radio_texts):
+            radio = QRadioButton(text)
+            self.axis_group.addButton(radio, i)
+            axis_layout.addWidget(radio)
+            self.radio_buttons.append(radio)
+        self.radio_buttons[0].setChecked(True)
+
+        # Rotate Testボタン
+        self.rotate_test_button = QPushButton("Rotate Test")
+        self.rotate_test_button.pressed.connect(self.start_rotation_test)
+        self.rotate_test_button.released.connect(self.stop_rotation_test)
+        axis_layout.addWidget(self.rotate_test_button)
+
+        grid_layout.addLayout(axis_layout, current_row, 0, 1, 3)
+        current_row += 1
+
+        # Angle (deg) layout
+        angle_layout = QHBoxLayout()
+        angle_layout.addWidget(QLabel("Angle (deg):"))
+
+        # X軸回転
+        angle_layout.addWidget(QLabel("X:"))
+        self.angle_x_input = QLineEdit()
+        self.angle_x_input.setFixedWidth(60)
+        self.angle_x_input.setText("0.0")
+        self.angle_x_input.setToolTip("Body initial rotation around X axis (degrees)")
+        angle_layout.addWidget(self.angle_x_input)
+
+        # Y軸回転
+        angle_layout.addWidget(QLabel("Y:"))
+        self.angle_y_input = QLineEdit()
+        self.angle_y_input.setFixedWidth(60)
+        self.angle_y_input.setText("0.0")
+        self.angle_y_input.setToolTip("Body initial rotation around Y axis (degrees)")
+        angle_layout.addWidget(self.angle_y_input)
+
+        # Z軸回転
+        angle_layout.addWidget(QLabel("Z:"))
+        self.angle_z_input = QLineEdit()
+        self.angle_z_input.setFixedWidth(60)
+        self.angle_z_input.setText("0.0")
+        self.angle_z_input.setToolTip("Body initial rotation around Z axis (degrees)")
+        angle_layout.addWidget(self.angle_z_input)
+
+        # Connect Enter key to save angles
+        self.angle_x_input.returnPressed.connect(self.save_current_point_angles)
+        self.angle_y_input.returnPressed.connect(self.save_current_point_angles)
+        self.angle_z_input.returnPressed.connect(self.save_current_point_angles)
+
+        angle_layout.addStretch()
+        grid_layout.addLayout(angle_layout, current_row, 0, 1, 3)
+        current_row += 1
+
+        # 回転テスト用の変数
+        self.rotation_timer = QTimer()
+        self.rotation_timer.timeout.connect(self.update_test_rotation)
+        self.original_transform = None
+        self.test_rotation_angle = 0
 
         # 最後に一度だけgrid_layoutを追加
         self.left_layout.addLayout(grid_layout)
@@ -1805,9 +1896,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
             for i, checkbox in enumerate(self.point_checkboxes):
                 if checkbox.isChecked():
                     x, y, z = self.point_coords[i]
+                    angle_x, angle_y, angle_z = self.point_angles[i]
                     urdf_content += f"""
     <point name="point{i+1}" type="fixed">
         <point_xyz>{x:.6f} {y:.6f} {z:.6f}</point_xyz>
+        <point_angle>{angle_x:.6f} {angle_y:.6f} {angle_z:.6f}</point_angle>
     </point>"""
 
             # 軸情報の追加
@@ -2084,9 +2177,17 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.renderer.AddActor(self.point_actors[index])
                 print(f"DEBUG: Crosshair marker created and added for Point {index+1}")
             self.point_actors[index].SetPosition(self.point_coords[index])
+            # Apply rotation from saved angles
+            self.apply_marker_rotation(index)
             self.point_actors[index].VisibilityOn()
             self.renderer.AddActor(self.point_actors[index])
             print(f"DEBUG: Point {index+1} positioned at {self.point_coords[index]}")
+
+            # Update Angle UI fields with the selected point's angles
+            self.angle_x_input.setText(f"{self.point_angles[index][0]:.2f}")
+            self.angle_y_input.setText(f"{self.point_angles[index][1]:.2f}")
+            self.angle_z_input.setText(f"{self.point_angles[index][2]:.2f}")
+            print(f"DEBUG: Updated Angle UI to Point {index+1}: {self.point_angles[index]}")
         else:
             print(f"DEBUG: Unchecked - hiding Point {index+1}")
             if self.point_actors[index]:
@@ -2198,6 +2299,49 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.com_sphere_actor.VisibilityOn()
 
         self.render_to_image()
+
+    def save_current_point_angles(self):
+        """現在選択されているポイントのAngle値を保存"""
+        # どのポイントが選択されているか確認
+        selected_index = None
+        for i, checkbox in enumerate(self.point_checkboxes):
+            if checkbox.isChecked():
+                selected_index = i
+                break
+
+        if selected_index is None:
+            print("DEBUG: No point selected, cannot save angles")
+            return
+
+        # UI入力値を読み取り
+        try:
+            angle_x = float(self.angle_x_input.text()) if self.angle_x_input.text() else 0.0
+            angle_y = float(self.angle_y_input.text()) if self.angle_y_input.text() else 0.0
+            angle_z = float(self.angle_z_input.text()) if self.angle_z_input.text() else 0.0
+
+            # 選択されたポイントに角度を保存
+            self.point_angles[selected_index] = [angle_x, angle_y, angle_z]
+            print(f"DEBUG: Saved angles for Point {selected_index+1}: {self.point_angles[selected_index]}")
+
+            # 3Dビューのマーカーに角度を反映
+            if self.point_actors[selected_index]:
+                self.apply_marker_rotation(selected_index)
+                self.render_to_image()
+        except ValueError as e:
+            print(f"ERROR: Invalid angle value: {e}")
+
+    def apply_marker_rotation(self, index):
+        """指定されたポイントのマーカーに回転を適用"""
+        if not self.point_actors[index]:
+            return
+
+        angles = self.point_angles[index]
+        # VTKでは角度を度数法で設定
+        self.point_actors[index].SetOrientation(0, 0, 0)  # リセット
+        self.point_actors[index].RotateX(angles[0])  # X軸回転
+        self.point_actors[index].RotateY(angles[1])  # Y軸回転
+        self.point_actors[index].RotateZ(angles[2])  # Z軸回転
+        print(f"DEBUG: Applied rotation to Point {index+1} marker: {angles}")
 
     def create_com_coordinate(self, assembly, coords):
         """Center of Mass用の十字付き円を作成（赤色）"""
@@ -2747,9 +2891,25 @@ class MainWindow(VTKViewerBase, QMainWindow):
                             x, y, z = map(float, xyz_element.text.strip().split())
                             mirrored_y = -y  # Y座標のみ反転
                             point_name = point.get('name')
+
+                            # point_angleの処理（Y軸ミラーリング時の回転変換）
+                            angle_element = point.find('point_angle')
+                            point_angle_str = ""
+                            if angle_element is not None and angle_element.text:
+                                try:
+                                    angle_x, angle_y, angle_z = map(float, angle_element.text.strip().split())
+                                    # Y軸ミラーの場合、X軸とZ軸の回転を符号反転
+                                    mirrored_angle_x = -angle_x
+                                    mirrored_angle_y = angle_y
+                                    mirrored_angle_z = -angle_z
+                                    point_angle_str = f"\n        <point_angle>{mirrored_angle_x:.6f} {mirrored_angle_y:.6f} {mirrored_angle_z:.6f}</point_angle>"
+                                    print(f"Mirrored point_angle for {point_name}: [{mirrored_angle_x:.2f}, {mirrored_angle_y:.2f}, {mirrored_angle_z:.2f}]")
+                                except ValueError:
+                                    print(f"Warning: Invalid point_angle format for {point_name}")
+
                             urdf_content += f"""
     <point name="{point_name}" type="fixed">
-        <point_xyz>{x:.6f} {mirrored_y:.6f} {z:.6f}</point_xyz>
+        <point_xyz>{x:.6f} {mirrored_y:.6f} {z:.6f}</point_xyz>{point_angle_str}
     </point>"""
                             print(f"Processed point: {point_name}")
                         except ValueError:
@@ -2983,6 +3143,20 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     self.point_coords[i] = [x, y, z]
                     points_with_data.add(i)
 
+                    # point_angleの読み込み
+                    angle_element = point.find('point_angle')
+                    if angle_element is not None and angle_element.text:
+                        try:
+                            angle_x, angle_y, angle_z = map(float, angle_element.text.strip().split())
+                            self.point_angles[i] = [angle_x, angle_y, angle_z]
+                            print(f"Loaded point_angle for point {i+1}: ({angle_x}, {angle_y}, {angle_z})")
+                        except (ValueError, IndexError) as e:
+                            print(f"Warning: Invalid point_angle format for point {i+1}, using default [0, 0, 0]: {e}")
+                            self.point_angles[i] = [0.0, 0.0, 0.0]
+                    else:
+                        self.point_angles[i] = [0.0, 0.0, 0.0]
+                        print(f"No point_angle found for point {i+1}, using default [0, 0, 0]")
+
                     # チェックボックスをオンにする
                     self.point_checkboxes[i].setChecked(True)
 
@@ -2994,6 +3168,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         )
 
                     self.point_actors[i].SetPosition(self.point_coords[i])
+                    # Apply rotation from loaded angles
+                    self.apply_marker_rotation(i)
                     self.renderer.AddActor(self.point_actors[i])
                     self.point_actors[i].VisibilityOn()
 
@@ -3007,6 +3183,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
             print("No valid points found in XML")
         else:
             print(f"Successfully loaded {len(points_with_data)} points")
+
+            # 最初にチェックされたポイントのAngle値をUIに反映
+            first_point_index = min(points_with_data)
+            self.angle_x_input.setText(f"{self.point_angles[first_point_index][0]:.2f}")
+            self.angle_y_input.setText(f"{self.point_angles[first_point_index][1]:.2f}")
+            self.angle_z_input.setText(f"{self.point_angles[first_point_index][2]:.2f}")
+            print(f"Updated Angle UI to Point {first_point_index+1}: {self.point_angles[first_point_index]}")
 
         return points_with_data
 
@@ -3728,9 +3911,24 @@ class MainWindow(VTKViewerBase, QMainWindow):
                                         x, y, z = map(float, xyz_element.text.strip().split())
                                         mirrored_y = -y  # Y座標のみ反転
                                         point_name = point.get('name')
+
+                                        # point_angleの処理（Y軸ミラーリング時の回転変換）
+                                        angle_element = point.find('point_angle')
+                                        point_angle_str = ""
+                                        if angle_element is not None and angle_element.text:
+                                            try:
+                                                angle_x, angle_y, angle_z = map(float, angle_element.text.strip().split())
+                                                # Y軸ミラーの場合、X軸とZ軸の回転を符号反転
+                                                mirrored_angle_x = -angle_x
+                                                mirrored_angle_y = angle_y
+                                                mirrored_angle_z = -angle_z
+                                                point_angle_str = f"\n        <point_angle>{mirrored_angle_x:.6f} {mirrored_angle_y:.6f} {mirrored_angle_z:.6f}</point_angle>"
+                                            except ValueError:
+                                                pass  # point_angleが不正な場合は無視
+
                                         urdf_content += f"""
     <point name="{point_name}" type="fixed">
-        <point_xyz>{x:.6f} {mirrored_y:.6f} {z:.6f}</point_xyz>
+        <point_xyz>{x:.6f} {mirrored_y:.6f} {z:.6f}</point_xyz>{point_angle_str}
     </point>"""
                                     except ValueError:
                                         print(f"Error processing point coordinates in XML")

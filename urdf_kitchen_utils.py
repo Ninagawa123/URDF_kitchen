@@ -4,7 +4,7 @@ Description: Shared utilities for URDF Kitchen tools (Assembler, MeshSourcer, Pa
 
 Author      : Ninagawa123
 Created On  : Dec 28, 2025
-Update.     : Jan  4, 2026
+Update.     : Jan 11, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -18,6 +18,7 @@ pip install vtk
 pip install NodeGraphQt
 pip install trimesh
 pip install pycollada
+pip install xacrodoc
 """
 
 import vtk
@@ -26,6 +27,10 @@ import numpy as np
 from PySide6 import QtWidgets, QtGui, QtCore
 from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtCore import Qt
+import os
+import math
+import xml.etree.ElementTree as ET
+import subprocess
 
 
 # ============================================================================
@@ -1218,6 +1223,73 @@ def calculate_inertia_tetrahedral(poly_data, density, center_of_mass):
     return inertia_tensor, volume_integral
 
 
+def validate_inertia_tensor(inertia_tensor, mass):
+    """
+    慣性テンソルの物理的妥当性を検証
+
+    Args:
+        inertia_tensor: 3x3 numpy配列
+        mass: 質量
+
+    Returns:
+        dict: {'valid': bool, 'message': str}
+    """
+    try:
+        ixx = inertia_tensor[0, 0]
+        iyy = inertia_tensor[1, 1]
+        izz = inertia_tensor[2, 2]
+        ixy = inertia_tensor[0, 1]
+        ixz = inertia_tensor[0, 2]
+        iyz = inertia_tensor[1, 2]
+
+        messages = []
+        valid = True
+
+        # 1. 対角成分は正でなければならない
+        if ixx <= 0 or iyy <= 0 or izz <= 0:
+            messages.append("⚠ Diagonal elements must be positive")
+            valid = False
+
+        # 2. 三角不等式の確認 (Ixx + Iyy >= Izz, etc.)
+        if not (ixx + iyy >= izz - 1e-6 and
+               iyy + izz >= ixx - 1e-6 and
+               izz + ixx >= iyy - 1e-6):
+            messages.append("⚠ Triangle inequality violated")
+            valid = False
+
+        # 3. テンソルの対称性確認
+        if not np.allclose(inertia_tensor, inertia_tensor.T, rtol=1e-5):
+            messages.append("⚠ Tensor is not symmetric")
+            valid = False
+
+        # 4. 固有値が全て正であることを確認
+        eigenvalues = np.linalg.eigvals(inertia_tensor)
+        if np.any(eigenvalues <= 0):
+            messages.append("⚠ Tensor has non-positive eigenvalues")
+            valid = False
+
+        # 5. 質量との整合性チェック（大まかな範囲チェック）
+        # 慣性の大きさは質量と形状サイズに依存
+        trace = ixx + iyy + izz
+        if trace < 0:
+            messages.append("⚠ Trace of tensor is negative")
+            valid = False
+
+        if valid:
+            messages.append("✓ Inertia tensor validation passed")
+
+        return {
+            'valid': valid,
+            'message': '\n'.join(messages)
+        }
+
+    except Exception as e:
+        return {
+            'valid': False,
+            'message': f"Validation error: {str(e)}"
+        }
+
+
 # ============================================================================
 # PARALLEL AXIS THEOREM (平行軸の定理)
 # ============================================================================
@@ -1796,18 +1868,125 @@ def load_mesh_to_polydata(file_path):
         mesh = trimesh.load(file_path, force='mesh')
 
         # Extract color information from .dae file
+        # まず頂点カラーや面カラーを確認（カラフルな表示のため）
+        vertex_colors = None
+        face_colors = None
+        extracted_color = None  # 初期化
+        
         if hasattr(mesh, 'visual') and mesh.visual is not None:
-            if hasattr(mesh.visual, 'material') and mesh.visual.material is not None:
-                if hasattr(mesh.visual.material, 'diffuse'):
-                    diffuse = mesh.visual.material.diffuse
-                    if diffuse is not None and len(diffuse) >= 3:
-                        # Normalize RGBA to 0-1 range
-                        extracted_color = [
-                            diffuse[0] / 255.0,
-                            diffuse[1] / 255.0,
-                            diffuse[2] / 255.0,
-                            diffuse[3] / 255.0 if len(diffuse) > 3 else 1.0
-                        ]
+            # 頂点カラーを取得
+            if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
+                vertex_colors = mesh.visual.vertex_colors
+                print(f"Found vertex colors in .dae file: {len(vertex_colors)} vertices")
+                
+                # 頂点カラーがある場合、代表色（最初の頂点の色または平均色）をextracted_colorとして設定
+                import numpy as np
+                if not isinstance(vertex_colors, np.ndarray):
+                    vertex_colors = np.array(vertex_colors)
+                
+                if len(vertex_colors) > 0:
+                    # 最初の頂点の色を使用（または平均色を計算）
+                    first_color = vertex_colors[0]
+                    # 0-255範囲の場合は0-1範囲に変換
+                    if isinstance(first_color, np.ndarray):
+                        if first_color.max() > 1.0:
+                            # 0-255範囲の場合
+                            extracted_color = [
+                                float(first_color[0]) / 255.0,
+                                float(first_color[1]) / 255.0,
+                                float(first_color[2]) / 255.0,
+                                float(first_color[3]) / 255.0 if len(first_color) > 3 else 1.0
+                            ]
+                        else:
+                            # 0-1範囲の場合
+                            extracted_color = [
+                                float(first_color[0]),
+                                float(first_color[1]),
+                                float(first_color[2]),
+                                float(first_color[3]) if len(first_color) > 3 else 1.0
+                            ]
+                    else:
+                        # リストやタプルの場合
+                        if max(first_color[:3]) > 1.0:
+                            extracted_color = [
+                                float(first_color[0]) / 255.0,
+                                float(first_color[1]) / 255.0,
+                                float(first_color[2]) / 255.0,
+                                float(first_color[3]) / 255.0 if len(first_color) > 3 else 1.0
+                            ]
+                        else:
+                            extracted_color = [
+                                float(first_color[0]),
+                                float(first_color[1]),
+                                float(first_color[2]),
+                                float(first_color[3]) if len(first_color) > 3 else 1.0
+                            ]
+                    print(f"Extracted representative color from vertex colors: RGB({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f})")
+            
+            # 面カラーを取得（頂点カラーがない場合）
+            if vertex_colors is None:
+                if hasattr(mesh.visual, 'face_colors') and mesh.visual.face_colors is not None:
+                    face_colors = mesh.visual.face_colors
+                    print(f"Found face colors in .dae file: {len(face_colors)} faces")
+                    
+                    # 面カラーがある場合、代表色（最初の面の色）をextracted_colorとして設定
+                    import numpy as np
+                    if not isinstance(face_colors, np.ndarray):
+                        face_colors = np.array(face_colors)
+                    
+                    if len(face_colors) > 0:
+                        # 最初の面の色を使用
+                        first_color = face_colors[0]
+                        # 0-255範囲の場合は0-1範囲に変換
+                        if isinstance(first_color, np.ndarray):
+                            if first_color.max() > 1.0:
+                                # 0-255範囲の場合
+                                extracted_color = [
+                                    float(first_color[0]) / 255.0,
+                                    float(first_color[1]) / 255.0,
+                                    float(first_color[2]) / 255.0,
+                                    float(first_color[3]) / 255.0 if len(first_color) > 3 else 1.0
+                                ]
+                            else:
+                                # 0-1範囲の場合
+                                extracted_color = [
+                                    float(first_color[0]),
+                                    float(first_color[1]),
+                                    float(first_color[2]),
+                                    float(first_color[3]) if len(first_color) > 3 else 1.0
+                                ]
+                        else:
+                            # リストやタプルの場合
+                            if max(first_color[:3]) > 1.0:
+                                extracted_color = [
+                                    float(first_color[0]) / 255.0,
+                                    float(first_color[1]) / 255.0,
+                                    float(first_color[2]) / 255.0,
+                                    float(first_color[3]) / 255.0 if len(first_color) > 3 else 1.0
+                                ]
+                            else:
+                                extracted_color = [
+                                    float(first_color[0]),
+                                    float(first_color[1]),
+                                    float(first_color[2]),
+                                    float(first_color[3]) if len(first_color) > 3 else 1.0
+                                ]
+                        print(f"Extracted representative color from face colors: RGB({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f})")
+            
+            # 頂点カラーや面カラーがない場合、materialから単一色を取得
+            if extracted_color is None:
+                if hasattr(mesh.visual, 'material') and mesh.visual.material is not None:
+                    if hasattr(mesh.visual.material, 'diffuse'):
+                        diffuse = mesh.visual.material.diffuse
+                        if diffuse is not None and len(diffuse) >= 3:
+                            # Normalize RGBA to 0-1 range
+                            extracted_color = [
+                                diffuse[0] / 255.0,
+                                diffuse[1] / 255.0,
+                                diffuse[2] / 255.0,
+                                diffuse[3] / 255.0 if len(diffuse) > 3 else 1.0
+                            ]
+                            print(f"Extracted color from material diffuse: RGB({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f})")
 
         # Convert trimesh to VTK PolyData
         vertices = mesh.vertices
@@ -1829,16 +2008,164 @@ def load_mesh_to_polydata(file_path):
         poly_data.SetPoints(points)
         poly_data.SetPolys(triangles)
 
+        # 頂点カラーをVTK PolyDataに設定
+        if vertex_colors is not None and len(vertex_colors) > 0:
+            import numpy as np
+            # 頂点カラーをVTK形式に変換
+            vtk_colors = vtk.vtkUnsignedCharArray()
+            vtk_colors.SetNumberOfComponents(3)  # RGB
+            vtk_colors.SetName("Colors")
+            
+            # numpy配列に変換
+            if not isinstance(vertex_colors, np.ndarray):
+                vertex_colors = np.array(vertex_colors)
+            
+            # 頂点数とカラー数が一致するか確認
+            num_vertices = len(vertices)
+            num_colors = len(vertex_colors)
+            
+            if num_colors == num_vertices:
+                # 各頂点の色を設定
+                for i in range(num_vertices):
+                    color = vertex_colors[i]
+                    # numpy配列の場合、要素に直接アクセス
+                    if isinstance(color, np.ndarray):
+                        r = int(color[0]) if color[0] <= 255 else 255
+                        g = int(color[1]) if color[1] <= 255 else 255
+                        b = int(color[2]) if color[2] <= 255 else 255
+                    elif isinstance(color, (list, tuple)):
+                        r = int(color[0]) if color[0] <= 255 else 255
+                        g = int(color[1]) if color[1] <= 255 else 255
+                        b = int(color[2]) if color[2] <= 255 else 255
+                    else:
+                        r = g = b = 255  # デフォルト白色
+                    
+                    # 0-1範囲の場合は255倍する
+                    if r <= 1.0 and g <= 1.0 and b <= 1.0:
+                        r = int(r * 255)
+                        g = int(g * 255)
+                        b = int(b * 255)
+                    
+                    vtk_colors.InsertNextTuple3(r, g, b)
+                
+                poly_data.GetPointData().SetScalars(vtk_colors)
+                print(f"Applied vertex colors to VTK PolyData: {num_colors} vertices")
+            else:
+                print(f"Warning: Vertex count ({num_vertices}) doesn't match color count ({num_colors})")
+        
+        # 面カラーをVTK PolyDataに設定（頂点カラーがない場合）
+        elif face_colors is not None and len(face_colors) > 0:
+            import numpy as np
+            # 面カラーをVTK形式に変換
+            vtk_colors = vtk.vtkUnsignedCharArray()
+            vtk_colors.SetNumberOfComponents(3)  # RGB
+            vtk_colors.SetName("Colors")
+            
+            # numpy配列に変換
+            if not isinstance(face_colors, np.ndarray):
+                face_colors = np.array(face_colors)
+            
+            # 面数とカラー数が一致するか確認
+            num_faces = len(faces)
+            num_colors = len(face_colors)
+            
+            if num_colors == num_faces:
+                # 各面の色を設定
+                for i in range(num_faces):
+                    color = face_colors[i]
+                    # numpy配列の場合、要素に直接アクセス
+                    if isinstance(color, np.ndarray):
+                        r = int(color[0]) if color[0] <= 255 else 255
+                        g = int(color[1]) if color[1] <= 255 else 255
+                        b = int(color[2]) if color[2] <= 255 else 255
+                    elif isinstance(color, (list, tuple)):
+                        r = int(color[0]) if color[0] <= 255 else 255
+                        g = int(color[1]) if color[1] <= 255 else 255
+                        b = int(color[2]) if color[2] <= 255 else 255
+                    else:
+                        r = g = b = 255  # デフォルト白色
+                    
+                    # 0-1範囲の場合は255倍する
+                    if r <= 1.0 and g <= 1.0 and b <= 1.0:
+                        r = int(r * 255)
+                        g = int(g * 255)
+                        b = int(b * 255)
+                    
+                    vtk_colors.InsertNextTuple3(r, g, b)
+                
+                poly_data.GetCellData().SetScalars(vtk_colors)
+                print(f"Applied face colors to VTK PolyData: {num_colors} faces")
+            else:
+                print(f"Warning: Face count ({num_faces}) doesn't match color count ({num_colors})")
+
         # Clean the mesh
+        # スカラー値（頂点カラーや面カラー）を保持するために、Clean前に保存
+        saved_point_scalars = poly_data.GetPointData().GetScalars()
+        saved_cell_scalars = poly_data.GetCellData().GetScalars()
+        
         clean = vtk.vtkCleanPolyData()
         clean.SetInputData(poly_data)
         clean.SetTolerance(1e-5)
         clean.ConvertPolysToLinesOff()
         clean.ConvertStripsToPolysOff()
         clean.PointMergingOn()
+        # スカラー値を保持する設定（デフォルトで保持されるが、明示的に設定）
         clean.Update()
 
         poly_data = clean.GetOutput()
+        
+        # Clean後にスカラー値を再設定（必要に応じて）
+        # 注意: vtkCleanPolyDataは頂点をマージする可能性があるため、
+        # スカラー値の再マッピングが必要な場合がある
+        if saved_point_scalars is not None:
+            # 頂点カラーがある場合、Clean後の頂点数に合わせて再設定
+            num_points_after = poly_data.GetNumberOfPoints()
+            num_points_before = saved_point_scalars.GetNumberOfTuples()
+            
+            if num_points_after == num_points_before:
+                # 頂点数が同じ場合はそのまま再設定
+                poly_data.GetPointData().SetScalars(saved_point_scalars)
+                print(f"Restored vertex colors after cleaning: {num_points_after} vertices")
+            else:
+                # 頂点数が変わった場合は、最初のN個の色を使用
+                vtk_colors = vtk.vtkUnsignedCharArray()
+                vtk_colors.SetNumberOfComponents(3)
+                vtk_colors.SetName("Colors")
+                for i in range(min(num_points_after, num_points_before)):
+                    color = saved_point_scalars.GetTuple3(i)
+                    vtk_colors.InsertNextTuple3(int(color[0]), int(color[1]), int(color[2]))
+                # 残りの頂点には最後の色を使用
+                if num_points_after > num_points_before and num_points_before > 0:
+                    last_color = saved_point_scalars.GetTuple3(num_points_before - 1)
+                    for i in range(num_points_before, num_points_after):
+                        vtk_colors.InsertNextTuple3(int(last_color[0]), int(last_color[1]), int(last_color[2]))
+                poly_data.GetPointData().SetScalars(vtk_colors)
+                print(f"Adjusted vertex colors after cleaning: {num_points_before} -> {num_points_after} vertices")
+        
+        if saved_cell_scalars is not None:
+            # 面カラーがある場合、Clean後の面数に合わせて再設定
+            num_cells_after = poly_data.GetNumberOfCells()
+            num_cells_before = saved_cell_scalars.GetNumberOfTuples()
+            
+            if num_cells_after == num_cells_before:
+                # 面数が同じ場合はそのまま再設定
+                poly_data.GetCellData().SetScalars(saved_cell_scalars)
+                print(f"Restored face colors after cleaning: {num_cells_after} cells")
+            else:
+                # 面数が変わった場合は、最初のN個の色を使用
+                vtk_colors = vtk.vtkUnsignedCharArray()
+                vtk_colors.SetNumberOfComponents(3)
+                vtk_colors.SetName("Colors")
+                for i in range(min(num_cells_after, num_cells_before)):
+                    color = saved_cell_scalars.GetTuple3(i)
+                    vtk_colors.InsertNextTuple3(int(color[0]), int(color[1]), int(color[2]))
+                # 残りの面には最後の色を使用
+                if num_cells_after > num_cells_before and num_cells_before > 0:
+                    last_color = saved_cell_scalars.GetTuple3(num_cells_before - 1)
+                    for i in range(num_cells_before, num_cells_after):
+                        vtk_colors.InsertNextTuple3(int(last_color[0]), int(last_color[1]), int(last_color[2]))
+                poly_data.GetCellData().SetScalars(vtk_colors)
+                print(f"Adjusted face colors after cleaning: {num_cells_before} -> {num_cells_after} cells")
 
     elif file_ext == '.obj':
         # Load OBJ file using VTK
@@ -2935,17 +3262,16 @@ class KitchenColorPicker:
         if dialog.exec() == QtWidgets.QDialog.Accepted:
             color = dialog.currentColor()
             if color.isValid():
-                # Update RGBA inputs
+                # Update only RGB values, preserve existing alpha
                 new_color = [
                     color.red() / 255.0,
                     color.green() / 255.0,
                     color.blue() / 255.0,
-                    color.alpha() / 255.0
+                    self.current_color[3]  # Preserve existing alpha
                 ]
 
-                # Update input fields (only RGB if alpha is disabled)
-                num_inputs = 4 if self.enable_alpha else 3
-                for i in range(num_inputs):
+                # Update input fields (only RGB - never update alpha from color picker)
+                for i in range(3):
                     self.color_inputs[i].setText(f"{new_color[i]:.3f}")
 
                 # Update internal state
@@ -3028,3 +3354,1877 @@ class KitchenColorPicker:
 
         # Update visual sample
         self._update_color_sample()
+
+
+# ============================================================================
+# COORDINATE CONVERSION UTILITIES
+# ============================================================================
+
+class ConversionUtils:
+    """Coordinate and rotation conversion utilities for URDF/MJCF parsing.
+
+    This class provides static methods for converting between different
+    rotation representations (quaternions, RPY, Euler angles).
+    """
+
+    @staticmethod
+    def rpy_to_quat(rpy):
+        """Convert RPY (roll, pitch, yaw) to quaternion (w, x, y, z).
+
+        Args:
+            rpy: List of [roll, pitch, yaw] in radians
+
+        Returns:
+            List of [w, x, y, z] quaternion (MuJoCo convention)
+        """
+        roll, pitch, yaw = rpy[0], rpy[1], rpy[2]
+
+        # Calculate half angles
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cy = math.cos(yaw * 0.5)
+        sy = math.sin(yaw * 0.5)
+
+        # Quaternion components
+        w = cr * cp * cy + sr * sp * sy
+        x = sr * cp * cy - cr * sp * sy
+        y = cr * sp * cy + sr * cp * sy
+        z = cr * cp * sy - sr * sp * cy
+
+        return [w, x, y, z]
+
+    @staticmethod
+    def quat_to_rpy(quat):
+        """Convert quaternion (w, x, y, z) to RPY (roll, pitch, yaw).
+
+        Args:
+            quat: List of [w, x, y, z] quaternion (MuJoCo convention)
+
+        Returns:
+            List of [roll, pitch, yaw] in radians
+        """
+        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+
+        # Roll (x-axis rotation)
+        sinr_cosp = 2 * (w * x + y * z)
+        cosr_cosp = 1 - 2 * (x * x + y * y)
+        roll = math.atan2(sinr_cosp, cosr_cosp)
+
+        # Pitch (y-axis rotation)
+        sinp = 2 * (w * y - z * x)
+        if abs(sinp) >= 1:
+            pitch = math.copysign(math.pi / 2, sinp)  # use 90 degrees if out of range
+        else:
+            pitch = math.asin(sinp)
+
+        # Yaw (z-axis rotation)
+        siny_cosp = 2 * (w * z + x * y)
+        cosy_cosp = 1 - 2 * (y * y + z * z)
+        yaw = math.atan2(siny_cosp, cosy_cosp)
+
+        return [roll, pitch, yaw]
+
+    @staticmethod
+    def euler_to_rpy(euler_angles, sequence='xyz'):
+        """Convert Euler angles (degrees) to RPY (radians).
+
+        Args:
+            euler_angles: List of [a1, a2, a3] in degrees
+            sequence: Euler rotation sequence ('xyz', 'zyx', etc.)
+
+        Returns:
+            List of [roll, pitch, yaw] in radians
+        """
+        # Convert degrees to radians
+        angles_rad = [math.radians(a) for a in euler_angles]
+
+        # Rotation matrices for each axis
+        def Rx(angle):
+            c, s = np.cos(angle), np.sin(angle)
+            return np.array([[1, 0, 0], [0, c, -s], [0, s, c]])
+
+        def Ry(angle):
+            c, s = np.cos(angle), np.sin(angle)
+            return np.array([[c, 0, s], [0, 1, 0], [-s, 0, c]])
+
+        def Rz(angle):
+            c, s = np.cos(angle), np.sin(angle)
+            return np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]])
+
+        rot_funcs = {'x': Rx, 'y': Ry, 'z': Rz}
+
+        # Multiply rotation matrices according to sequence
+        R = np.eye(3)
+        for i, axis in enumerate(sequence):
+            R = R @ rot_funcs[axis](angles_rad[i])
+
+        # Extract RPY (XYZ order) from rotation matrix
+        # R = Rz(yaw) * Ry(pitch) * Rx(roll)
+        sy = math.sqrt(R[0, 0]**2 + R[1, 0]**2)
+
+        singular = sy < 1e-6
+
+        if not singular:
+            roll = math.atan2(R[2, 1], R[2, 2])
+            pitch = math.atan2(-R[2, 0], sy)
+            yaw = math.atan2(R[1, 0], R[0, 0])
+        else:
+            roll = math.atan2(-R[1, 2], R[1, 1])
+            pitch = math.atan2(-R[2, 0], sy)
+            yaw = 0
+
+        return [roll, pitch, yaw]
+
+
+# ============================================================================
+# FILE PATH RESOLUTION UTILITIES
+# ============================================================================
+
+def normalize_name_for_matching(name):
+    """名前をマッチング用に正規化する。
+    
+    大文字小文字、ハイフン、アンダースコア、ドットを無視して比較できるようにする。
+    
+    Args:
+        name: 正規化する名前
+    
+    Returns:
+        正規化された名前
+    """
+    return name.lower().replace('_', '').replace('-', '').replace('.', '').strip()
+
+
+def match_package_name(package_name, dir_name):
+    """パッケージ名とディレクトリ名が一致するかチェックする。
+    
+    複数のマッチング方法を試行：
+    1. 完全一致（正規化後）
+    2. 部分一致（正規化後）- パッケージ名がディレクトリ名の先頭に含まれる
+    3. 元の名前での部分一致（大文字小文字を無視）
+    
+    Args:
+        package_name: パッケージ名
+        dir_name: ディレクトリ名
+    
+    Returns:
+        一致する場合はTrue、そうでない場合はFalse
+    """
+    if not package_name or not dir_name:
+        return False
+    
+    package_normalized = normalize_name_for_matching(package_name)
+    dir_normalized = normalize_name_for_matching(dir_name)
+    
+    # 完全一致
+    if package_normalized == dir_normalized:
+        return True
+    
+    # 部分一致（パッケージ名がディレクトリ名の先頭に含まれる、またはその逆）
+    # 例: 'premaidai_description' と 'premaidai_description-master'
+    if package_normalized in dir_normalized or dir_normalized in package_normalized:
+        return True
+    
+    # 元の名前での部分一致（大文字小文字を無視）
+    package_lower = package_name.lower().strip()
+    dir_lower = dir_name.lower().strip()
+    
+    # パッケージ名がディレクトリ名の先頭に含まれる（例: 'premaidai_description' in 'premaidai_description-master'）
+    if package_lower in dir_lower:
+        return True
+    
+    # ディレクトリ名がパッケージ名の先頭に含まれる（例: 'premaidai' in 'premaidai_description'）
+    if dir_lower in package_lower:
+        return True
+    
+    # 共通のプレフィックスをチェック（より柔軟なマッチング）
+    # パッケージ名の最初の部分が一致する場合（例: 'premaidai' が両方に含まれる）
+    package_words = package_lower.replace('_', ' ').replace('-', ' ').split()
+    dir_words = dir_lower.replace('_', ' ').replace('-', ' ').split()
+    
+    if package_words and dir_words:
+        # 最初の単語が一致する場合
+        if package_words[0] == dir_words[0] and len(package_words[0]) >= 3:
+            return True
+        # パッケージ名の主要部分がディレクトリ名に含まれる
+        for word in package_words:
+            if len(word) >= 3 and word in dir_lower:
+                return True
+    
+    return False
+
+
+def find_package_root(xacro_file_path, package_name, max_search_depth=10, verbose=False):
+    """パッケージ名からパッケージのルートディレクトリを推測する。
+    
+    汎用的なパッケージ検索アルゴリズム：
+    1. xacroファイルのディレクトリから親ディレクトリを探索
+    2. 各階層でパッケージ名とディレクトリ名をマッチング
+    3. 見つかった最初のマッチを返す
+    
+    Args:
+        xacro_file_path: xacroファイルのパス
+        package_name: パッケージ名（例: 'premaidai_description'）
+        max_search_depth: 最大探索階層数（デフォルト: 10）
+        verbose: 詳細なログを出力するかどうか
+    
+    Returns:
+        パッケージのルートディレクトリのパス、見つからない場合はNone
+    """
+    if not package_name or not package_name.strip():
+        if verbose:
+            print("  Warning: Empty package name provided")
+        return None
+    
+    package_name = package_name.strip()
+    xacro_abs_path = os.path.abspath(xacro_file_path)
+    current_path = os.path.dirname(xacro_abs_path)
+    root_path = os.path.abspath(os.sep)  # システムのルートパス
+    
+    if verbose:
+        print(f"  Searching for package '{package_name}' starting from: {current_path}")
+    
+    # 親ディレクトリを探索
+    search_depth = 0
+    while current_path and current_path != root_path and search_depth < max_search_depth:
+        if os.path.isdir(current_path):
+            dir_name = os.path.basename(current_path)
+            
+            if verbose:
+                print(f"    Checking directory: {dir_name} at {current_path}")
+            
+            # パッケージ名とディレクトリ名をマッチング
+            if match_package_name(package_name, dir_name):
+                if verbose:
+                    print(f"  Found package root: {current_path} (matched '{package_name}' with '{dir_name}')")
+                return current_path
+        
+        # 親ディレクトリに移動
+        parent_path = os.path.dirname(current_path)
+        if parent_path == current_path:  # ルートに到達
+            break
+        current_path = parent_path
+        search_depth += 1
+    
+    if verbose:
+        print(f"  Could not find package root for: {package_name} (searched {search_depth} levels)")
+    return None
+
+
+def resolve_ros_find_syntax(path_with_find, xacro_file_path, verbose=False):
+    """ROSの$(find package_name)構文を解決する。
+    
+    Args:
+        path_with_find: $(find package_name)/path/to/file 形式のパス
+        xacro_file_path: xacroファイルのパス
+        verbose: 詳細なログを出力するかどうか
+    
+    Returns:
+        解決されたパス、解決できない場合は元のパス
+    """
+    import re
+    
+    # $(find package_name) パターンを検索
+    find_pattern = r'\$\(find\s+([^)]+)\)'
+    
+    def replace_find(match):
+        package_name = match.group(1).strip()
+        package_root = find_package_root(xacro_file_path, package_name, max_search_depth=10, verbose=verbose)
+        
+        if package_root:
+            # $(find package_name) をパッケージルートに置き換え
+            if verbose:
+                print(f"  Resolved $(find {package_name}) -> {package_root}")
+            return package_root
+        else:
+            # 見つからない場合は元のまま
+            if verbose:
+                print(f"  Warning: Could not resolve $(find {package_name})")
+            return match.group(0)
+    
+    # すべての$(find ...)を置き換え
+    resolved_path = re.sub(find_pattern, replace_find, path_with_find)
+    
+    # パスを正規化
+    resolved_path = os.path.normpath(resolved_path)
+    
+    return resolved_path
+
+
+def generate_search_candidates(relative_path, base_dir, parent_depth=1, child_depth=1, include_siblings=True):
+    """ファイルパス解決のための探索候補を生成する。
+    
+    汎用的な探索候補生成アルゴリズム：
+    1. 基準ディレクトリからの相対パス
+    2. 親ディレクトリ（指定階層まで）からの相対パス
+    3. 子ディレクトリ（指定階層まで）からの相対パス
+    4. 兄弟ディレクトリからの相対パス（オプション）
+    
+    Args:
+        relative_path: 解決したい相対パス
+        base_dir: 基準ディレクトリ
+        parent_depth: 親ディレクトリの探索階層数（デフォルト: 1）
+        child_depth: 子ディレクトリの探索階層数（デフォルト: 1）
+        include_siblings: 兄弟ディレクトリを含めるかどうか（デフォルト: True）
+    
+    Returns:
+        探索候補のリスト（重複なし、正規化済み）
+    """
+    candidates = []
+    base_dir = os.path.abspath(base_dir)
+    
+    # 1. 基準ディレクトリからの相対パス
+    candidates.append(os.path.normpath(os.path.join(base_dir, relative_path)))
+    
+    # 2. 親ディレクトリからの相対パス（指定階層まで）
+    current_parent = base_dir
+    for _ in range(parent_depth):
+        parent_dir = os.path.dirname(current_parent)
+        if parent_dir == current_parent:  # ルートに到達
+            break
+        candidates.append(os.path.normpath(os.path.join(parent_dir, relative_path)))
+        
+        # ../で始まるパスの場合、../を除去したパスも試す
+        if relative_path.startswith('../'):
+            path_without_parent = relative_path
+            depth = 0
+            while path_without_parent.startswith('../'):
+                path_without_parent = path_without_parent[3:]
+                depth += 1
+            if depth > 0:
+                # 親ディレクトリから相対パスを解決
+                for i in range(min(depth, parent_depth)):
+                    parent_candidate = os.path.normpath(os.path.join(parent_dir, path_without_parent))
+                    candidates.append(parent_candidate)
+        
+        current_parent = parent_dir
+    
+    # 3. 子ディレクトリからの相対パス（指定階層まで）
+    def collect_child_dirs(directory, max_depth, current_depth=0):
+        """子ディレクトリを再帰的に収集する"""
+        child_dirs = []
+        if current_depth >= max_depth:
+            return child_dirs
+        
+        if os.path.isdir(directory):
+            try:
+                for item in os.listdir(directory):
+                    item_path = os.path.join(directory, item)
+                    if os.path.isdir(item_path):
+                        child_dirs.append(item_path)
+                        # 再帰的に子ディレクトリを収集
+                        child_dirs.extend(collect_child_dirs(item_path, max_depth, current_depth + 1))
+            except (OSError, PermissionError):
+                pass
+        return child_dirs
+    
+    child_dirs = collect_child_dirs(base_dir, child_depth)
+    for child_dir in child_dirs:
+        candidates.append(os.path.normpath(os.path.join(child_dir, relative_path)))
+    
+    # 4. 兄弟ディレクトリからの相対パス（オプション）
+    if include_siblings:
+        parent_dir = os.path.dirname(base_dir)
+        if os.path.isdir(parent_dir):
+            try:
+                for item in os.listdir(parent_dir):
+                    sibling_path = os.path.join(parent_dir, item)
+                    if os.path.isdir(sibling_path) and sibling_path != base_dir:
+                        candidates.append(os.path.normpath(os.path.join(sibling_path, relative_path)))
+            except (OSError, PermissionError):
+                pass
+    
+    # 5. ファイル名のみの場合、各ディレクトリで検索
+    if os.path.basename(relative_path) == relative_path:
+        # ファイル名のみの場合は、各ディレクトリで直接検索
+        all_dirs = [base_dir]
+        all_dirs.extend([os.path.dirname(base_dir)] if parent_depth > 0 else [])
+        all_dirs.extend(child_dirs)
+        
+        for search_dir in all_dirs:
+            candidates.append(os.path.normpath(os.path.join(search_dir, relative_path)))
+    
+    # 重複を除去
+    seen = set()
+    unique_candidates = []
+    for candidate in candidates:
+        normalized = os.path.normpath(candidate)
+        if normalized not in seen:
+            seen.add(normalized)
+            unique_candidates.append(normalized)
+    
+    return unique_candidates
+
+
+def resolve_file_path_aggressive(relative_path, base_file_path, parent_depth=1, child_depth=1, verbose=False):
+    """強力にファイルパスを解決する関数。
+    
+    汎用的なファイルパス解決アルゴリズム：
+    1. ROSの$(find ...)構文を解決
+    2. 探索候補を生成（親/子ディレクトリ、兄弟ディレクトリ）
+    3. 各候補の存在を確認
+    
+    Args:
+        relative_path: 解決したい相対パス（ファイル名または相対パス）
+        base_file_path: 基準となるファイルのパス（xacroファイルなど）
+        parent_depth: 親ディレクトリの探索階層数（デフォルト: 1）
+        child_depth: 子ディレクトリの探索階層数（デフォルト: 1）
+        verbose: 詳細なログを出力するかどうか
+    
+    Returns:
+        見つかったファイルの絶対パス、見つからない場合はNone
+    """
+    if not relative_path:
+        return None
+    
+    # $(find package_name)構文を解決
+    if '$(' in relative_path and 'find' in relative_path:
+        relative_path = resolve_ros_find_syntax(relative_path, base_file_path, verbose)
+        # 解決後、絶対パスになっている可能性がある
+        if os.path.isabs(relative_path) and os.path.exists(relative_path) and os.path.isfile(relative_path):
+            if verbose:
+                print(f"  Resolved ROS find syntax: {relative_path}")
+            return relative_path
+    
+    # 基準ファイルのディレクトリ
+    base_dir = os.path.dirname(os.path.abspath(base_file_path))
+    
+    # 探索候補を生成
+    candidates = generate_search_candidates(relative_path, base_dir, parent_depth, child_depth)
+    
+    # 各候補の存在を確認
+    for candidate in candidates:
+        if os.path.exists(candidate) and os.path.isfile(candidate):
+            if verbose:
+                print(f"  Resolved path: {relative_path} -> {candidate}")
+            return candidate
+    
+    if verbose:
+        print(f"  Could not resolve path: {relative_path} (searched {len(candidates)} candidates)")
+    return None
+
+
+def resolve_path_in_xml_element(elem, attr_names, xacro_file_path, verbose=False):
+    """XML要素の指定された属性のパスを解決する。
+    
+    汎用的なXML属性パス解決関数：
+    1. 指定された属性名のリストから値を取得
+    2. $(find ...)構文を解決
+    3. 相対パスを解決
+    4. 解決されたパスを属性に設定
+    
+    Args:
+        elem: XML要素
+        attr_names: パスを含む可能性のある属性名のリスト（例: ['filename', 'file', 'uri']）
+        xacro_file_path: xacroファイルのパス
+        verbose: 詳細なログを出力するかどうか
+    
+    Returns:
+        パスが解決されて変更された場合はTrue、そうでない場合はFalse
+    """
+    modified = False
+    
+    # 指定された属性名から値を取得
+    path_value = None
+    attr_name = None
+    for name in attr_names:
+        if elem.get(name):
+            path_value = elem.get(name)
+            attr_name = name
+            break
+    
+    if not path_value:
+        return False
+    
+    original_path = path_value
+    
+    # $(find ...)構文を解決
+    if '$(' in path_value and 'find' in path_value:
+        resolved_path = resolve_ros_find_syntax(path_value, xacro_file_path, verbose)
+        if resolved_path != path_value:
+            elem.set(attr_name, resolved_path)
+            modified = True
+            if verbose:
+                print(f"  Resolved ROS find in {attr_name}: {original_path} -> {resolved_path}")
+            path_value = resolved_path
+    
+    # 相対パスを解決（package://は除外）
+    if (not os.path.isabs(path_value) and 
+        not path_value.startswith('package://') and
+        not path_value.startswith('file://')):
+        resolved = resolve_file_path_aggressive(path_value, xacro_file_path, verbose)
+        if resolved:
+            elem.set(attr_name, resolved)
+            modified = True
+            if verbose:
+                print(f"  Resolved {attr_name} attribute: {original_path} -> {resolved}")
+    
+    return modified
+
+
+# ============================================================================
+# URDF PARSER
+# ============================================================================
+
+class URDFParser:
+    """Parser for URDF (Unified Robot Description Format) files.
+
+    This class provides methods to parse URDF XML files and extract
+    robot structure information including links, joints, materials,
+    and mesh file paths.
+
+    Usage:
+        parser = URDFParser()
+        result = parser.parse_urdf('/path/to/robot.urdf')
+        
+        # Access parsed data
+        robot_name = result['robot_name']
+        links_data = result['links']
+        joints_data = result['joints']
+        materials_data = result['materials']
+    """
+
+    def __init__(self, verbose=True):
+        """Initialize URDF parser.
+
+        Args:
+            verbose: If True, print parsing progress and information
+        """
+        self.verbose = verbose
+
+    def _expand_xacro(self, xacro_file_path):
+        """Expand xacro file to URDF XML string using xacrodoc.
+
+        Args:
+            xacro_file_path: Path to xacro file
+
+        Returns:
+            str: Expanded URDF XML string
+
+        Raises:
+            FileNotFoundError: If xacro file does not exist
+            RuntimeError: If xacrodoc is not available or expansion fails
+        """
+        if not os.path.exists(xacro_file_path):
+            raise FileNotFoundError(f"Xacro file not found: {xacro_file_path}")
+
+        if self.verbose:
+            print(f"Expanding xacro file using xacrodoc: {xacro_file_path}")
+
+        # Try xacrodoc library
+        try:
+            from xacrodoc import XacroDoc
+            
+            if self.verbose:
+                print("Using xacrodoc library")
+            
+            # xacroファイルからXacroDocオブジェクトを作成
+            xacro_file_abs = os.path.abspath(xacro_file_path)
+            doc = XacroDoc.from_file(xacro_file_abs)
+            
+            # URDF文字列に変換
+            urdf_xml_string = doc.to_urdf_string()
+            
+            # 生成されたXMLが正しくパースできるか確認
+            if urdf_xml_string:
+                try:
+                    root = ET.fromstring(urdf_xml_string)
+                    # robot要素の存在を確認
+                    if root.tag != 'robot':
+                        if self.verbose:
+                            print(f"  Warning: Root element is '{root.tag}', expected 'robot'")
+                        # robot要素が見つからない場合は、子要素を探す
+                        robot_elem = root.find('robot')
+                        if robot_elem is None:
+                            # ルート要素がrobotでない場合は警告を出すが、続行
+                            if self.verbose:
+                                print(f"  Warning: No 'robot' element found in expanded xacro")
+                    else:
+                        if self.verbose:
+                            print(f"  Successfully expanded xacro to URDF (robot element found)")
+                    
+                    # デバッグ: 展開されたXMLの構造を確認
+                    if self.verbose:
+                        link_count = len(root.findall('link'))
+                        joint_count = len(root.findall('joint'))
+                        print(f"  Found {link_count} link elements, {joint_count} joint elements in expanded XML")
+                        if link_count == 0:
+                            print(f"  WARNING: No links found in expanded xacro!")
+                            # XMLの最初の500文字を出力してデバッグ
+                            print(f"  First 500 chars of expanded XML:")
+                            print(f"  {urdf_xml_string[:500]}")
+                    
+                    return urdf_xml_string
+                except ET.ParseError as parse_err:
+                    if self.verbose:
+                        print(f"  Warning: Generated XML has parse error: {parse_err}")
+                        print(f"  First 200 chars: {urdf_xml_string[:200]}")
+                    raise RuntimeError(f"xacrodoc generated invalid XML: {parse_err}")
+            else:
+                raise RuntimeError("xacrodoc returned empty result")
+                
+        except ImportError:
+            error_msg = (
+                "xacrodoc library not found. Please install it using:\n\n"
+                "  pip install xacrodoc\n\n"
+                f"Xacro file: {xacro_file_path}"
+            )
+            raise RuntimeError(error_msg)
+        except Exception as e:
+            error_msg = (
+                f"Failed to expand xacro file using xacrodoc: {e}\n"
+                f"File: {xacro_file_path}\n"
+            )
+            if self.verbose:
+                import traceback
+                traceback.print_exc()
+            raise RuntimeError(error_msg)
+
+    def parse_urdf(self, urdf_file_path):
+        """Parse URDF file and extract robot structure information.
+        
+        Supports both .urdf and .xacro files. If a .xacro file is provided,
+        it will be automatically expanded before parsing.
+
+        Args:
+            urdf_file_path: Path to URDF or xacro file
+
+        Returns:
+            Dictionary containing:
+                - robot_name: Name of the robot
+                - links: Dictionary of link data
+                - joints: List of joint data
+                - materials: Dictionary of material colors
+                - missing_meshes: List of meshes that could not be found
+
+        Raises:
+            FileNotFoundError: If URDF/xacro file does not exist
+            ET.ParseError: If URDF file is not valid XML
+            RuntimeError: If xacro expansion fails
+        """
+        if not os.path.exists(urdf_file_path):
+            raise FileNotFoundError(f"URDF/xacro file not found: {urdf_file_path}")
+
+        # Check if file is a xacro file
+        file_ext = os.path.splitext(urdf_file_path)[1].lower()
+        is_xacro = file_ext in ['.xacro', '.xacro.urdf']
+
+        if is_xacro:
+            if self.verbose:
+                print(f"Detected xacro file: {urdf_file_path}")
+            
+            # Expand xacro to URDF
+            urdf_xml_string = self._expand_xacro(urdf_file_path)
+            
+            # 展開されたXML文字列が有効か確認
+            if not urdf_xml_string or not urdf_xml_string.strip():
+                raise RuntimeError("xacro expansion returned empty string")
+            
+            if self.verbose:
+                print(f"  Expanded xacro XML length: {len(urdf_xml_string)} characters")
+            
+            # Parse expanded URDF XML string
+            try:
+                root = ET.fromstring(urdf_xml_string)
+                
+                # デバッグ: 展開されたXMLの構造を確認
+                if self.verbose:
+                    print(f"  Expanded XML root tag: {root.tag}")
+                    # 最初の数個のリンクとジョイントを確認
+                    link_count = len(root.findall('link'))
+                    joint_count = len(root.findall('joint'))
+                    print(f"  Found {link_count} link elements, {joint_count} joint elements in expanded XML")
+                    if link_count == 0:
+                        print(f"  WARNING: No links found in expanded xacro!")
+                        # XMLの最初の500文字を出力してデバッグ
+                        print(f"  First 500 chars of expanded XML:")
+                        print(f"  {urdf_xml_string[:500]}")
+                
+                # robot要素の存在を確認
+                if root.tag != 'robot':
+                    if self.verbose:
+                        print(f"  Warning: Root element is '{root.tag}', expected 'robot'")
+                    # robot要素が見つからない場合は、子要素を探す
+                    robot_elem = root.find('robot')
+                    if robot_elem is not None:
+                        root = robot_elem
+                        if self.verbose:
+                            print(f"  Found 'robot' element as child, using it")
+                    else:
+                        if self.verbose:
+                            print(f"  Warning: No 'robot' element found, but continuing with root element '{root.tag}'")
+                else:
+                    if self.verbose:
+                        print(f"  Successfully parsed expanded xacro XML (robot element found)")
+            except ET.ParseError as e:
+                if self.verbose:
+                    print(f"Error parsing expanded xacro XML:")
+                    print(f"  First 500 chars: {urdf_xml_string[:500]}")
+                    print(f"  Last 200 chars: {urdf_xml_string[-200:]}")
+                raise RuntimeError(f"Failed to parse expanded xacro XML: {e}\nFirst 500 chars: {urdf_xml_string[:500]}")
+        else:
+            if self.verbose:
+                print(f"Parsing URDF from: {urdf_file_path}")
+            
+            # Parse URDF file directly
+            tree = ET.parse(urdf_file_path)
+            root = tree.getroot()
+            
+            # robot要素の存在を確認
+            if root.tag != 'robot':
+                if self.verbose:
+                    print(f"  Warning: Root element is '{root.tag}', expected 'robot'")
+                # robot要素が見つからない場合は、子要素を探す
+                robot_elem = root.find('robot')
+                if robot_elem is not None:
+                    root = robot_elem
+                    if self.verbose:
+                        print(f"  Found 'robot' element as child, using it")
+
+        # Get robot name from robot element or file name
+        robot_name = root.get('name')
+        if not robot_name:
+            # robot要素にname属性がない場合は、ファイル名から取得
+            robot_name = os.path.splitext(os.path.basename(urdf_file_path))[0]
+            if self.verbose:
+                print(f"  Robot name not found in XML, using filename: {robot_name}")
+        else:
+            if self.verbose:
+                print(f"Robot name from XML: {robot_name}")
+
+        # Extract data
+        materials_data = self._parse_materials(root)
+        links_data, missing_meshes = self._parse_links(root, urdf_file_path, materials_data)
+        joints_data = self._parse_joints(root, links_data)
+
+        return {
+            'robot_name': robot_name,
+            'links': links_data,
+            'joints': joints_data,
+            'materials': materials_data,
+            'missing_meshes': missing_meshes
+        }
+
+    def _parse_materials(self, root):
+        """Parse material information from URDF.
+
+        Args:
+            root: XML root element
+
+        Returns:
+            Dictionary mapping material names to RGB colors
+        """
+        materials_data = {}
+
+        for material_elem in root.findall('material'):
+            mat_name = material_elem.get('name')
+            color_elem = material_elem.find('color')
+            if color_elem is not None:
+                rgba_str = color_elem.get('rgba', '1.0 1.0 1.0 1.0')
+                rgba = [float(v) for v in rgba_str.split()]
+                materials_data[mat_name] = rgba[:3]  # RGB only
+
+        if self.verbose:
+            print(f"Parsed {len(materials_data)} materials")
+
+        return materials_data
+
+    def _parse_links(self, root, urdf_file_path, materials_data):
+        """Parse link information from URDF.
+
+        Args:
+            root: XML root element
+            urdf_file_path: Path to URDF file (for resolving mesh paths)
+            materials_data: Dictionary of material colors
+
+        Returns:
+            Tuple of (links_data dict, missing_meshes list)
+        """
+        links_data = {}
+        missing_meshes = []
+
+        # デバッグ: リンク要素の数を確認
+        link_elems = root.findall('link')
+        if self.verbose:
+            print(f"\n[URDFParser] Found {len(link_elems)} link elements in URDF")
+
+        for link_elem in link_elems:
+            link_name = link_elem.get('name')
+            if not link_name:
+                if self.verbose:
+                    print(f"  Warning: Found link element without name attribute, skipping")
+                continue
+            
+            if self.verbose:
+                print(f"  Parsing link: {link_name}")
+            link_data = {
+                'name': link_name,
+                'mass': 0.0,
+                'inertia': {'ixx': 0.0, 'ixy': 0.0, 'ixz': 0.0, 'iyy': 0.0, 'iyz': 0.0, 'izz': 0.0},
+                'inertial_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
+                'visual_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
+                'stl_file': None,
+                'color': [1.0, 1.0, 1.0],
+                'stl_filename_original': None,
+                'mesh_scale': [1.0, 1.0, 1.0],
+                'decorations': [],
+                'collision_mesh': None
+            }
+
+            # Parse inertial information
+            inertial_elem = link_elem.find('inertial')
+            if inertial_elem is not None:
+                mass_elem = inertial_elem.find('mass')
+                if mass_elem is not None:
+                    link_data['mass'] = float(mass_elem.get('value', 0.0))
+
+                inertia_elem = inertial_elem.find('inertia')
+                if inertia_elem is not None:
+                    for key in ['ixx', 'ixy', 'ixz', 'iyy', 'iyz', 'izz']:
+                        link_data['inertia'][key] = float(inertia_elem.get(key, 0.0))
+
+                origin_elem = inertial_elem.find('origin')
+                if origin_elem is not None:
+                    xyz_str = origin_elem.get('xyz', '0 0 0')
+                    rpy_str = origin_elem.get('rpy', '0 0 0')
+                    link_data['inertial_origin']['xyz'] = [float(v) for v in xyz_str.split()]
+                    link_data['inertial_origin']['rpy'] = [float(v) for v in rpy_str.split()]
+
+                if self.verbose:
+                    print(f"\n[URDF_INERTIAL] link_name={link_name}")
+                    print(f"  mass={link_data['mass']:.9e}")
+                    print(f"  origin_xyz={link_data['inertial_origin']['xyz']}")
+                    print(f"  origin_rpy={link_data['inertial_origin']['rpy']}")
+
+            # Parse visual information (multiple visual tags supported)
+            visual_elems = link_elem.findall('visual')
+            for visual_idx, visual_elem in enumerate(visual_elems):
+                is_main_visual = (visual_idx == 0)
+
+                current_stl_path = None
+                current_color = [1.0, 1.0, 1.0]
+                current_visual_origin = {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]}
+
+                # Parse visual origin
+                visual_origin_elem = visual_elem.find('origin')
+                if visual_origin_elem is not None:
+                    xyz_str = visual_origin_elem.get('xyz', '0 0 0')
+                    rpy_str = visual_origin_elem.get('rpy', '0 0 0')
+                    try:
+                        xyz_values = [float(v) for v in xyz_str.split()]
+                        rpy_values = [float(v) for v in rpy_str.split()]
+                        if len(xyz_values) == 3:
+                            current_visual_origin['xyz'] = xyz_values
+                        if len(rpy_values) == 3:
+                            current_visual_origin['rpy'] = rpy_values
+                    except ValueError as e:
+                        if self.verbose:
+                            print(f"Warning: Invalid visual origin values: {e}")
+
+                # Parse geometry
+                geometry_elem = visual_elem.find('geometry')
+                mesh_scale = [1.0, 1.0, 1.0]
+                
+                if geometry_elem is not None:
+                    mesh_elem = geometry_elem.find('mesh')
+                    if mesh_elem is not None:
+                        mesh_filename = mesh_elem.get('filename', '')
+                        
+                        # Parse scale attribute
+                        scale_str = mesh_elem.get('scale', '')
+                        if scale_str:
+                            try:
+                                scale_values = [float(v) for v in scale_str.split()]
+                                if len(scale_values) == 3:
+                                    mesh_scale = scale_values
+                            except ValueError:
+                                if self.verbose:
+                                    print(f"Warning: Invalid scale attribute '{scale_str}'")
+
+                        # Resolve mesh file path
+                        resolved_path = self._resolve_mesh_path(mesh_filename, urdf_file_path)
+                        
+                        if resolved_path:
+                            current_stl_path = resolved_path
+                        else:
+                            if self.verbose:
+                                print(f"Could not find mesh file for link {link_name}: {mesh_filename}")
+                            if is_main_visual:
+                                link_data['stl_filename_original'] = mesh_filename
+                                mesh_basename = os.path.basename(mesh_filename)
+                                missing_meshes.append({
+                                    'link_name': link_name,
+                                    'filename': mesh_filename,
+                                    'basename': mesh_basename
+                                })
+
+                # Parse material color
+                material_elem = visual_elem.find('material')
+                if material_elem is not None:
+                    mat_name = material_elem.get('name')
+                    if mat_name in materials_data:
+                        current_color = materials_data[mat_name]
+                    else:
+                        color_elem = material_elem.find('color')
+                        if color_elem is not None:
+                            rgba_str = color_elem.get('rgba', '1.0 1.0 1.0 1.0')
+                            rgba = [float(v) for v in rgba_str.split()]
+                            current_color = rgba[:3]
+                        elif mat_name and mat_name.startswith('#'):
+                            # Hex color code
+                            hex_color = mat_name[1:]
+                            if len(hex_color) == 6:
+                                r = int(hex_color[0:2], 16) / 255.0
+                                g = int(hex_color[2:4], 16) / 255.0
+                                b = int(hex_color[4:6], 16) / 255.0
+                                current_color = [r, g, b]
+
+                # Store data
+                if is_main_visual:
+                    if current_stl_path:
+                        link_data['stl_file'] = current_stl_path
+                    link_data['color'] = current_color
+                    link_data['mesh_scale'] = mesh_scale
+                    link_data['visual_origin'] = current_visual_origin
+                else:
+                    # Decoration visual
+                    if current_stl_path:
+                        stl_name = os.path.splitext(os.path.basename(current_stl_path))[0]
+                        decoration_data = {
+                            'name': stl_name,
+                            'stl_file': current_stl_path,
+                            'color': current_color,
+                            'mesh_scale': mesh_scale,
+                            'visual_origin': current_visual_origin
+                        }
+                        link_data['decorations'].append(decoration_data)
+
+            # Parse collision information
+            collision_elems = link_elem.findall('collision')
+            for collision_elem in collision_elems:
+                geometry_elem = collision_elem.find('geometry')
+                if geometry_elem is not None:
+                    # Check for mesh collision
+                    mesh_elem = geometry_elem.find('mesh')
+                    if mesh_elem is not None:
+                        mesh_filename = mesh_elem.get('filename', '')
+                        resolved_path = self._resolve_mesh_path(mesh_filename, urdf_file_path)
+                        if resolved_path:
+                            link_data['collision_mesh'] = resolved_path
+                            link_data['collider_type'] = 'mesh'
+                            link_data['collider_enabled'] = True
+                            break
+                    
+                    # Check for primitive collision geometries
+                    box_elem = geometry_elem.find('box')
+                    sphere_elem = geometry_elem.find('sphere')
+                    cylinder_elem = geometry_elem.find('cylinder')
+                    
+                    if box_elem is not None:
+                        # Parse box collision
+                        size_str = box_elem.get('size', '')
+                        if size_str:
+                            sizes = [float(s) for s in size_str.split()]
+                            if len(sizes) >= 3:
+                                collider_data = {
+                                    'type': 'box',
+                                    'geometry': {
+                                        'size_x': sizes[0],
+                                        'size_y': sizes[1],
+                                        'size_z': sizes[2]
+                                    },
+                                    'position': [0.0, 0.0, 0.0],
+                                    'rotation': [0.0, 0.0, 0.0]  # degrees
+                                }
+                                # Parse origin if present
+                                origin_elem = collision_elem.find('origin')
+                                if origin_elem is not None:
+                                    xyz_str = origin_elem.get('xyz', '0 0 0')
+                                    rpy_str = origin_elem.get('rpy', '0 0 0')
+                                    collider_data['position'] = [float(v) for v in xyz_str.split()]
+                                    rpy_rad = [float(v) for v in rpy_str.split()]
+                                    collider_data['rotation'] = [math.degrees(r) for r in rpy_rad]
+                                
+                                link_data['collider_data'] = collider_data
+                                link_data['collider_type'] = 'primitive'
+                                link_data['collider_enabled'] = True
+                                break
+                    
+                    elif sphere_elem is not None:
+                        # Parse sphere collision
+                        radius_str = sphere_elem.get('radius', '0.5')
+                        radius = float(radius_str)
+                        collider_data = {
+                            'type': 'sphere',
+                            'geometry': {
+                                'radius': radius
+                            },
+                            'position': [0.0, 0.0, 0.0],
+                            'rotation': [0.0, 0.0, 0.0]  # degrees
+                        }
+                        # Parse origin if present
+                        origin_elem = collision_elem.find('origin')
+                        if origin_elem is not None:
+                            xyz_str = origin_elem.get('xyz', '0 0 0')
+                            rpy_str = origin_elem.get('rpy', '0 0 0')
+                            collider_data['position'] = [float(v) for v in xyz_str.split()]
+                            rpy_rad = [float(v) for v in rpy_str.split()]
+                            collider_data['rotation'] = [math.degrees(r) for r in rpy_rad]
+                        
+                        link_data['collider_data'] = collider_data
+                        link_data['collider_type'] = 'primitive'
+                        link_data['collider_enabled'] = True
+                        break
+                    
+                    elif cylinder_elem is not None:
+                        # Parse cylinder collision
+                        radius_str = cylinder_elem.get('radius', '0.5')
+                        length_str = cylinder_elem.get('length', '1.0')
+                        radius = float(radius_str)
+                        length = float(length_str)
+                        collider_data = {
+                            'type': 'cylinder',
+                            'geometry': {
+                                'radius': radius,
+                                'length': length
+                            },
+                            'position': [0.0, 0.0, 0.0],
+                            'rotation': [0.0, 0.0, 0.0]  # degrees
+                        }
+                        # Parse origin if present
+                        origin_elem = collision_elem.find('origin')
+                        if origin_elem is not None:
+                            xyz_str = origin_elem.get('xyz', '0 0 0')
+                            rpy_str = origin_elem.get('rpy', '0 0 0')
+                            collider_data['position'] = [float(v) for v in xyz_str.split()]
+                            rpy_rad = [float(v) for v in rpy_str.split()]
+                            collider_data['rotation'] = [math.degrees(r) for r in rpy_rad]
+                        
+                        link_data['collider_data'] = collider_data
+                        link_data['collider_type'] = 'primitive'
+                        link_data['collider_enabled'] = True
+                        break
+
+            links_data[link_name] = link_data
+
+        if self.verbose:
+            print(f"\n[URDFParser] Successfully parsed {len(links_data)} links")
+            if missing_meshes:
+                print(f"  Warning: {len(missing_meshes)} mesh files could not be found")
+                for missing in missing_meshes[:5]:  # 最初の5つだけ表示
+                    print(f"    - {missing['link_name']}: {missing['basename']}")
+                if len(missing_meshes) > 5:
+                    print(f"    ... and {len(missing_meshes) - 5} more")
+
+        return links_data, missing_meshes
+
+    def _resolve_mesh_path(self, mesh_filename, urdf_file_path):
+        """Resolve mesh file path from URDF reference.
+
+        Tries multiple methods to find the mesh file:
+        1. package:// paths relative to description directory
+        2. Absolute paths
+        3. Relative paths from URDF directory
+        4. Search in common mesh directories
+
+        Args:
+            mesh_filename: Mesh file reference from URDF
+            urdf_file_path: Path to URDF file
+
+        Returns:
+            Absolute path to mesh file, or None if not found
+        """
+        urdf_dir = os.path.dirname(os.path.abspath(urdf_file_path))
+        urdf_file_abs = os.path.abspath(urdf_file_path)
+        description_dir = os.path.dirname(urdf_dir)  # メソッドの最初で定義
+        mesh_basename = os.path.basename(mesh_filename)
+
+        # Handle package:// paths
+        if mesh_filename.startswith('package://'):
+            parts = mesh_filename.split('/')
+            if len(parts) > 2:
+                package_name = parts[2]
+                relative_path = '/'.join(parts[3:]) if len(parts) > 3 else ''
+                
+                # パッケージルートを探す（xacroファイルの場所から）
+                package_root = find_package_root(urdf_file_abs, package_name, max_search_depth=10, verbose=self.verbose)
+                
+                if package_root:
+                    # パッケージルートからの相対パス
+                    if relative_path:
+                        candidate = os.path.join(package_root, relative_path)
+                    else:
+                        candidate = os.path.join(package_root, mesh_basename)
+                    
+                    if os.path.exists(candidate):
+                        if self.verbose:
+                            print(f"  Found mesh (package://): {candidate}")
+                        return candidate
+                
+                # パッケージルートが見つからない場合、従来の方法を試す
+                if relative_path:
+                    relative_path_full = relative_path
+                else:
+                    relative_path_full = os.path.join('meshes', mesh_basename)
+
+                # Try multiple locations
+                candidates = [
+                    os.path.join(package_root, relative_path_full) if package_root else None,
+                    os.path.join(description_dir, relative_path_full),
+                    os.path.join(urdf_dir, relative_path_full),
+                    os.path.join(description_dir, 'meshes', mesh_basename),
+                    os.path.normpath(os.path.join(urdf_dir, '..', 'meshes', mesh_basename)),
+                    os.path.join(os.path.dirname(description_dir), relative_path_full),
+                    # xacroファイルと同じディレクトリ構造を試す
+                    os.path.normpath(os.path.join(urdf_dir, '..', '..', 'meshes', mesh_basename)),
+                    os.path.normpath(os.path.join(urdf_dir, '..', '..', package_name, 'meshes', mesh_basename)) if package_name else None,
+                ]
+
+                for candidate in candidates:
+                    if candidate and os.path.exists(candidate):
+                        if self.verbose:
+                            print(f"  Found mesh (package:// fallback): {candidate}")
+                        return candidate
+
+        else:
+            # Absolute or relative paths
+            candidates = []
+            
+            # Try absolute path
+            if os.path.isabs(mesh_filename) and os.path.exists(mesh_filename):
+                return mesh_filename
+
+            # Try relative paths
+            candidates = [
+                os.path.join(urdf_dir, mesh_filename),
+                os.path.join(description_dir, mesh_filename),
+                os.path.join(description_dir, 'meshes', mesh_basename),
+            ]
+
+            for candidate in candidates:
+                if os.path.exists(candidate):
+                    if self.verbose:
+                        print(f"  Found mesh: {candidate}")
+                    return candidate
+
+        return None
+
+    def _parse_joints(self, root, links_data):
+        """Parse joint information from URDF.
+
+        Args:
+            root: XML root element
+            links_data: Dictionary of link data
+
+        Returns:
+            List of joint data dictionaries
+        """
+        joints_data = []
+
+        # デバッグ: ジョイント要素の数を確認
+        joint_elems = root.findall('joint')
+        if self.verbose:
+            print(f"\n[URDFParser] Found {len(joint_elems)} joint elements in URDF")
+
+        for joint_elem in joint_elems:
+            joint_data = {
+                'name': joint_elem.get('name'),
+                'type': joint_elem.get('type', 'fixed'),
+                'parent': None,
+                'child': None,
+                'origin_xyz': [0.0, 0.0, 0.0],
+                'origin_rpy': [0.0, 0.0, 0.0],
+                'axis': [1.0, 0.0, 0.0],
+                'limit': {'lower': -3.14159, 'upper': 3.14159, 'effort': 10.0, 'velocity': 3.0, 'friction': 0.05},
+                'dynamics': {'damping': 0.0, 'friction': 0.0}
+            }
+
+            # Parse parent and child links
+            parent_elem = joint_elem.find('parent')
+            if parent_elem is not None:
+                joint_data['parent'] = parent_elem.get('link')
+
+            child_elem = joint_elem.find('child')
+            if child_elem is not None:
+                joint_data['child'] = child_elem.get('link')
+
+            # Parse origin
+            origin_elem = joint_elem.find('origin')
+            if origin_elem is not None:
+                xyz_str = origin_elem.get('xyz', '0 0 0')
+                rpy_str = origin_elem.get('rpy', '0 0 0')
+                joint_data['origin_xyz'] = [float(v) for v in xyz_str.split()]
+                joint_data['origin_rpy'] = [float(v) for v in rpy_str.split()]
+
+            # Parse axis
+            axis_elem = joint_elem.find('axis')
+            if axis_elem is not None:
+                axis_str = axis_elem.get('xyz', '1 0 0')
+                joint_data['axis'] = [float(v) for v in axis_str.split()]
+
+            # Parse limit
+            limit_elem = joint_elem.find('limit')
+            if limit_elem is not None:
+                joint_data['limit']['lower'] = float(limit_elem.get('lower', -3.14159))
+                joint_data['limit']['upper'] = float(limit_elem.get('upper', 3.14159))
+                joint_data['limit']['effort'] = float(limit_elem.get('effort', 10.0))
+                joint_data['limit']['velocity'] = float(limit_elem.get('velocity', 3.0))
+                joint_data['limit']['friction'] = float(limit_elem.get('friction', 0.05))
+
+            # Parse dynamics
+            dynamics_elem = joint_elem.find('dynamics')
+            if dynamics_elem is not None:
+                joint_data['dynamics']['damping'] = float(dynamics_elem.get('damping', 0.0))
+                joint_data['dynamics']['friction'] = float(dynamics_elem.get('friction', 0.0))
+
+            joints_data.append(joint_data)
+
+        if self.verbose:
+            print(f"[URDFParser] Successfully parsed {len(joints_data)} joints")
+
+        # Detect root links and connect to base_link
+        if self.verbose:
+            print("\n=== Detecting root links ===")
+
+        child_links = set()
+        for joint_data in joints_data:
+            if joint_data['child']:
+                child_links.add(joint_data['child'])
+
+        root_links = []
+        for link_name in links_data.keys():
+            if link_name not in child_links and link_name not in ['base_link', 'BaseLink']:
+                root_links.append(link_name)
+                if self.verbose:
+                    print(f"  Found root link: {link_name}")
+
+        # Create synthetic joints from base_link to root links
+        if root_links:
+            if self.verbose:
+                print(f"  Connecting {len(root_links)} root link(s) to base_link")
+
+            for root_link_name in root_links:
+                synthetic_joint = {
+                    'name': f'base_to_{root_link_name}',
+                    'type': 'fixed',
+                    'parent': 'base_link',
+                    'child': root_link_name,
+                    'origin_xyz': [0.0, 0.0, 0.0],
+                    'origin_rpy': [0.0, 0.0, 0.0],
+                    'axis': [1.0, 0.0, 0.0],
+                    'limit': {'lower': 0.0, 'upper': 0.0, 'effort': 0.0, 'velocity': 0.0, 'friction': 0.0},
+                    'dynamics': {'damping': 0.0, 'friction': 0.0}
+                }
+                joints_data.append(synthetic_joint)
+                if self.verbose:
+                    print(f"  Created synthetic joint: base_link -> {root_link_name}")
+
+        if self.verbose:
+            print(f"Parsed {len(joints_data)} joints (including synthetic joints)")
+
+        return joints_data
+
+
+# ============================================================================
+# MJCF PARSER
+# ============================================================================
+
+class MJCFParser:
+    """Parser for MJCF (MuJoCo Model Format) files.
+
+    This class provides methods to parse MJCF XML files and extract
+    robot structure information including bodies, joints, meshes,
+    and default classes.
+
+    Usage:
+        parser = MJCFParser()
+        result = parser.parse_mjcf('/path/to/robot.xml', working_dir='/tmp')
+        
+        # Access parsed data
+        robot_name = result['robot_name']
+        bodies_data = result['bodies']
+        joints_data = result['joints']
+        meshes_data = result['meshes']
+    """
+
+    def __init__(self, verbose=True):
+        """Initialize MJCF parser.
+
+        Args:
+            verbose: If True, print parsing progress and information
+        """
+        self.verbose = verbose
+        self.conversion_utils = ConversionUtils()
+
+    def parse_mjcf(self, mjcf_file_path, working_dir=None):
+        """Parse MJCF file and extract robot structure information.
+
+        Args:
+            mjcf_file_path: Path to MJCF XML file
+            working_dir: Working directory for resolving mesh paths (optional)
+
+        Returns:
+            Dictionary containing:
+                - robot_name: Name of the robot
+                - bodies: List of body data
+                - joints: List of joint data
+                - meshes: Dictionary of mesh information
+                - eulerseq: Euler sequence from compiler settings
+                - default_classes: Dictionary of default class settings
+
+        Raises:
+            FileNotFoundError: If MJCF file does not exist
+            ET.ParseError: If MJCF file is not valid XML
+            ValueError: If root element is not 'mujoco'
+        """
+        if not os.path.exists(mjcf_file_path):
+            raise FileNotFoundError(f"MJCF file not found: {mjcf_file_path}")
+
+        if self.verbose:
+            print(f"Parsing MJCF from: {mjcf_file_path}")
+
+        # Parse MJCF file
+        tree = ET.parse(mjcf_file_path)
+        root = tree.getroot()
+
+        if root.tag != 'mujoco':
+            raise ValueError("Root element must be 'mujoco' for valid MJCF file")
+
+        # Get robot name from file name
+        robot_name = os.path.splitext(os.path.basename(mjcf_file_path))[0]
+        if self.verbose:
+            print(f"Robot name: {robot_name}")
+
+        # Parse compiler settings
+        eulerseq = self._parse_compiler(root)
+
+        # Parse default classes
+        default_classes = self._parse_defaults(root)
+
+        # Parse asset meshes
+        if working_dir is None:
+            working_dir = os.path.dirname(mjcf_file_path)
+        meshes_data = self._parse_assets(root, mjcf_file_path, working_dir)
+
+        # Parse body hierarchy
+        bodies_data = []
+        joints_data = []
+        worldbody = root.find('worldbody')
+        if worldbody is not None:
+            for body_elem in worldbody.findall('body'):
+                self._parse_body(body_elem, None, 0, bodies_data, joints_data, 
+                                meshes_data, default_classes, eulerseq)
+
+        if self.verbose:
+            print(f"Parsed {len(bodies_data)} bodies and {len(joints_data)} joints")
+
+        return {
+            'robot_name': robot_name,
+            'bodies': bodies_data,
+            'joints': joints_data,
+            'meshes': meshes_data,
+            'eulerseq': eulerseq,
+            'default_classes': default_classes
+        }
+
+    def _parse_compiler(self, root):
+        """Parse compiler settings from MJCF.
+
+        Args:
+            root: XML root element
+
+        Returns:
+            Euler sequence string (default 'xyz')
+        """
+        eulerseq = 'xyz'  # Default
+        compiler_elem = root.find('compiler')
+        if compiler_elem is not None:
+            eulerseq_attr = compiler_elem.get('eulerseq')
+            if eulerseq_attr:
+                eulerseq = eulerseq_attr.lower()
+                if self.verbose:
+                    print(f"Compiler eulerseq: {eulerseq}")
+
+        return eulerseq
+
+    def _parse_defaults(self, root):
+        """Parse default classes from MJCF.
+
+        Args:
+            root: XML root element
+
+        Returns:
+            Dictionary of default class settings
+        """
+        default_classes = {}
+
+        def parse_defaults_recursive(default_elem, parent_class_name=None):
+            """Recursively parse default classes."""
+            class_name = default_elem.get('class', parent_class_name)
+
+            # Inherit from parent class
+            class_defaults = {}
+            if parent_class_name and parent_class_name in default_classes:
+                class_defaults = default_classes[parent_class_name].copy()
+
+            # Get joint defaults
+            joint_elem = default_elem.find('joint')
+            if joint_elem is not None:
+                axis_str = joint_elem.get('axis')
+                if axis_str:
+                    class_defaults['joint_axis'] = [float(v) for v in axis_str.split()]
+
+                range_str = joint_elem.get('range')
+                if range_str:
+                    class_defaults['joint_range'] = [float(v) for v in range_str.split()]
+
+                damping_str = joint_elem.get('damping')
+                if damping_str:
+                    class_defaults['joint_damping'] = float(damping_str)
+
+                armature_str = joint_elem.get('armature')
+                if armature_str:
+                    class_defaults['joint_armature'] = float(armature_str)
+
+                frictionloss_str = joint_elem.get('frictionloss')
+                if frictionloss_str:
+                    class_defaults['joint_frictionloss'] = float(frictionloss_str)
+
+                stiffness_str = joint_elem.get('stiffness')
+                if stiffness_str:
+                    class_defaults['joint_stiffness'] = float(stiffness_str)
+
+            # Save class if it has a name
+            if class_name:
+                default_classes[class_name] = class_defaults
+                if self.verbose:
+                    print(f"Default class '{class_name}': {class_defaults}")
+
+            # Parse child default classes recursively
+            for child_default in default_elem.findall('default'):
+                parse_defaults_recursive(child_default, class_name)
+
+        # Find and parse all default elements
+        for default_elem in root.findall('default'):
+            parse_defaults_recursive(default_elem)
+
+        if self.verbose:
+            print(f"Parsed {len(default_classes)} default classes")
+
+        return default_classes
+
+    def _parse_assets(self, root, mjcf_file_path, working_dir):
+        """Parse asset mesh information from MJCF.
+
+        Args:
+            root: XML root element
+            mjcf_file_path: Path to MJCF file
+            working_dir: Working directory for mesh search
+
+        Returns:
+            Dictionary mapping mesh names to mesh info (path and scale)
+        """
+        meshes_data = {}
+        asset_elem = root.find('asset')
+        
+        if asset_elem is None:
+            return meshes_data
+
+        mjcf_dir = os.path.dirname(mjcf_file_path)
+
+        # Mesh search directories
+        search_dirs = [
+            mjcf_dir,
+            os.path.join(mjcf_dir, 'assets'),
+            os.path.join(mjcf_dir, 'meshes'),
+            os.path.join(mjcf_dir, '..', 'assets'),
+            os.path.join(mjcf_dir, '..', 'meshes'),
+            working_dir,
+            os.path.join(working_dir, 'assets'),
+            os.path.join(working_dir, 'meshes'),
+        ]
+
+        for mesh_elem in asset_elem.findall('mesh'):
+            mesh_name = mesh_elem.get('name')
+            mesh_file = mesh_elem.get('file', '')
+
+            # Derive mesh name from filename if not specified
+            if not mesh_name and mesh_file:
+                mesh_name = os.path.splitext(os.path.basename(mesh_file))[0]
+                if self.verbose:
+                    print(f"Mesh name derived from file: {mesh_name}")
+
+            # Parse mesh scale attribute
+            mesh_scale = [1.0, 1.0, 1.0]
+            scale_str = mesh_elem.get('scale')
+            if scale_str:
+                scale_values = [float(v) for v in scale_str.split()]
+                if len(scale_values) == 3:
+                    mesh_scale = scale_values
+                elif len(scale_values) == 1:
+                    mesh_scale = [scale_values[0]] * 3
+                if self.verbose:
+                    print(f"  Mesh '{mesh_name}' scale: {mesh_scale}")
+
+            # Resolve mesh file path
+            if mesh_file:
+                mesh_path = None
+                mesh_basename = os.path.basename(mesh_file)
+
+                # Method 1: Try original path relative to MJCF dir
+                candidate = os.path.join(mjcf_dir, mesh_file)
+                if os.path.exists(candidate):
+                    mesh_path = candidate
+                    if self.verbose:
+                        print(f"Found mesh: {mesh_name} -> {mesh_path}")
+
+                # Method 2: Try in search directories with original structure
+                if not mesh_path:
+                    for search_dir in search_dirs:
+                        if not search_dir or not os.path.exists(search_dir):
+                            continue
+                        candidate = os.path.join(search_dir, mesh_file)
+                        if os.path.exists(candidate):
+                            mesh_path = candidate
+                            if self.verbose:
+                                print(f"Found mesh: {mesh_name} -> {mesh_path}")
+                            break
+
+                # Method 3: Search for basename in directories
+                if not mesh_path:
+                    for search_dir in search_dirs:
+                        if not search_dir or not os.path.exists(search_dir):
+                            continue
+                        candidate = os.path.join(search_dir, mesh_basename)
+                        if os.path.exists(candidate):
+                            mesh_path = candidate
+                            if self.verbose:
+                                print(f"Found mesh: {mesh_name} -> {mesh_path}")
+                            break
+
+                if mesh_path:
+                    meshes_data[mesh_name] = {
+                        'path': mesh_path,
+                        'scale': mesh_scale
+                    }
+                else:
+                    if self.verbose:
+                        print(f"Warning: Could not find mesh file: {mesh_file}")
+
+        if self.verbose:
+            print(f"Parsed {len(meshes_data)} mesh assets")
+
+        return meshes_data
+
+    def _parse_body(self, body_elem, parent_name, level, bodies_data, joints_data, 
+                    meshes_data, default_classes, eulerseq):
+        """Recursively parse body element from MJCF.
+
+        Args:
+            body_elem: Body XML element
+            parent_name: Name of parent body (None for root)
+            level: Recursion level for indentation
+            bodies_data: List to append body data to
+            joints_data: List to append joint data to
+            meshes_data: Dictionary of mesh information
+            default_classes: Dictionary of default class settings
+            eulerseq: Euler sequence from compiler settings
+        """
+        body_name = body_elem.get('name', f'body_{len(bodies_data)}')
+
+        body_data = {
+            'name': body_name,
+            'parent': parent_name,
+            'mass': 0.0,
+            'inertia': {'ixx': 0.0, 'ixy': 0.0, 'ixz': 0.0, 'iyy': 0.0, 'iyz': 0.0, 'izz': 0.0},
+            'inertial_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
+            'stl_file': None,
+            'visuals': [],
+            'color': [1.0, 1.0, 1.0],
+            'collision_mesh': None,
+            'mesh_scale': [1.0, 1.0, 1.0],
+            'visual_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
+            'pos': [0.0, 0.0, 0.0],
+            'quat': [1.0, 0.0, 0.0, 0.0],
+            'rpy': [0.0, 0.0, 0.0]
+        }
+
+        # Parse position
+        pos_str = body_elem.get('pos', '0 0 0')
+        body_data['pos'] = [float(v) for v in pos_str.split()]
+
+        # Parse quaternion and convert to RPY
+        quat_str = body_elem.get('quat')
+        if quat_str:
+            body_data['quat'] = [float(v) for v in quat_str.split()]
+            body_data['rpy'] = self.conversion_utils.quat_to_rpy(body_data['quat'])
+            if self.verbose:
+                print(f"{'  ' * level}  Body quat: {body_data['quat']} -> rpy: {body_data['rpy']}")
+
+        # Parse euler angles
+        euler_str = body_elem.get('euler')
+        if euler_str:
+            euler_degrees = [float(v) for v in euler_str.split()]
+            body_data['rpy'] = [math.radians(e) for e in euler_degrees]
+            if self.verbose:
+                print(f"{'  ' * level}  Body euler (deg): {euler_degrees} -> rpy (rad): {body_data['rpy']}")
+
+        # Parse inertial information
+        inertial_elem = body_elem.find('inertial')
+        if inertial_elem is not None:
+            mass_str = inertial_elem.get('mass')
+            if mass_str:
+                body_data['mass'] = float(mass_str)
+
+            inertial_pos = inertial_elem.get('pos', '0 0 0')
+            body_data['inertial_origin']['xyz'] = [float(v) for v in inertial_pos.split()]
+
+            diaginertia_str = inertial_elem.get('diaginertia')
+            if diaginertia_str:
+                diag = [float(v) for v in diaginertia_str.split()]
+                if len(diag) >= 3:
+                    body_data['inertia']['ixx'] = diag[0]
+                    body_data['inertia']['iyy'] = diag[1]
+                    body_data['inertia']['izz'] = diag[2]
+
+        # Parse geometry (geom elements)
+        geom_elems = body_elem.findall('geom')
+        if geom_elems and self.verbose:
+            print(f"{'  ' * level}  Found {len(geom_elems)} geom element(s)")
+
+        for idx, geom_elem in enumerate(geom_elems):
+            mesh_name = geom_elem.get('mesh')
+            
+            # Determine geom type (visual or collision)
+            geom_class = geom_elem.get('class', '')
+            geom_group = geom_elem.get('group', '')
+            contype = geom_elem.get('contype')
+            conaffinity = geom_elem.get('conaffinity')
+
+            is_collision_geom = (geom_class == 'collision' or 
+                                geom_group in ['0', '3'])
+            is_visual_geom = (geom_class == 'visual' or 
+                             geom_group in ['1', '2'] or
+                             (contype == '0') or (conaffinity == '0'))
+
+            if not is_collision_geom and not is_visual_geom:
+                is_visual_geom = True
+                is_collision_geom = True
+
+            if self.verbose:
+                print(f"{'  ' * level}    Geom[{idx}] type: visual={is_visual_geom}, collision={is_collision_geom}")
+
+            if mesh_name and mesh_name in meshes_data:
+                mesh_info = meshes_data[mesh_name]
+                mesh_path = mesh_info['path']
+                asset_mesh_scale = mesh_info['scale']
+
+                # Parse geom position
+                geom_pos_str = geom_elem.get('pos', '0 0 0')
+                geom_pos = [float(v) for v in geom_pos_str.split()]
+
+                # Parse geom rotation (quat or euler)
+                geom_quat_str = geom_elem.get('quat')
+                geom_euler_str = geom_elem.get('euler')
+                geom_rpy = [0.0, 0.0, 0.0]
+                geom_quat = [1.0, 0.0, 0.0, 0.0]
+
+                if geom_quat_str:
+                    geom_quat = [float(v) for v in geom_quat_str.split()]
+                    geom_rpy = self.conversion_utils.quat_to_rpy(geom_quat)
+                elif geom_euler_str:
+                    euler_degrees = [float(v) for v in geom_euler_str.split()]
+                    geom_rpy = self.conversion_utils.euler_to_rpy(euler_degrees, eulerseq)
+                    # Convert RPY back to quat for storage
+                    geom_quat = self.conversion_utils.rpy_to_quat(geom_rpy)
+
+                # Parse geom mesh scale
+                geom_meshscale = [1.0, 1.0, 1.0]
+                meshscale_str = geom_elem.get('meshscale')
+                if meshscale_str:
+                    scale_values = [float(v) for v in meshscale_str.split()]
+                    if len(scale_values) == 3:
+                        geom_meshscale = scale_values
+                    elif len(scale_values) == 1:
+                        geom_meshscale = [scale_values[0]] * 3
+
+                # Combine scales
+                combined_scale = [
+                    asset_mesh_scale[0] * geom_meshscale[0],
+                    asset_mesh_scale[1] * geom_meshscale[1],
+                    asset_mesh_scale[2] * geom_meshscale[2]
+                ]
+
+                # Parse color
+                geom_color = [1.0, 1.0, 1.0]
+                rgba_str = geom_elem.get('rgba')
+                if rgba_str:
+                    rgba = [float(v) for v in rgba_str.split()]
+                    geom_color = rgba[:3]
+
+                # Add to visuals list if visual geom
+                if is_visual_geom:
+                    visual_data = {
+                        'mesh': mesh_path,
+                        'pos': geom_pos,
+                        'quat': geom_quat,
+                        'color': geom_color
+                    }
+                    body_data['visuals'].append(visual_data)
+
+                    # Set first visual as main stl_file for backward compatibility
+                    if body_data['stl_file'] is None:
+                        body_data['stl_file'] = mesh_path
+                        body_data['color'] = geom_color
+                        body_data['mesh_scale'] = combined_scale
+                        body_data['visual_origin'] = {
+                            'xyz': geom_pos,
+                            'rpy': geom_rpy
+                        }
+
+                # Set as collision mesh if collision geom
+                if is_collision_geom and body_data['collision_mesh'] is None:
+                    body_data['collision_mesh'] = mesh_path
+
+        bodies_data.append(body_data)
+
+        # Parse joints in this body
+        joint_elems = body_elem.findall('joint')
+        for joint_elem in joint_elems:
+            joint_name = joint_elem.get('name', f'joint_{len(joints_data)}')
+            joint_type = joint_elem.get('type', 'hinge')
+            
+            # Map MJCF joint types to URDF types
+            type_mapping = {
+                'hinge': 'revolute',
+                'slide': 'prismatic',
+                'ball': 'spherical',
+                'free': 'floating'
+            }
+            urdf_type = type_mapping.get(joint_type, 'revolute')
+
+            joint_data = {
+                'name': joint_name,
+                'type': urdf_type,
+                'parent': parent_name if parent_name else 'base_link',
+                'child': body_name,
+                'origin_xyz': body_data['pos'],
+                'origin_rpy': body_data['rpy'],
+                'axis': [1.0, 0.0, 0.0],
+                'limit': {'lower': -3.14159, 'upper': 3.14159, 'effort': 10.0, 
+                         'velocity': 3.0, 'friction': 0.05},
+                'dynamics': {'damping': 0.0, 'friction': 0.0}
+            }
+
+            # Parse axis
+            axis_str = joint_elem.get('axis')
+            if axis_str:
+                joint_data['axis'] = [float(v) for v in axis_str.split()]
+
+            # Parse range (limits)
+            range_str = joint_elem.get('range')
+            if range_str:
+                range_vals = [float(v) for v in range_str.split()]
+                if len(range_vals) >= 2:
+                    joint_data['limit']['lower'] = range_vals[0]
+                    joint_data['limit']['upper'] = range_vals[1]
+
+            # Parse damping
+            damping_str = joint_elem.get('damping')
+            if damping_str:
+                joint_data['dynamics']['damping'] = float(damping_str)
+
+            # Parse friction
+            frictionloss_str = joint_elem.get('frictionloss')
+            if frictionloss_str:
+                joint_data['dynamics']['friction'] = float(frictionloss_str)
+
+            joints_data.append(joint_data)
+
+        # Recursively parse child bodies
+        for child_body_elem in body_elem.findall('body'):
+            self._parse_body(child_body_elem, body_name, level + 1, bodies_data, 
+                           joints_data, meshes_data, default_classes, eulerseq)
+
+    def parse_primitive_geom(self, geom_elem, geom_type, level=0):
+        """Parse MJCF primitive geom and convert to Assembler collider_data format.
+
+        Args:
+            geom_elem: MJCF geom element
+            geom_type: Primitive type ('cylinder', 'box', 'sphere', 'capsule')
+            level: Logging indentation level
+
+        Returns:
+            collider_data: Dictionary in Assembler collider_data format,
+                          or None if size attribute is missing
+        """
+        collider_data = {
+            'type': geom_type,
+            'geometry': {},
+            'position': [0.0, 0.0, 0.0],
+            'rotation': [0.0, 0.0, 0.0]  # degrees
+        }
+
+        # Parse position
+        pos_str = geom_elem.get('pos', '0 0 0')
+        collider_data['position'] = [float(v) for v in pos_str.split()]
+
+        # Parse rotation (quat or euler to RPY in degrees)
+        quat_str = geom_elem.get('quat')
+        euler_str = geom_elem.get('euler')
+
+        if quat_str:
+            quat = [float(v) for v in quat_str.split()]
+            rpy_rad = self.conversion_utils.quat_to_rpy(quat)
+            collider_data['rotation'] = [math.degrees(r) for r in rpy_rad]
+        elif euler_str:
+            euler_deg = [float(v) for v in euler_str.split()]
+            collider_data['rotation'] = euler_deg  # Already in degrees
+
+        # Parse size (convert from MJCF format to Assembler format)
+        size_str = geom_elem.get('size')
+        if not size_str:
+            if self.verbose:
+                print(f"{'  ' * level}      Warning: No size attribute for primitive geom")
+            return None
+
+        size_values = [float(v) for v in size_str.split()]
+
+        if geom_type == 'cylinder':
+            # MJCF: [radius, half_length] → Assembler: {radius, length}
+            if len(size_values) >= 2:
+                collider_data['geometry']['radius'] = str(size_values[0])
+                collider_data['geometry']['length'] = str(size_values[1] * 2.0)  # half → full
+                if self.verbose:
+                    print(f"{'  ' * level}      Cylinder: radius={size_values[0]}, length={size_values[1]*2}")
+
+        elif geom_type == 'box':
+            # MJCF: [half_x, half_y, half_z] → Assembler: {size_x, size_y, size_z}
+            if len(size_values) >= 3:
+                collider_data['geometry']['size_x'] = str(size_values[0] * 2.0)
+                collider_data['geometry']['size_y'] = str(size_values[1] * 2.0)
+                collider_data['geometry']['size_z'] = str(size_values[2] * 2.0)
+                if self.verbose:
+                    print(f"{'  ' * level}      Box: x={size_values[0]*2}, y={size_values[1]*2}, z={size_values[2]*2}")
+
+        elif geom_type == 'sphere':
+            # MJCF: [radius] → Assembler: {radius}
+            if len(size_values) >= 1:
+                collider_data['geometry']['radius'] = str(size_values[0])
+                if self.verbose:
+                    print(f"{'  ' * level}      Sphere: radius={size_values[0]}")
+
+        elif geom_type == 'capsule':
+            # MJCF: [radius, half_length] → Assembler: {radius, length}
+            if len(size_values) >= 2:
+                collider_data['geometry']['radius'] = str(size_values[0])
+                collider_data['geometry']['length'] = str(size_values[1] * 2.0)
+                if self.verbose:
+                    print(f"{'  ' * level}      Capsule: radius={size_values[0]}, length={size_values[1]*2}")
+
+        if self.verbose:
+            print(f"{'  ' * level}      Position: {collider_data['position']}")
+            print(f"{'  ' * level}      Rotation: {collider_data['rotation']} (degrees)")
+
+        return collider_data
