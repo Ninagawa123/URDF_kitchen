@@ -9620,25 +9620,32 @@ class CustomNodeGraph(NodeGraph):
         # Points (FooNodeの場合)
         if hasattr(node, 'points') and isinstance(node, FooNode):
             # 実際のポート数とpointsの数を同期
+            # output_ports()とoutput_countの両方を参照して、より安全にポート数を取得
             actual_port_count = len(node.output_ports())
+            output_count = getattr(node, 'output_count', 0)
             points_count = len(node.points) if node.points else 0
             
+            # ポート数を決定（output_ports()とoutput_countの最大値を使用）
+            # 末端ノードの場合、output_ports()が空を返す可能性があるため、output_countも参照
+            final_port_count = max(actual_port_count, output_count, points_count)
+            
             # 不一致がある場合は調整
-            if actual_port_count != points_count:
-                print(f"Warning: Port count mismatch for {node.name()}: ports={actual_port_count}, points={points_count}")
-                # pointsの数を実際のポート数に合わせる
-                if actual_port_count > points_count:
+            if final_port_count != points_count:
+                if actual_port_count != points_count or output_count != points_count:
+                    print(f"Warning: Port count mismatch for {node.name()}: ports={actual_port_count}, output_count={output_count}, points={points_count}, using={final_port_count}")
+                # pointsの数を最終的なポート数に合わせる
+                if final_port_count > points_count:
                     # ポートが多い場合は、不足分のポイントを追加
-                    for i in range(points_count, actual_port_count):
+                    for i in range(points_count, final_port_count):
                         point_data = create_point_data(i + 1)
                         node.points.append(point_data)
-                elif actual_port_count < points_count:
+                elif final_port_count < points_count:
                     # ポイントが多い場合は、余分なポイントを削除
-                    node.points = node.points[:actual_port_count]
+                    node.points = node.points[:final_port_count]
                 # output_countも更新
-                node.output_count = actual_port_count
+                node.output_count = final_port_count
             
-            # ポイントデータを保存
+            # ポイントデータを保存（末端ノードでもoutポートは保存する）
             if node.points:
                 points_elem = ET.SubElement(node_elem, "points")
                 for point in node.points:
@@ -9657,7 +9664,7 @@ class CustomNodeGraph(NodeGraph):
         return node_elem
 
 
-    def _load_node_data(self, node_elem):
+    def _load_node_data(self, node_elem, connected_ports=None):
         """XML要素からノードデータを読み込み
         
         Args:
@@ -10029,7 +10036,7 @@ class CustomNodeGraph(NodeGraph):
                 
                 # ポイントデータの復元（空のpointをフィルタリング）
                 import re
-                for point_elem in points:
+                for point_index, point_elem in enumerate(points, 1):
                     point = {}
                     name_elem = point_elem.find("name")
                     if name_elem is not None:
@@ -10045,6 +10052,7 @@ class CustomNodeGraph(NodeGraph):
                         point['angle'] = [float(v) for v in angle_elem.text.split()]
                     
                     # 空のpoint（xyzが0.0 0.0 0.0で汎用名）をフィルタリング
+                    # ただし、接続されているポートは削除しない
                     point_name = point.get('name', '')
                     point_xyz = point.get('xyz', [0.0, 0.0, 0.0])
                     is_empty_point = (
@@ -10053,8 +10061,16 @@ class CustomNodeGraph(NodeGraph):
                         re.match(r'^point_\d+$', point_name, re.IGNORECASE)
                     )
                     
-                    if not is_empty_point:
+                    # 接続情報を確認（ポート名は out_1, out_2 などの形式）
+                    # ポイントのインデックスはXMLファイル内での出現順序（1から始まる）
+                    port_name = f'out_{point_index}'
+                    is_connected = connected_ports and port_name in connected_ports
+                    
+                    # 接続されているポイント、または空でないポイントは保持
+                    if is_connected or not is_empty_point:
                         node.points.append(point)
+                    else:
+                        print(f"Filtered out empty point '{point_name}' from node '{node.name()}' (not connected, port: {port_name})")
                 
                 num_points = len(node.points)
                 
@@ -10483,6 +10499,20 @@ class CustomNodeGraph(NodeGraph):
                         else:
                             print("Meshes directory selection cancelled")
 
+            # 接続情報を先に読み込んで、接続されているポートを記録
+            print("\nPre-loading connection information...")
+            connections_info = {}  # {node_name: {port_name: True, ...}, ...}
+            for conn in root.findall(".//connection"):
+                from_node_name = conn.find("from_node")
+                from_port_name = conn.find("from_port")
+                if from_node_name is not None and from_port_name is not None:
+                    node_name = from_node_name.text
+                    port_name = from_port_name.text
+                    if node_name not in connections_info:
+                        connections_info[node_name] = set()
+                    connections_info[node_name].add(port_name)
+            print(f"Pre-loaded connection info for {len(connections_info)} nodes")
+            
             # ノードの復元
             print("\nRestoring nodes...")
             nodes_elem = root.find("nodes")
@@ -10508,9 +10538,12 @@ class CustomNodeGraph(NodeGraph):
             nodes_dict = {}
             processed_operations = 0
             
-            # ノードの読み込み
+            # ノードの読み込み（接続情報を渡す）
             for i, node_elem in enumerate(nodes_elem.findall("node"), 1):
-                node = self._load_node_data(node_elem)
+                node_name_elem = node_elem.find("name")
+                node_name = node_name_elem.text if node_name_elem is not None else None
+                node_connections = connections_info.get(node_name, set()) if node_name else set()
+                node = self._load_node_data(node_elem, connected_ports=node_connections)
                 if node:
                     nodes_dict[node.name()] = node
                 
@@ -10558,26 +10591,18 @@ class CustomNodeGraph(NodeGraph):
                 # 3Dビューを更新
                 self.stl_viewer.render_to_image()
 
-                # Collider表示を更新
+                # Collider表示を更新（表示はOFFのまま）
                 print("\nApplying collider display states...")
-                # コライダー表示が有効でない場合でも、コライダー情報が復元されたノードがある場合は表示を更新
-                # まず、コライダーが有効なノードがあるかチェック
-                has_enabled_colliders = False
-                for node in nodes_dict.values():
-                    if getattr(node, 'collider_enabled', False) and getattr(node, 'collider_type', None):
-                        has_enabled_colliders = True
-                        break
-                
-                if has_enabled_colliders:
-                    # コライダー表示を有効にして更新
-                    if not self.stl_viewer.collider_display_enabled:
-                        self.stl_viewer.collider_display_enabled = True
-                        if hasattr(self.stl_viewer, 'collider_toggle'):
-                            self.stl_viewer.collider_toggle.setChecked(True)
-                        print("Collider display automatically enabled (colliders found in project)")
-                
-                self.stl_viewer.refresh_collider_display()
-                print("Collider display updated")
+                # コライダー表示は自動でONにしない（OFFのまま）
+                # コライダー情報は復元されているが、表示はユーザーが手動でONにするまでOFFのまま
+                if self.stl_viewer.collider_display_enabled:
+                    # 既にONの場合は更新
+                    self.stl_viewer.refresh_collider_display()
+                    print("Collider display updated (already enabled)")
+                else:
+                    # OFFの場合は、コライダーアクターを非表示にする
+                    self.stl_viewer.hide_all_colliders()
+                    print("Collider display remains OFF (user must enable manually)")
                 
                 # 注意: 色の適用はSTL読み込み完了後に行う（STL読み込み前ではstl_actorsにノードが存在しないため）
 
