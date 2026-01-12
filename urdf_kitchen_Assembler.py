@@ -52,7 +52,7 @@ from urdf_kitchen_utils import (
     mirror_inertia_tensor_left_right, mirror_center_of_mass_left_right,
     euler_to_quaternion, quaternion_to_euler, quaternion_to_matrix, format_float_no_exp,
     KitchenColorPicker, CustomColorDialog,
-    ConversionUtils, URDFParser, MJCFParser,
+    ConversionUtils, URDFParser, MJCFParser, SRDFParser, SDFParser,
     validate_inertia_tensor
 )
 
@@ -5087,8 +5087,9 @@ class STLViewerWidget(QtWidgets.QWidget):
             self.render_to_image()
 
     def _rotate_children(self, parent_node, parent_transform):
-        """子孫ノードを親の回転に追従させて回転"""
+        """子孫ノードを親の回転に追従させて回転（複数分岐対応）"""
         import math
+        import vtk
 
         # 親ノードの全出力ポートをチェック
         for port_idx, output_port in enumerate(parent_node.output_ports()):
@@ -5111,12 +5112,14 @@ class STLViewerWidget(QtWidgets.QWidget):
                     child_rpy = point_data.get('rpy', [0, 0, 0])
                     parent_point_angle = point_data.get('angle', [0.0, 0.0, 0.0])
 
-                # 子ノードの変換を更新
-                child_transform = self.transforms[child_node]
+                # 子ノードの変換を更新（新しい変換オブジェクトを作成して、親の変換をコピー）
+                # これにより、各分岐が独立して処理される
+                child_transform = vtk.vtkTransform()
                 child_transform.Identity()
-
+                
                 # 親の変換を適用（回転テストの回転を含む）
-                child_transform.Concatenate(parent_transform)
+                # DeepCopyを使用して、親の変換をコピー（参照ではなく）
+                child_transform.DeepCopy(parent_transform)
 
                 # ジョイントの位置を適用
                 child_transform.Translate(child_xyz[0], child_xyz[1], child_xyz[2])
@@ -5155,10 +5158,11 @@ class STLViewerWidget(QtWidgets.QWidget):
                         elif child_node.rotation_axis == 2:  # Z軸
                             child_transform.RotateZ(child_angle_deg)
 
-                # 変換を適用
+                # 変換を適用（self.transformsも更新）
+                self.transforms[child_node].DeepCopy(child_transform)
                 self.stl_actors[child_node].SetUserTransform(child_transform)
 
-                # 再帰的に孫ノードも回転
+                # 再帰的に孫ノードも回転（各分岐が独立して処理される）
                 self._rotate_children(child_node, child_transform)
 
     def _restore_children_transforms(self, parent_node):
@@ -7151,25 +7155,46 @@ class CustomNodeGraph(NodeGraph):
         return False
 
     def auto_detect_mesh_directories(self, urdf_file):
-        """URDFファイルの親ディレクトリから潜在的なmeshディレクトリを自動検出"""
+        """URDFファイルの親ディレクトリから潜在的なmeshディレクトリを自動検出
+        
+        検索範囲：
+        - 上位ディレクトリは1階層（URDFファイルの親ディレクトリの親）
+        - そこから下位ディレクトリまでは2階層探索
+        """
         potential_dirs = []
 
         urdf_dir = os.path.dirname(urdf_file)
-        parent_dir = os.path.dirname(urdf_dir)
+        parent_dir = os.path.dirname(urdf_dir)  # 上位1階層
 
         print(f"\n=== Auto-detecting mesh directories ===")
         print(f"URDF directory: {urdf_dir}")
-        print(f"Parent directory: {parent_dir}")
+        print(f"Parent directory (upper 1 level): {parent_dir}")
 
-        # 親ディレクトリ内のすべてのサブディレクトリを検索
+        # 上位ディレクトリから下位2階層まで探索
+        def search_directories(base_dir, current_depth, max_depth):
+            """再帰的にディレクトリを探索（最大深さ制限付き）"""
+            if current_depth > max_depth:
+                return
+            
+            try:
+                for item in os.listdir(base_dir):
+                    item_path = os.path.join(base_dir, item)
+                    if os.path.isdir(item_path):
+                        # 'mesh' を含むディレクトリ名を検索（大文字小文字を区別しない）
+                        if 'mesh' in item.lower():
+                            if item_path not in potential_dirs:
+                                potential_dirs.append(item_path)
+                                print(f"  Found potential mesh directory (depth {current_depth}): {item_path}")
+                        
+                        # 下位ディレクトリを探索（2階層まで）
+                        if current_depth < max_depth:
+                            search_directories(item_path, current_depth + 1, max_depth)
+            except Exception as e:
+                print(f"Error scanning directory {base_dir}: {str(e)}")
+
+        # 上位ディレクトリから探索開始（深さ0から開始、最大2階層まで）
         try:
-            for item in os.listdir(parent_dir):
-                item_path = os.path.join(parent_dir, item)
-                if os.path.isdir(item_path):
-                    # 'mesh' を含むディレクトリ名を検索（大文字小文字を区別しない）
-                    if 'mesh' in item.lower():
-                        potential_dirs.append(item_path)
-                        print(f"  Found potential mesh directory: {item_path}")
+            search_directories(parent_dir, 0, 2)
         except Exception as e:
             print(f"Error scanning parent directory: {str(e)}")
 
@@ -7179,10 +7204,13 @@ class CustomNodeGraph(NodeGraph):
         return potential_dirs
 
     def search_stl_files_in_directory(self, meshes_dir, missing_stl_files, links_data):
-        """指定されたディレクトリ内でSTLファイルを検索"""
+        """指定されたディレクトリ内でSTLファイルを検索
+        
+        検索範囲：下位ディレクトリまで2階層探索
+        """
         found_count = 0
 
-        print(f"Searching for STL files in: {meshes_dir}")
+        print(f"Searching for STL files in: {meshes_dir} (max depth: 2 levels)")
 
         for missing_item in missing_stl_files:
             link_name = missing_item['link_name']
@@ -7199,12 +7227,21 @@ class CustomNodeGraph(NodeGraph):
                 print(f"  ✓ Found STL for {link_name}: {candidate_path}")
                 found_count += 1
             else:
-                # サブディレクトリも検索
+                # サブディレクトリも検索（最大2階層まで）
+                meshes_dir_depth = len(meshes_dir.split(os.sep))
                 for root_dir, dirs, files in os.walk(meshes_dir):
+                    # 現在のディレクトリの深さを計算
+                    current_depth = len(root_dir.split(os.sep)) - meshes_dir_depth
+                    # 2階層まで探索
+                    if current_depth > 2:
+                        # これより深いディレクトリは探索しない
+                        dirs[:] = []  # os.walkのdirsを空にすることで、それより深い探索を停止
+                        continue
+                    
                     if basename in files:
                         candidate_path = os.path.join(root_dir, basename)
                         links_data[link_name]['stl_file'] = candidate_path
-                        print(f"  ✓ Found STL for {link_name} in subdirectory: {candidate_path}")
+                        print(f"  ✓ Found STL for {link_name} in subdirectory (depth {current_depth}): {candidate_path}")
                         found_count += 1
                         break
 
@@ -7213,13 +7250,13 @@ class CustomNodeGraph(NodeGraph):
     def import_urdf(self):
         """URDFファイルをインポート"""
         try:
-            # URDFファイルまたはxacroファイルを選択するダイアログ
-            # デフォルトで.urdfと.xacroの両方を表示（タブ切り替え不要）
+            # URDFファイル、xacroファイル、SDFファイル、またはSRDFファイルを選択するダイアログ
+            # デフォルトで.urdf、.xacro、.sdf、.srdfのすべてを表示
             urdf_file, _ = QtWidgets.QFileDialog.getOpenFileName(
                 self.widget,
-                "Select URDF or xacro file to import",
+                "Select URDF, xacro, SDF, or SRDF file to import",
                 os.getcwd(),
-                "URDF/Xacro Files (*.urdf;*.xacro);;All Files (*)"
+                "URDF/Xacro/SDF/SRDF Files (*.urdf;*.xacro;*.sdf;*.srdf);;URDF Files (*.urdf);;Xacro Files (*.xacro);;SDF Files (*.sdf);;SRDF Files (*.srdf);;All Files (*)"
             )
 
             if not urdf_file:
@@ -7231,15 +7268,118 @@ class CustomNodeGraph(NodeGraph):
             # ファイルの種類を確認
             file_ext = os.path.splitext(urdf_file)[1].lower()
             is_xacro = file_ext in ['.xacro', '.xacro.urdf']
-            if is_xacro:
+            is_srdf = file_ext == '.srdf'
+            is_sdf = file_ext == '.sdf'
+            
+            if is_srdf:
+                print(f"  Detected SRDF file, will search for corresponding URDF/SDF file")
+                # SRDFファイルの場合、対応するURDF/SDFファイルを探す（上1階層、下4階層）
+                srdf_dir = os.path.dirname(urdf_file)
+                srdf_basename = os.path.splitext(os.path.basename(urdf_file))[0]
+                
+                # 上1階層、下4階層まで探索する関数
+                def search_urdf_sdf_files(base_dir, basename, max_depth=4):
+                    """上1階層、下4階層までURDF/SDFファイルを探索"""
+                    candidates = []
+                    
+                    # 上1階層
+                    parent_dir = os.path.dirname(base_dir)
+                    if os.path.isdir(parent_dir):
+                        candidates.extend([
+                            os.path.join(parent_dir, f"{basename}.urdf"),
+                            os.path.join(parent_dir, f"{basename}.xacro"),
+                            os.path.join(parent_dir, f"{basename}.sdf"),
+                        ])
+                    
+                    # 下4階層まで探索
+                    base_depth = len(base_dir.split(os.sep))
+                    for root_dir, dirs, files in os.walk(base_dir):
+                        current_depth = len(root_dir.split(os.sep)) - base_depth
+                        if current_depth > max_depth:
+                            dirs[:] = []  # これより深い探索を停止
+                            continue
+                        
+                        candidates.extend([
+                            os.path.join(root_dir, f"{basename}.urdf"),
+                            os.path.join(root_dir, f"{basename}.xacro"),
+                            os.path.join(root_dir, f"{basename}.sdf"),
+                        ])
+                    
+                    return candidates
+                
+                urdf_candidates = search_urdf_sdf_files(srdf_dir, srdf_basename, max_depth=4)
+                urdf_file_found = None
+                for candidate in urdf_candidates:
+                    candidate = os.path.normpath(candidate)
+                    if os.path.exists(candidate):
+                        urdf_file_found = candidate
+                        print(f"  Found corresponding file: {urdf_file_found}")
+                        break
+                
+                if not urdf_file_found:
+                    QtWidgets.QMessageBox.warning(
+                        self.widget,
+                        "URDF/SDF File Not Found",
+                        f"SRDF file selected, but could not find corresponding URDF/SDF file.\n\n"
+                        f"Please select the URDF/SDF file manually.\n\n"
+                        f"SRDF file: {urdf_file}"
+                    )
+                    # URDF/SDFファイルを手動で選択させる
+                    urdf_file_found, _ = QtWidgets.QFileDialog.getOpenFileName(
+                        self.widget,
+                        "Select corresponding URDF, xacro, or SDF file",
+                        os.path.dirname(urdf_file),
+                        "URDF/Xacro/SDF Files (*.urdf;*.xacro;*.sdf);;All Files (*)"
+                    )
+                    if not urdf_file_found:
+                        print("URDF import cancelled")
+                        return False
+                
+                srdf_file = urdf_file
+                urdf_file = urdf_file_found
+                # ファイル拡張子を再確認
+                file_ext = os.path.splitext(urdf_file)[1].lower()
+                is_xacro = file_ext in ['.xacro', '.xacro.urdf']
+                is_sdf = file_ext == '.sdf'
+            elif is_sdf:
+                print(f"  Detected SDF file, will be parsed using SDFParser")
+                srdf_file = None
+            elif is_xacro:
                 print(f"  Detected xacro file, will be expanded to URDF first")
+                srdf_file = None
             else:
                 print(f"  Detected URDF file, will be parsed directly")
+                # URDFファイルの場合、同じディレクトリにあるSRDFファイルを自動検索
+                urdf_dir = os.path.dirname(urdf_file)
+                urdf_basename = os.path.splitext(os.path.basename(urdf_file))[0]
+                srdf_candidate = os.path.join(urdf_dir, f"{urdf_basename}.srdf")
+                if os.path.exists(srdf_candidate):
+                    srdf_file = srdf_candidate
+                    print(f"  Found corresponding SRDF file: {srdf_file}")
+                else:
+                    srdf_file = None
 
-            # URDFParserを使用してパース
+            # URDFParserまたはSDFParserを使用してパース
             try:
-                urdf_parser = URDFParser(verbose=True)
-                urdf_data = urdf_parser.parse_urdf(urdf_file)
+                if is_sdf:
+                    sdf_parser = SDFParser(verbose=True)
+                    sdf_data = sdf_parser.parse_sdf(urdf_file)
+                    # SDFデータをURDF形式に変換
+                    robot_name = sdf_data['robot_name']
+                    links_data = sdf_data['links_data']
+                    joints_data = sdf_data['joints_data']
+                    materials_data = sdf_data['materials_data']
+                    missing_stl_files = sdf_data['missing_meshes']
+                    urdf_data = {
+                        'robot_name': robot_name,
+                        'links': links_data,
+                        'joints': joints_data,
+                        'materials': materials_data,
+                        'missing_meshes': missing_stl_files
+                    }
+                else:
+                    urdf_parser = URDFParser(verbose=True)
+                    urdf_data = urdf_parser.parse_urdf(urdf_file)
             except FileNotFoundError as e:
                 QtWidgets.QMessageBox.critical(
                     self.widget,
@@ -7284,8 +7424,27 @@ class CustomNodeGraph(NodeGraph):
             robot_name = urdf_data['robot_name']
             links_data = urdf_data['links']
             joints_data = urdf_data['joints']
-            materials_data = urdf_data['materials']
-            missing_stl_files = urdf_data['missing_meshes']
+            materials_data = urdf_data.get('materials', {})  # SDFの場合は空の可能性がある
+            missing_stl_files = urdf_data.get('missing_meshes', [])  # SDFの場合は空の可能性がある
+
+            # SRDFファイルを読み込む（存在する場合）
+            srdf_data = None
+            if 'srdf_file' in locals() and srdf_file:
+                try:
+                    srdf_parser = SRDFParser(verbose=True)
+                    srdf_data = srdf_parser.parse_srdf(srdf_file)
+                    print(f"\n=== SRDF Parse Summary ===")
+                    print(f"Groups: {len(srdf_data['groups'])}")
+                    print(f"Disabled collisions: {len(srdf_data['disabled_collisions'])}")
+                    print(f"Disabled links: {len(srdf_data['disabled_links'])}")
+                    print(f"Disabled joints: {len(srdf_data['disabled_joints'])}")
+                    print(f"End effectors: {len(srdf_data['end_effectors'])}")
+                    print(f"Virtual joints: {len(srdf_data['virtual_joints'])}")
+                    print("=" * 30 + "\n")
+                except Exception as e:
+                    print(f"Warning: Failed to parse SRDF file: {srdf_file}\n{str(e)}")
+                    traceback.print_exc()
+                    srdf_data = None
 
             # デバッグ: パースされたデータの概要を出力
             print(f"\n=== URDF Parse Summary ===")
@@ -7294,6 +7453,10 @@ class CustomNodeGraph(NodeGraph):
             print(f"Total joints: {len(joints_data)}")
             print(f"Total materials: {len(materials_data)}")
             print(f"Missing meshes: {len(missing_stl_files)}")
+            if srdf_data:
+                print(f"SRDF data loaded: Yes")
+            else:
+                print(f"SRDF data loaded: No")
             
             # リンクとジョイントが空でないか確認
             if len(links_data) == 0:
@@ -7352,9 +7515,9 @@ class CustomNodeGraph(NodeGraph):
             print(f"\n=== STL File Summary ===")
             print(f"Total links: {len(links_data)}")
             for link_name, link_data in links_data.items():
-                if link_data['stl_file']:
+                if link_data.get('stl_file'):
                     print(f"  ✓ {link_name}: {os.path.basename(link_data['stl_file'])}")
-                elif link_data['stl_filename_original']:
+                elif link_data.get('stl_filename_original'):
                     print(f"  ✗ {link_name}: NOT FOUND ({link_data['stl_filename_original']})")
                 else:
                     print(f"  - {link_name}: No STL specified")
@@ -7456,12 +7619,15 @@ class CustomNodeGraph(NodeGraph):
                 link_child_counts[parent_link] += 1
 
             # decorationsの数を追加（各decorationも出力ポートが必要）
+            # 子ジョイントがないリンクでもdecorationがある場合はカウントする必要がある
             for link_name, link_data in links_data.items():
-                if link_name in link_child_counts:
-                    decoration_count = len(link_data['decorations'])
-                    if decoration_count > 0:
-                        link_child_counts[link_name] += decoration_count
-                        print(f"Link '{link_name}' has {decoration_count} decoration(s)")
+                decoration_count = len(link_data.get('decorations', []))
+                if decoration_count > 0:
+                    # link_child_countsに存在しない場合は初期化
+                    if link_name not in link_child_counts:
+                        link_child_counts[link_name] = 0
+                    link_child_counts[link_name] += decoration_count
+                    print(f"Link '{link_name}' has {decoration_count} decoration(s) (total children: {link_child_counts[link_name]})")
 
             # ノードを作成
             nodes = {}
@@ -7470,20 +7636,22 @@ class CustomNodeGraph(NodeGraph):
             base_node = self.get_node_by_name('base_link')
             base_link_sub_node = None  # base_link_subノード（必要に応じて作成）
 
-            # URDFにbase_linkがある場合、またはルートリンクをbase_linkに接続する必要がある場合
-            if 'base_link' in links_data or 'base_link' in link_child_counts:
-                if base_node:
-                    print("Using existing base_link node")
-                else:
-                    # 既存のbase_linkがない場合は新規作成
-                    print("Creating new base_link node")
-                    base_node = self.create_node(
-                        'insilico.nodes.BaseLinkNode',
-                        name='base_link',
-                        pos=QtCore.QPointF(50, 0)  # 50px右にずらした
-                    )
+            # base_linkノードは常に作成する（URDFにbase_linkがあるかどうかに関わらず）
+            if base_node:
+                print("Using existing base_link node")
+            else:
+                # 既存のbase_linkがない場合は新規作成
+                print("Creating new base_link node")
+                base_node = self.create_node(
+                    'insilico.nodes.BaseLinkNode',
+                    name='base_link',
+                    pos=QtCore.QPointF(50, 0)  # 50px右にずらした
+                )
 
-                nodes['base_link'] = base_node
+            nodes['base_link'] = base_node
+
+            # URDFにbase_linkがある場合の処理
+            if 'base_link' in links_data or 'base_link' in link_child_counts:
 
                 # URDFのbase_linkが空でないかチェック
                 # 既存のbase_linkがある場合、データの上書きを禁止
@@ -7568,7 +7736,14 @@ class CustomNodeGraph(NodeGraph):
                         base_link_sub_node.mass_value = base_link_data['mass']
                         base_link_sub_node.inertia = base_link_data['inertia'].copy()
                         base_link_sub_node.inertial_origin = base_link_data['inertial_origin'].copy()
-                        base_link_sub_node.node_color = base_link_data['color']
+                        # カラー情報を設定（RGBA形式に統一）
+                        color_data = base_link_data['color']
+                        if len(color_data) == 3:
+                            base_link_sub_node.node_color = color_data + [1.0]  # Alpha=1.0を追加
+                        elif len(color_data) >= 4:
+                            base_link_sub_node.node_color = color_data[:4]
+                        else:
+                            base_link_sub_node.node_color = DEFAULT_COLOR_WHITE.copy()
 
                         # STLファイルが設定されている場合
                         if base_link_data['stl_file']:
@@ -7725,7 +7900,12 @@ class CustomNodeGraph(NodeGraph):
                 # ノードのパラメータを設定
                 node.mass_value = link_data['mass']
                 node.inertia = link_data['inertia'].copy()  # コピーを作成して参照を切る
-                node.inertial_origin = link_data['inertial_origin'].copy() if isinstance(link_data['inertial_origin'], dict) else link_data['inertial_origin']
+                # inertial_originが存在する場合のみ設定
+                if 'inertial_origin' in link_data:
+                    node.inertial_origin = link_data['inertial_origin'].copy() if isinstance(link_data['inertial_origin'], dict) else link_data['inertial_origin']
+                else:
+                    # デフォルト値を設定
+                    node.inertial_origin = {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]}
                 
                 # === 必須ログ: ノードに設定された慣性値を確認 ===
                 print(f"\n[URDF_NODE_SET] link_name={link_name}, source_urdf_path={urdf_file}")
@@ -7733,7 +7913,14 @@ class CustomNodeGraph(NodeGraph):
                 print(f"  node.inertial_origin={node.inertial_origin}")
                 print(f"  node.inertia: ixx={node.inertia['ixx']:.9e}, ixy={node.inertia['ixy']:.9e}, ixz={node.inertia['ixz']:.9e}")
                 print(f"                iyy={node.inertia['iyy']:.9e}, iyz={node.inertia['iyz']:.9e}, izz={node.inertia['izz']:.9e}")
-                node.node_color = link_data['color']
+                # カラー情報を設定（RGBA形式に統一）
+                color_data = link_data['color']
+                if len(color_data) == 3:
+                    node.node_color = color_data + [1.0]  # Alpha=1.0を追加
+                elif len(color_data) >= 4:
+                    node.node_color = color_data[:4]
+                else:
+                    node.node_color = DEFAULT_COLOR_WHITE.copy()
                 if link_data['stl_file']:
                     node.stl_file = link_data['stl_file']
                 # メッシュのスケール情報を設定（URDF左右対称対応）
@@ -7783,15 +7970,36 @@ class CustomNodeGraph(NodeGraph):
                     deco_pos_x = pos_x + deco_offset_x
                     deco_pos_y = pos_y + deco_offset_y
 
+                    # decorationノード名を取得（一意な名前が既に設定されている）
+                    decoration_name = decoration['name']
+                    
+                    # ノード名の衝突をチェック
+                    if decoration_name in nodes:
+                        print(f"  ⚠ Warning: Decoration node name '{decoration_name}' already exists, appending index")
+                        decoration_name = f"{decoration_name}_{deco_idx}"
+                    
                     deco_node = self.create_node(
                         'insilico.nodes.FooNode',
-                        name=decoration['name'],
+                        name=decoration_name,
                         pos=QtCore.QPointF(deco_pos_x, deco_pos_y)
                     )
 
                     # decorationノードのパラメータを設定
-                    deco_node.node_color = decoration['color']
-                    deco_node.stl_file = decoration['stl_file']
+                    # カラー情報を設定（RGBA形式に統一）
+                    deco_color_data = decoration['color']
+                    if len(deco_color_data) == 3:
+                        deco_node.node_color = deco_color_data + [1.0]  # Alpha=1.0を追加
+                    elif len(deco_color_data) >= 4:
+                        deco_node.node_color = deco_color_data[:4]
+                    else:
+                        deco_node.node_color = DEFAULT_COLOR_WHITE.copy()
+                    
+                    # メッシュファイルが存在する場合のみ設定
+                    if decoration.get('stl_file'):
+                        deco_node.stl_file = decoration['stl_file']
+                    else:
+                        print(f"  ⚠ Warning: Decoration '{decoration_name}' has no mesh file (stl_file is None)")
+                    
                     deco_node.massless_decoration = True  # Massless Decorationフラグを設定
                     # メッシュのスケール情報を設定（URDF左右対称対応）
                     deco_node.mesh_scale = decoration.get('mesh_scale', [1.0, 1.0, 1.0])
@@ -7802,9 +8010,13 @@ class CustomNodeGraph(NodeGraph):
                     deco_node._parent_link_name = link_name
 
                     # decorationノードをnodesディクショナリに追加
-                    nodes[decoration['name']] = deco_node
+                    nodes[decoration_name] = deco_node
 
-                    print(f"  → Created decoration node '{decoration['name']}' for link '{link_name}'")
+                    print(f"  → Created decoration node '{decoration_name}' for link '{link_name}'")
+                    if decoration.get('stl_file'):
+                        print(f"    Mesh file: {os.path.basename(decoration['stl_file'])}")
+                    else:
+                        print(f"    Mesh file: None (not found)")
 
                 node_count += 1
 
@@ -7848,15 +8060,17 @@ class CustomNodeGraph(NodeGraph):
 
                 # 子ノードにジョイント情報を設定
                 # 回転軸の設定
-                axis = joint_data['axis']
+                axis = joint_data.get('axis', [1.0, 0.0, 0.0])
                 if joint_data['type'] == 'fixed':
                     child_node.rotation_axis = 3  # Fixed
-                elif abs(axis[0]) > 0.9:
+                elif len(axis) >= 3 and abs(axis[0]) > 0.9:
                     child_node.rotation_axis = 0  # X軸
-                elif abs(axis[1]) > 0.9:
+                elif len(axis) >= 3 and abs(axis[1]) > 0.9:
                     child_node.rotation_axis = 1  # Y軸
-                else:
+                elif len(axis) >= 3:
                     child_node.rotation_axis = 2  # Z軸
+                else:
+                    child_node.rotation_axis = 3  # Fixed (デフォルト)
 
                 # ジョイント制限パラメータの設定
                 child_node.joint_lower = joint_data['limit']['lower']
@@ -7978,17 +8192,24 @@ class CustomNodeGraph(NodeGraph):
                 # _parent_link_name属性があればdecorationノード
                 if hasattr(node, '_parent_link_name'):
                     parent_link = node._parent_link_name
-                    if parent_link not in nodes:
+                    
+                    # base_link_subがある場合、base_linkに接続予定のdecorationをbase_link_subに接続するように変更
+                    actual_parent_link = parent_link
+                    if base_link_sub_node and parent_link == 'base_link':
+                        actual_parent_link = 'base_link_sub'
+                        parent_node = base_link_sub_node
+                    elif parent_link not in nodes:
                         print(f"Skipping decoration connection: {node_name} -> {parent_link} (parent not found)")
                         continue
-
-                    parent_node = nodes[parent_link]
+                    else:
+                        parent_node = nodes[parent_link]
 
                     # 親ノードの現在のポートインデックスを取得（joint接続の続きから）
-                    if parent_link not in parent_port_indices:
-                        parent_port_indices[parent_link] = 0
-                    port_index = parent_port_indices[parent_link]
-                    parent_port_indices[parent_link] += 1
+                    # actual_parent_linkを使用してポートインデックスを管理
+                    if actual_parent_link not in parent_port_indices:
+                        parent_port_indices[actual_parent_link] = 0
+                    port_index = parent_port_indices[actual_parent_link]
+                    parent_port_indices[actual_parent_link] += 1
 
                     # ポート名を取得
                     is_base_link_node = isinstance(parent_node, BaseLinkNode)
@@ -8005,24 +8226,49 @@ class CustomNodeGraph(NodeGraph):
 
                     input_port_name = 'in'
 
-                    print(f"\nConnecting decoration: {parent_link} -> {node_name}")
+                    print(f"\nConnecting decoration: {actual_parent_link} -> {node_name}")
+                    print(f"  Original parent link: {parent_link}")
                     print(f"  Port index: {port_index}, Expected output port: {output_port_name}")
+                    print(f"  Available output ports on {actual_parent_link}: {[p.name() for p in parent_node.output_ports()]}")
 
                     # ポートを接続
                     try:
                         output_port = parent_node.get_output(output_port_name)
+                        
+                        # 出力ポートが存在しない場合、動的に追加を試みる
+                        if not output_port:
+                            print(f"  ⚠ Warning: Output port '{output_port_name}' not found, attempting to add...")
+                            # 必要なポート数を計算
+                            current_port_count = len(parent_node.output_ports())
+                            needed_ports = port_index + 1 - current_port_count
+                            
+                            if needed_ports > 0:
+                                # 不足しているポートを追加
+                                for i in range(needed_ports):
+                                    if hasattr(parent_node, '_add_output'):
+                                        parent_node._add_output()
+                                    elif hasattr(parent_node, 'add_output'):
+                                        parent_node.output_count = getattr(parent_node, 'output_count', 0) + 1
+                                        new_port_name = f'out_{parent_node.output_count}'
+                                        parent_node.add_output(new_port_name, color=(180, 80, 0))
+                                print(f"  ✓ Added {needed_ports} output port(s) to {actual_parent_link}")
+                                # 再度ポートを取得
+                                output_port = parent_node.get_output(output_port_name)
+                        
                         input_port = node.get_input(input_port_name)
 
                         if output_port and input_port:
                             output_port.connect_to(input_port)
-                            print(f"  ✓ Successfully connected {parent_link}.{output_port_name} to {node_name}.{input_port_name}")
+                            print(f"  ✓ Successfully connected {actual_parent_link}.{output_port_name} to {node_name}.{input_port_name}")
                         else:
                             if not output_port:
-                                print(f"  ✗ ERROR: Output port '{output_port_name}' not found on {parent_link}")
+                                print(f"  ✗ ERROR: Output port '{output_port_name}' not found on {actual_parent_link}")
+                                print(f"    Available ports: {[p.name() for p in parent_node.output_ports()]}")
+                                print(f"    Current port count: {len(parent_node.output_ports())}, Required index: {port_index}")
                             if not input_port:
                                 print(f"  ✗ ERROR: Input port '{input_port_name}' not found on {node_name}")
                     except Exception as e:
-                        print(f"  ✗ ERROR: Exception connecting {parent_link} to {node_name}: {str(e)}")
+                        print(f"  ✗ ERROR: Exception connecting {actual_parent_link} to {node_name}: {str(e)}")
                         traceback.print_exc()
 
             print("=" * 40 + "\n")
@@ -8066,7 +8312,7 @@ class CustomNodeGraph(NodeGraph):
             if 'base_link' not in links_data and 'BaseLink' not in links_data:
                 print("\n=== Verifying root link connections to base_link ===")
 
-                # ルートリンクを再検出
+                # ルートリンクを再検出（親リンクがないリンクを検出）
                 child_links_check = set()
                 for joint_data in joints_data:
                     if joint_data['child']:
@@ -8077,7 +8323,9 @@ class CustomNodeGraph(NodeGraph):
                     if link_name not in child_links_check:
                         root_links_check.append(link_name)
 
-                # base_linkノードを取得
+                print(f"  Found {len(root_links_check)} root link(s): {root_links_check}")
+
+                # base_linkノードを取得（必ず存在するはず）
                 if 'base_link' in nodes:
                     base_link_node = nodes['base_link']
 
@@ -8092,6 +8340,7 @@ class CustomNodeGraph(NodeGraph):
                                     for connected_port in output_port.connected_ports():
                                         if connected_port.node() == root_node:
                                             already_connected = True
+                                            print(f"  ✓ base_link already connected to {root_link_name}")
                                             break
                                 if already_connected:
                                     break
@@ -8117,10 +8366,18 @@ class CustomNodeGraph(NodeGraph):
                                         print(f"  ✓ Connected base_link.{output_port.name()} to {root_link_name}.in")
                                     except Exception as e:
                                         print(f"  ✗ Failed to connect: {str(e)}")
+                                        import traceback
+                                        traceback.print_exc()
                                 else:
                                     print(f"  ✗ Could not find ports for connection")
-                            else:
-                                print(f"  ✓ base_link already connected to {root_link_name}")
+                                    if not output_port:
+                                        print(f"    - base_link output port not found")
+                                    if not input_port:
+                                        print(f"    - {root_link_name} input port not found")
+                        else:
+                            print(f"  ✗ Root link '{root_link_name}' node not found in nodes dictionary")
+                else:
+                    print("  ✗ base_link node not found in nodes dictionary")
 
                 print("=" * 40 + "\n")
 
@@ -8140,6 +8397,10 @@ class CustomNodeGraph(NodeGraph):
                 if self.stl_viewer:
                     self.stl_viewer.reset_camera_front()
                     print("Camera set to Front view successfully")
+                    
+                    # STL読み込み完了後、すべてのノードのカラーを3Dビューに適用
+                    print("\nApplying colors to 3D view after URDF import...")
+                    self._apply_colors_to_all_nodes()
                 else:
                     print("Warning: STL viewer not available")
             except Exception as e:
@@ -8267,6 +8528,88 @@ class CustomNodeGraph(NodeGraph):
     # ============================================================================
     # Import Methods
     # ============================================================================
+
+    def _apply_colors_to_all_nodes(self):
+        """すべてのノードのカラーを3Dビューに適用（Load Project、URDF、MJCF読み込み後用）
+        
+        STL読み込み完了後、すべてのノードのカラーを3Dビューに適用します。
+        ノードを開いて閉じた時と同じ効果を持たせます。
+        """
+        if not self.stl_viewer:
+            return
+        
+        print("\nApplying colors to 3D view after import...")
+        all_nodes = self.all_nodes()
+        applied_count = 0
+        skipped_count = 0
+        
+        for node in all_nodes:
+            try:
+                node_name = node.name()
+                has_stl_file = hasattr(node, 'stl_file') and node.stl_file
+                in_actors = node in self.stl_viewer.stl_actors
+                has_node_color = hasattr(node, 'node_color') and node.node_color
+                
+                # ノードにSTLファイルが読み込まれている場合のみカラーを適用
+                if has_stl_file and in_actors:
+                    # node.node_colorを確認
+                    if has_node_color:
+                        rgba_values = node.node_color
+                        # RGBA値を0-1の範囲に正規化
+                        rgba_values = [max(0.0, min(1.0, float(v))) for v in rgba_values[:4]]
+                        
+                        actor = self.stl_viewer.stl_actors[node]
+                        
+                        # マッパーを取得して、スカラー値（頂点カラーや面カラー）があるかチェック
+                        mapper = actor.GetMapper()
+                        has_scalars = False
+                        if mapper and mapper.GetInput():
+                            polydata = mapper.GetInput()
+                            has_vertex_colors = polydata.GetPointData().GetScalars() is not None
+                            has_face_colors = polydata.GetCellData().GetScalars() is not None
+                            has_scalars = has_vertex_colors or has_face_colors
+                        
+                        if has_scalars:
+                            # スカラー値がある場合は、透明度のみ設定
+                            if len(rgba_values) >= 4:
+                                actor.GetProperty().SetOpacity(rgba_values[3])
+                            else:
+                                actor.GetProperty().SetOpacity(1.0)
+                            print(f"Node '{node_name}' has vertex/face colors, only opacity applied: {rgba_values[3] if len(rgba_values) >= 4 else 1.0}")
+                        else:
+                            # スカラー値がない場合は、通常通りノードの色を適用
+                            # RGB設定（最初の3要素のみ）
+                            actor.GetProperty().SetColor(*rgba_values[:3])
+                            # Alpha設定（4番目の要素があれば）
+                            if len(rgba_values) >= 4:
+                                actor.GetProperty().SetOpacity(rgba_values[3])
+                            else:
+                                actor.GetProperty().SetOpacity(1.0)
+                            print(f"Applied color to node '{node_name}': RGBA{rgba_values[:4]}")
+                            applied_count += 1
+                    else:
+                        # デフォルトの白色を適用
+                        actor = self.stl_viewer.stl_actors[node]
+                        actor.GetProperty().SetColor(1.0, 1.0, 1.0)
+                        actor.GetProperty().SetOpacity(1.0)
+                        print(f"Applied default white color to node '{node_name}'")
+                        applied_count += 1
+                else:
+                    skipped_count += 1
+                    if not has_stl_file:
+                        print(f"Skipped node '{node_name}': no STL file")
+                    elif not in_actors:
+                        print(f"Skipped node '{node_name}': not in stl_actors")
+            except Exception as e:
+                print(f"Error applying color to node '{node.name()}': {str(e)}")
+                import traceback
+                traceback.print_exc()
+        
+        print(f"Color application completed: {applied_count} applied, {skipped_count} skipped")
+        
+        # 3Dビューを更新
+        if applied_count > 0:
+            self.stl_viewer.render_to_image()
 
     def import_mjcf(self):
         """MJCFファイルをインポート"""
@@ -8929,6 +9272,16 @@ class CustomNodeGraph(NodeGraph):
             # 位置を再計算
             print("\nRecalculating positions...")
             QtCore.QTimer.singleShot(100, self.recalculate_all_positions)
+            
+            # STL読み込み完了後、すべてのノードのカラーを3Dビューに適用
+            # タイマーを使って、STL読み込みが完了してから色を適用
+            def apply_colors_after_stl_load():
+                if self.stl_viewer:
+                    print("\nApplying colors to 3D view after MJCF import...")
+                    self._apply_colors_to_all_nodes()
+            
+            # STL読み込みが完了するのを待つため、少し遅延を入れる
+            QtCore.QTimer.singleShot(500, apply_colors_after_stl_load)
 
             # 一時ディレクトリのクリーンアップ（ZIPファイルの場合）
             # 注: メッシュファイルは既にノードに読み込まれているため、一時ファイルは削除可能
@@ -10666,6 +11019,10 @@ class CustomNodeGraph(NodeGraph):
                     print("Collider display remains OFF (user must enable manually)")
                 
                 # 注意: 色の適用はSTL読み込み完了後に行う（STL読み込み前ではstl_actorsにノードが存在しないため）
+                
+                # STL読み込み完了後、すべてのノードのカラーを3Dビューに適用
+                print("\nApplying colors to 3D view after project load...")
+                self._apply_colors_to_all_nodes()
 
             # 進捗バーはSTL読み込みが完了するまで表示し続ける（外部関数で非表示にする）
             # ここでは非表示にしない

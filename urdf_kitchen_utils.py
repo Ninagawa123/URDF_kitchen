@@ -4113,7 +4113,7 @@ class URDFParser:
             root: XML root element
 
         Returns:
-            Dictionary mapping material names to RGB colors
+            Dictionary mapping material names to RGBA colors
         """
         materials_data = {}
 
@@ -4123,7 +4123,14 @@ class URDFParser:
             if color_elem is not None:
                 rgba_str = color_elem.get('rgba', '1.0 1.0 1.0 1.0')
                 rgba = [float(v) for v in rgba_str.split()]
-                materials_data[mat_name] = rgba[:3]  # RGB only
+                # RGBA（4要素）を保存（Alphaがない場合は1.0を追加）
+                if len(rgba) >= 4:
+                    materials_data[mat_name] = rgba[:4]
+                elif len(rgba) == 3:
+                    materials_data[mat_name] = rgba + [1.0]  # Alpha=1.0を追加
+                else:
+                    # 不正な形式の場合はデフォルト値
+                    materials_data[mat_name] = [1.0, 1.0, 1.0, 1.0]
 
         if self.verbose:
             print(f"Parsed {len(materials_data)} materials")
@@ -4165,7 +4172,7 @@ class URDFParser:
                 'inertial_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
                 'visual_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
                 'stl_file': None,
-                'color': [1.0, 1.0, 1.0],
+                'color': [1.0, 1.0, 1.0, 1.0],  # RGBA（4要素）に変更
                 'stl_filename_original': None,
                 'mesh_scale': [1.0, 1.0, 1.0],
                 'decorations': [],
@@ -4203,7 +4210,7 @@ class URDFParser:
                 is_main_visual = (visual_idx == 0)
 
                 current_stl_path = None
-                current_color = [1.0, 1.0, 1.0]
+                current_color = [1.0, 1.0, 1.0, 1.0]  # RGBA（4要素）に変更
                 current_visual_origin = {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]}
 
                 # Parse visual origin
@@ -4250,13 +4257,21 @@ class URDFParser:
                         else:
                             if self.verbose:
                                 print(f"Could not find mesh file for link {link_name}: {mesh_filename}")
+                            mesh_basename = os.path.basename(mesh_filename)
                             if is_main_visual:
                                 link_data['stl_filename_original'] = mesh_filename
-                                mesh_basename = os.path.basename(mesh_filename)
                                 missing_meshes.append({
                                     'link_name': link_name,
                                     'filename': mesh_filename,
                                     'basename': mesh_basename
+                                })
+                            else:
+                                # Decoration visualのメッシュファイルが見つからない場合も記録
+                                missing_meshes.append({
+                                    'link_name': link_name,
+                                    'filename': mesh_filename,
+                                    'basename': mesh_basename,
+                                    'is_decoration': True
                                 })
 
                 # Parse material color
@@ -4264,13 +4279,20 @@ class URDFParser:
                 if material_elem is not None:
                     mat_name = material_elem.get('name')
                     if mat_name in materials_data:
+                        # materials_dataからRGBA（4要素）を取得
                         current_color = materials_data[mat_name]
                     else:
                         color_elem = material_elem.find('color')
                         if color_elem is not None:
                             rgba_str = color_elem.get('rgba', '1.0 1.0 1.0 1.0')
                             rgba = [float(v) for v in rgba_str.split()]
-                            current_color = rgba[:3]
+                            # RGBA（4要素）を保存（Alphaがない場合は1.0を追加）
+                            if len(rgba) >= 4:
+                                current_color = rgba[:4]
+                            elif len(rgba) == 3:
+                                current_color = rgba + [1.0]  # Alpha=1.0を追加
+                            else:
+                                current_color = [1.0, 1.0, 1.0, 1.0]  # デフォルト値
                         elif mat_name and mat_name.startswith('#'):
                             # Hex color code
                             hex_color = mat_name[1:]
@@ -4278,7 +4300,11 @@ class URDFParser:
                                 r = int(hex_color[0:2], 16) / 255.0
                                 g = int(hex_color[2:4], 16) / 255.0
                                 b = int(hex_color[4:6], 16) / 255.0
-                                current_color = [r, g, b]
+                                current_color = [r, g, b, 1.0]  # Alpha=1.0を追加
+                            else:
+                                current_color = [1.0, 1.0, 1.0, 1.0]  # デフォルト値
+                        else:
+                            current_color = [1.0, 1.0, 1.0, 1.0]  # デフォルト値
 
                 # Store data
                 if is_main_visual:
@@ -4289,16 +4315,27 @@ class URDFParser:
                     link_data['visual_origin'] = current_visual_origin
                 else:
                     # Decoration visual
+                    # メッシュファイルが見つからない場合でもdecoration_dataを作成
+                    # ノード名を一意にするため、リンク名を含める
                     if current_stl_path:
                         stl_name = os.path.splitext(os.path.basename(current_stl_path))[0]
-                        decoration_data = {
-                            'name': stl_name,
-                            'stl_file': current_stl_path,
-                            'color': current_color,
-                            'mesh_scale': mesh_scale,
-                            'visual_origin': current_visual_origin
-                        }
-                        link_data['decorations'].append(decoration_data)
+                    else:
+                        # メッシュファイルが見つからない場合、ファイル名から推測
+                        mesh_basename = os.path.basename(mesh_filename) if mesh_filename else f"decoration_{visual_idx}"
+                        stl_name = os.path.splitext(mesh_basename)[0]
+                    
+                    # ノード名を一意にするため、リンク名を含める（同じメッシュが複数のリンクで使用される場合の衝突を回避）
+                    decoration_name = f"{link_name}_{stl_name}"
+                    
+                    decoration_data = {
+                        'name': decoration_name,
+                        'stl_file': current_stl_path,  # Noneの可能性もある
+                        'color': current_color,
+                        'mesh_scale': mesh_scale,
+                        'visual_origin': current_visual_origin,
+                        'original_name': stl_name  # 元のメッシュ名を保持
+                    }
+                    link_data['decorations'].append(decoration_data)
 
             # Parse collision information
             collision_elems = link_elem.findall('collision')
@@ -4465,20 +4502,32 @@ class URDFParser:
                 # パッケージルートが見つからない場合、従来の方法を試す
                 if relative_path:
                     relative_path_full = relative_path
+                    # relative_pathから"robots/"プレフィックスを削除（例: "robots/asr_twodof_description/qb_meshes/dae/qb_base_flange_m.dae" -> "asr_twodof_description/qb_meshes/dae/qb_base_flange_m.dae"）
+                    if relative_path_full.startswith('robots/'):
+                        relative_path_without_robots = relative_path_full[7:]  # "robots/"を削除
+                    else:
+                        relative_path_without_robots = relative_path_full
                 else:
                     relative_path_full = os.path.join('meshes', mesh_basename)
+                    relative_path_without_robots = relative_path_full
 
                 # Try multiple locations
                 candidates = [
                     os.path.join(package_root, relative_path_full) if package_root else None,
                     os.path.join(description_dir, relative_path_full),
+                    os.path.join(description_dir, relative_path_without_robots),  # "robots/"なしのパスも試す
                     os.path.join(urdf_dir, relative_path_full),
+                    os.path.join(urdf_dir, relative_path_without_robots),  # "robots/"なしのパスも試す
                     os.path.join(description_dir, 'meshes', mesh_basename),
                     os.path.normpath(os.path.join(urdf_dir, '..', 'meshes', mesh_basename)),
                     os.path.join(os.path.dirname(description_dir), relative_path_full),
+                    os.path.join(os.path.dirname(description_dir), relative_path_without_robots),  # "robots/"なしのパスも試す
                     # xacroファイルと同じディレクトリ構造を試す
                     os.path.normpath(os.path.join(urdf_dir, '..', '..', 'meshes', mesh_basename)),
                     os.path.normpath(os.path.join(urdf_dir, '..', '..', package_name, 'meshes', mesh_basename)) if package_name else None,
+                    # 相対パスから直接ファイル名を抽出して検索
+                    os.path.join(description_dir, mesh_basename),
+                    os.path.join(urdf_dir, mesh_basename),
                 ]
 
                 for candidate in candidates:
@@ -4507,6 +4556,32 @@ class URDFParser:
                     if self.verbose:
                         print(f"  Found mesh: {candidate}")
                     return candidate
+
+        # メッシュが見つからない場合、一つ階層を上り、そこから下位4階層まで探索
+        if self.verbose:
+            print(f"  Mesh not found in standard locations, searching from parent directory (4 levels deep)...")
+        
+        # URDFファイルのディレクトリの親ディレクトリを取得
+        parent_dir = os.path.dirname(urdf_dir)
+        
+        if os.path.isdir(parent_dir):
+            # 親ディレクトリから4階層まで探索
+            parent_dir_depth = len(parent_dir.split(os.sep))
+            for root_dir, dirs, files in os.walk(parent_dir):
+                # 現在のディレクトリの深さを計算
+                current_depth = len(root_dir.split(os.sep)) - parent_dir_depth
+                # 4階層まで探索
+                if current_depth > 4:
+                    dirs[:] = []  # これより深い探索を停止
+                    continue
+                
+                # メッシュファイルのbasenameと一致するファイルを探す
+                if mesh_basename in files:
+                    candidate = os.path.join(root_dir, mesh_basename)
+                    if os.path.exists(candidate):
+                        if self.verbose:
+                            print(f"  Found mesh (parent directory search, depth {current_depth}): {candidate}")
+                        return candidate
 
         return None
 
@@ -4624,6 +4699,668 @@ class URDFParser:
             print(f"Parsed {len(joints_data)} joints (including synthetic joints)")
 
         return joints_data
+
+
+# ============================================================================
+# SRDF PARSER
+# ============================================================================
+
+class SRDFParser:
+    """Parser for SRDF (Semantic Robot Description Format) files.
+
+    This class provides methods to parse SRDF XML files and extract
+    semantic information including groups, disabled collisions,
+    end effectors, and virtual joints.
+
+    Usage:
+        parser = SRDFParser()
+        result = parser.parse_srdf('/path/to/robot.srdf')
+        
+        # Access parsed data
+        groups = result['groups']
+        disabled_collisions = result['disabled_collisions']
+        end_effectors = result['end_effectors']
+    """
+
+    def __init__(self, verbose=True):
+        """Initialize SRDF parser.
+
+        Args:
+            verbose: If True, print parsing progress and information
+        """
+        self.verbose = verbose
+
+    def parse_srdf(self, srdf_file_path):
+        """Parse SRDF file and extract semantic information.
+
+        Args:
+            srdf_file_path: Path to SRDF XML file
+
+        Returns:
+            Dictionary containing:
+                - groups: List of group definitions
+                - disabled_collisions: List of disabled collision pairs
+                - disabled_links: List of disabled link names
+                - disabled_joints: List of disabled joint names
+                - end_effectors: List of end effector definitions
+                - virtual_joints: List of virtual joint definitions
+
+        Raises:
+            FileNotFoundError: If SRDF file does not exist
+            ET.ParseError: If SRDF file is not valid XML
+            ValueError: If root element is not 'robot'
+        """
+        if not os.path.exists(srdf_file_path):
+            raise FileNotFoundError(f"SRDF file not found: {srdf_file_path}")
+
+        if self.verbose:
+            print(f"Parsing SRDF from: {srdf_file_path}")
+
+        # Parse SRDF file
+        tree = ET.parse(srdf_file_path)
+        root = tree.getroot()
+
+        if root.tag != 'robot':
+            raise ValueError("Root element must be 'robot' for valid SRDF file")
+
+        robot_name = root.get('name', 'robot')
+        if self.verbose:
+            print(f"Robot name: {robot_name}")
+
+        # Parse groups
+        groups = self._parse_groups(root)
+
+        # Parse disabled collisions
+        disabled_collisions = self._parse_disabled_collisions(root)
+
+        # Parse disabled links
+        disabled_links = self._parse_disabled_links(root)
+
+        # Parse disabled joints
+        disabled_joints = self._parse_disabled_joints(root)
+
+        # Parse end effectors
+        end_effectors = self._parse_end_effectors(root)
+
+        # Parse virtual joints
+        virtual_joints = self._parse_virtual_joints(root)
+
+        if self.verbose:
+            print(f"Parsed {len(groups)} groups, {len(disabled_collisions)} disabled collisions, "
+                  f"{len(disabled_links)} disabled links, {len(disabled_joints)} disabled joints, "
+                  f"{len(end_effectors)} end effectors, {len(virtual_joints)} virtual joints")
+
+        return {
+            'robot_name': robot_name,
+            'groups': groups,
+            'disabled_collisions': disabled_collisions,
+            'disabled_links': disabled_links,
+            'disabled_joints': disabled_joints,
+            'end_effectors': end_effectors,
+            'virtual_joints': virtual_joints
+        }
+
+
+class SDFParser:
+    """Parser for SDF (Simulation Description Format) files.
+    
+    This class provides methods to parse SDF XML files and convert them
+    to URDF-like format for compatibility with the URDF parser.
+    
+    Usage:
+        parser = SDFParser()
+        result = parser.parse_sdf('/path/to/robot.sdf')
+    """
+    
+    def __init__(self, verbose=True):
+        """Initialize SDF parser.
+        
+        Args:
+            verbose: If True, print parsing progress and information
+        """
+        self.verbose = verbose
+    
+    def parse_sdf(self, sdf_file_path):
+        """Parse SDF file and convert to URDF-like format.
+        
+        Args:
+            sdf_file_path: Path to SDF XML file
+            
+        Returns:
+            Dictionary containing:
+                - robot_name: Name of the robot/model
+                - links_data: Dictionary of link data (URDF format)
+                - joints_data: List of joint data (URDF format)
+                - materials_data: Dictionary of material data
+                - missing_meshes: List of missing mesh files
+                
+        Raises:
+            FileNotFoundError: If SDF file does not exist
+            ET.ParseError: If SDF file is not valid XML
+            ValueError: If root element is not 'sdf'
+        """
+        if not os.path.exists(sdf_file_path):
+            raise FileNotFoundError(f"SDF file not found: {sdf_file_path}")
+        
+        if self.verbose:
+            print(f"Parsing SDF from: {sdf_file_path}")
+        
+        # Parse SDF file
+        tree = ET.parse(sdf_file_path)
+        root = tree.getroot()
+        
+        # SDFファイルのルート要素は'sdf'または'gazebo'
+        if root.tag not in ['sdf', 'gazebo']:
+            raise ValueError(f"Root element must be 'sdf' or 'gazebo' for valid SDF file, got '{root.tag}'")
+        
+        # SDFバージョンを取得
+        sdf_version = root.get('version', '1.0')
+        if self.verbose:
+            print(f"SDF version: {sdf_version}")
+        
+        # <model>要素を探す
+        model_elem = root.find('model')
+        if model_elem is None:
+            # <world>要素の中に<model>がある場合
+            world_elem = root.find('world')
+            if world_elem is not None:
+                model_elem = world_elem.find('model')
+        
+        if model_elem is None:
+            raise ValueError("No <model> element found in SDF file")
+        
+        robot_name = model_elem.get('name', 'robot')
+        if self.verbose:
+            print(f"Model name: {robot_name}")
+        
+        # SDFをURDF形式に変換するために、URDFParserを使用
+        # まず、SDFを一時的にURDF形式に変換
+        # 注: これは簡易的な実装で、完全なSDF→URDF変換ではない
+        # より完全な実装には、sdf2urdfツールの使用を推奨
+        
+        # SDFの<link>と<joint>をパース
+        links_data = {}
+        joints_data = []
+        materials_data = {}
+        missing_meshes = []
+        
+        # Parse links
+        # まず、リンクのpose情報を保存するための辞書を作成
+        link_poses = {}  # {link_name: {'xyz': [...], 'rpy': [...]}}
+        
+        for link_elem in model_elem.findall('link'):
+            link_name = link_elem.get('name')
+            if not link_name:
+                continue
+            
+            # Parse link pose (モデル座標系での位置)
+            link_pose = {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]}
+            pose_elem = link_elem.find('pose')
+            if pose_elem is not None:
+                pose_str = pose_elem.text
+                if pose_str:
+                    pose_values = [float(v) for v in pose_str.split()]
+                    if len(pose_values) >= 3:
+                        link_pose['xyz'] = pose_values[:3]
+                    if len(pose_values) >= 6:
+                        link_pose['rpy'] = pose_values[3:6]
+            link_poses[link_name] = link_pose
+            
+            link_data = {
+                'name': link_name,
+                'mass': 0.0,
+                'inertia': {'ixx': 0.0, 'iyy': 0.0, 'izz': 0.0, 'ixy': 0.0, 'ixz': 0.0, 'iyz': 0.0},
+                'inertial_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
+                'stl_file': None,
+                'stl_filename_original': None,  # 元のメッシュファイル名（見つからない場合に使用）
+                'color': [1.0, 1.0, 1.0, 1.0],
+                'mesh_scale': [1.0, 1.0, 1.0],
+                'visual_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
+                'decorations': [],
+                'collider_type': None,
+                'collider_enabled': False,
+                'collider_data': None,
+                'collision_mesh': None
+            }
+            
+            # Parse inertial
+            inertial_elem = link_elem.find('inertial')
+            if inertial_elem is not None:
+                # Parse pose (inertial origin)
+                pose_elem = inertial_elem.find('pose')
+                if pose_elem is not None:
+                    pose_str = pose_elem.text
+                    if pose_str:
+                        pose_values = [float(v) for v in pose_str.split()]
+                        if len(pose_values) >= 3:
+                            link_data['inertial_origin']['xyz'] = pose_values[:3]
+                        if len(pose_values) >= 6:
+                            link_data['inertial_origin']['rpy'] = pose_values[3:6]
+                
+                mass_elem = inertial_elem.find('mass')
+                if mass_elem is not None:
+                    link_data['mass'] = float(mass_elem.get('value', 0.0))
+                
+                inertia_elem = inertial_elem.find('inertia')
+                if inertia_elem is not None:
+                    link_data['inertia'] = {
+                        'ixx': float(inertia_elem.get('ixx', 0.0)),
+                        'iyy': float(inertia_elem.get('iyy', 0.0)),
+                        'izz': float(inertia_elem.get('izz', 0.0)),
+                        'ixy': float(inertia_elem.get('ixy', 0.0)),
+                        'ixz': float(inertia_elem.get('ixz', 0.0)),
+                        'iyz': float(inertia_elem.get('iyz', 0.0))
+                    }
+            
+            # Parse visual
+            visual_elems = link_elem.findall('visual')
+            for visual_idx, visual_elem in enumerate(visual_elems):
+                # Parse pose (visual origin)
+                visual_origin = {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]}
+                pose_elem = visual_elem.find('pose')
+                if pose_elem is not None:
+                    pose_str = pose_elem.text
+                    if pose_str:
+                        pose_values = [float(v) for v in pose_str.split()]
+                        if len(pose_values) >= 3:
+                            visual_origin['xyz'] = pose_values[:3]
+                        if len(pose_values) >= 6:
+                            visual_origin['rpy'] = pose_values[3:6]
+                
+                # Parse material (color)
+                color = [1.0, 1.0, 1.0, 1.0]
+                material_elem = visual_elem.find('material')
+                if material_elem is not None:
+                    ambient_elem = material_elem.find('ambient')
+                    if ambient_elem is not None:
+                        ambient_str = ambient_elem.text
+                        if ambient_str:
+                            ambient_values = [float(v) for v in ambient_str.split()]
+                            if len(ambient_values) >= 3:
+                                color = ambient_values[:3] + [1.0] if len(ambient_values) < 4 else ambient_values[:4]
+                
+                geometry_elem = visual_elem.find('geometry')
+                if geometry_elem is not None:
+                    mesh_elem = geometry_elem.find('mesh')
+                    if mesh_elem is not None:
+                        # Parse scale
+                        mesh_scale = [1.0, 1.0, 1.0]
+                        scale_elem = mesh_elem.find('scale')
+                        if scale_elem is not None:
+                            scale_str = scale_elem.text
+                            if scale_str:
+                                scale_values = [float(v) for v in scale_str.split()]
+                                if len(scale_values) >= 3:
+                                    mesh_scale = scale_values[:3]
+                        
+                        uri_elem = mesh_elem.find('uri')
+                        if uri_elem is not None:
+                            mesh_filename = uri_elem.text
+                            if mesh_filename:
+                                # package://パスを解決
+                                resolved_path = self._resolve_mesh_path(mesh_filename, sdf_file_path)
+                                if resolved_path:
+                                    if visual_idx == 0:
+                                        link_data['stl_file'] = resolved_path
+                                        link_data['visual_origin'] = visual_origin
+                                        link_data['mesh_scale'] = mesh_scale
+                                        link_data['color'] = color
+                                    else:
+                                        # Decoration
+                                        link_data['decorations'].append({
+                                            'name': f"{link_name}_{os.path.splitext(os.path.basename(mesh_filename))[0]}",
+                                            'stl_file': resolved_path,
+                                            'color': color,
+                                            'mesh_scale': mesh_scale,
+                                            'visual_origin': visual_origin
+                                        })
+                                else:
+                                    # メッシュファイルが見つからない場合、stl_filename_originalを設定
+                                    if visual_idx == 0:
+                                        link_data['stl_filename_original'] = mesh_filename
+                                        link_data['visual_origin'] = visual_origin
+                                        link_data['mesh_scale'] = mesh_scale
+                                        link_data['color'] = color
+                                    missing_meshes.append({
+                                        'link_name': link_name,
+                                        'filename': mesh_filename,
+                                        'basename': os.path.basename(mesh_filename),
+                                        'is_decoration': visual_idx > 0
+                                    })
+            
+            links_data[link_name] = link_data
+        
+        # Parse joints
+        for joint_elem in model_elem.findall('joint'):
+            joint_name = joint_elem.get('name')
+            if not joint_name:
+                continue
+            
+            joint_type = joint_elem.get('type', 'fixed')
+            # SDFのjoint typeをURDFのjoint typeに変換
+            # gearbox, ball, screwなどの特殊なタイプはfixedとして処理
+            # （URDF Kitchenは基本的にツリー構造を前提としているため）
+            type_mapping = {
+                'revolute': 'revolute',
+                'prismatic': 'prismatic',
+                'fixed': 'fixed',
+                'continuous': 'continuous',
+                'ball': 'fixed',  # ballジョイントはfixedとして処理
+                'gearbox': 'fixed',  # gearboxジョイントはfixedとして処理
+                'screw': 'fixed'  # screwジョイントはfixedとして処理
+            }
+            urdf_joint_type = type_mapping.get(joint_type, 'fixed')
+            
+            # gearboxタイプのジョイントの場合、gearbox_reference_bodyを保存
+            gearbox_reference_body = None
+            if joint_type == 'gearbox':
+                gearbox_ref_elem = joint_elem.find('gearbox_reference_body')
+                if gearbox_ref_elem is not None:
+                    gearbox_reference_body = gearbox_ref_elem.text
+                    if self.verbose:
+                        print(f"  Joint '{joint_name}' (gearbox): reference_body = {gearbox_reference_body}")
+            
+            parent_elem = joint_elem.find('parent')
+            child_elem = joint_elem.find('child')
+            
+            parent_link = parent_elem.text if parent_elem is not None else None
+            child_link = child_elem.text if child_elem is not None else None
+            
+            # Parse origin
+            origin_xyz = [0.0, 0.0, 0.0]
+            origin_rpy = [0.0, 0.0, 0.0]
+            pose_elem = joint_elem.find('pose')
+            if pose_elem is not None:
+                pose_str = pose_elem.text
+                if pose_str:
+                    pose_values = [float(v) for v in pose_str.split()]
+                    if len(pose_values) >= 3:
+                        origin_xyz = pose_values[:3]
+                    if len(pose_values) >= 6:
+                        origin_rpy = pose_values[3:6]
+            else:
+                # <joint>に<pose>がない場合、親リンクと子リンクの<pose>の差から計算
+                if parent_link and child_link and parent_link in link_poses and child_link in link_poses:
+                    parent_pose = link_poses[parent_link]
+                    child_pose = link_poses[child_link]
+                    # 位置の差を計算
+                    origin_xyz = [
+                        child_pose['xyz'][0] - parent_pose['xyz'][0],
+                        child_pose['xyz'][1] - parent_pose['xyz'][1],
+                        child_pose['xyz'][2] - parent_pose['xyz'][2]
+                    ]
+                    # 回転の差を計算（簡易版：RPYの差）
+                    origin_rpy = [
+                        child_pose['rpy'][0] - parent_pose['rpy'][0],
+                        child_pose['rpy'][1] - parent_pose['rpy'][1],
+                        child_pose['rpy'][2] - parent_pose['rpy'][2]
+                    ]
+                    if self.verbose:
+                        print(f"  Joint '{joint_name}': Calculated origin from link poses")
+                        print(f"    Parent '{parent_link}' pose: {parent_pose}")
+                        print(f"    Child '{child_link}' pose: {child_pose}")
+                        print(f"    Calculated origin: xyz={origin_xyz}, rpy={origin_rpy}")
+            
+            # Parse axis
+            axis = [1.0, 0.0, 0.0]
+            axis_elem = joint_elem.find('axis')
+            if axis_elem is not None:
+                xyz_elem = axis_elem.find('xyz')
+                if xyz_elem is not None:
+                    axis_str = xyz_elem.text
+                    if axis_str:
+                        axis = [float(v) for v in axis_str.split()]
+            
+            # Parse limits
+            limit = {'lower': -3.14159, 'upper': 3.14159, 'effort': 10.0, 'velocity': 3.0, 'friction': 0.05}
+            if axis_elem is not None:
+                limit_elem = axis_elem.find('limit')
+                if limit_elem is not None:
+                    lower = limit_elem.find('lower')
+                    upper = limit_elem.find('upper')
+                    effort = limit_elem.find('effort')
+                    velocity = limit_elem.find('velocity')
+                    
+                    if lower is not None:
+                        limit['lower'] = float(lower.text) if lower.text else -3.14159
+                    if upper is not None:
+                        limit['upper'] = float(upper.text) if upper.text else 3.14159
+                    if effort is not None:
+                        limit['effort'] = float(effort.text) if effort.text else 10.0
+                    if velocity is not None:
+                        limit['velocity'] = float(velocity.text) if velocity.text else 3.0
+            
+            joint_data = {
+                'name': joint_name,
+                'type': urdf_joint_type,
+                'parent': parent_link,
+                'child': child_link,
+                'origin_xyz': origin_xyz,
+                'origin_rpy': origin_rpy,
+                'axis': axis,
+                'limit': limit,
+                'dynamics': {'damping': 0.0, 'friction': 0.0},
+                'gearbox_reference_body': gearbox_reference_body  # gearboxタイプの場合のみ設定
+            }
+            
+            joints_data.append(joint_data)
+        
+        if self.verbose:
+            print(f"Parsed {len(links_data)} links and {len(joints_data)} joints from SDF")
+        
+        return {
+            'robot_name': robot_name,
+            'links_data': links_data,
+            'joints_data': joints_data,
+            'materials_data': materials_data,
+            'missing_meshes': missing_meshes
+        }
+    
+    def _resolve_mesh_path(self, mesh_filename, sdf_file_path):
+        """Resolve mesh file path from SDF reference.
+        
+        Args:
+            mesh_filename: Mesh file reference from SDF
+            sdf_file_path: Path to SDF file
+            
+        Returns:
+            Absolute path to mesh file, or None if not found
+        """
+        # URDFParserの_resolve_mesh_pathと同様の処理
+        # 簡易実装のため、URDFParserを再利用することも可能
+        urdf_dir = os.path.dirname(os.path.abspath(sdf_file_path))
+        mesh_basename = os.path.basename(mesh_filename)
+        
+        # package://パスの処理
+        if mesh_filename.startswith('package://'):
+            # package://パスを処理（簡易実装）
+            parts = mesh_filename.split('/')
+            if len(parts) > 2:
+                package_name = parts[2]
+                relative_path = '/'.join(parts[3:]) if len(parts) > 3 else ''
+                
+                # パッケージルートを探す（循環参照を避けるため、直接関数を呼び出す）
+                package_root = find_package_root(sdf_file_path, package_name, max_search_depth=10, verbose=self.verbose)
+                
+                if package_root:
+                    if relative_path:
+                        candidate = os.path.join(package_root, relative_path)
+                    else:
+                        candidate = os.path.join(package_root, mesh_basename)
+                    
+                    if os.path.exists(candidate):
+                        return candidate
+        
+        # 相対パスの処理
+        candidates = [
+            os.path.join(urdf_dir, mesh_filename),
+            os.path.join(urdf_dir, 'meshes', mesh_basename),
+            os.path.join(os.path.dirname(urdf_dir), 'meshes', mesh_basename),
+        ]
+        
+        for candidate in candidates:
+            if os.path.exists(candidate):
+                return candidate
+        
+        return None
+
+    def _parse_groups(self, root):
+        """Parse group definitions from SRDF.
+
+        Args:
+            root: XML root element
+
+        Returns:
+            List of group dictionaries with 'name', 'links', and 'joints'
+        """
+        groups = []
+        for group_elem in root.findall('group'):
+            group_name = group_elem.get('name')
+            if not group_name:
+                continue
+
+            links = []
+            for link_elem in group_elem.findall('link'):
+                link_name = link_elem.get('name')
+                if link_name:
+                    links.append(link_name)
+
+            joints = []
+            for joint_elem in group_elem.findall('joint'):
+                joint_name = joint_elem.get('name')
+                if joint_name:
+                    joints.append(joint_name)
+
+            groups.append({
+                'name': group_name,
+                'links': links,
+                'joints': joints
+            })
+
+            if self.verbose:
+                print(f"  Group '{group_name}': {len(links)} links, {len(joints)} joints")
+
+        return groups
+
+    def _parse_disabled_collisions(self, root):
+        """Parse disabled collision pairs from SRDF.
+
+        Args:
+            root: XML root element
+
+        Returns:
+            List of disabled collision dictionaries with 'link1' and 'link2'
+        """
+        disabled_collisions = []
+        for disable_elem in root.findall('disable_collisions'):
+            link1 = disable_elem.get('link1')
+            link2 = disable_elem.get('link2')
+            if link1 and link2:
+                disabled_collisions.append({
+                    'link1': link1,
+                    'link2': link2,
+                    'reason': disable_elem.get('reason', '')
+                })
+
+        return disabled_collisions
+
+    def _parse_disabled_links(self, root):
+        """Parse disabled links from SRDF.
+
+        Args:
+            root: XML root element
+
+        Returns:
+            List of disabled link names
+        """
+        disabled_links = []
+        for disable_elem in root.findall('disable_links'):
+            for link_elem in disable_elem.findall('link'):
+                link_name = link_elem.get('name')
+                if link_name:
+                    disabled_links.append(link_name)
+
+        return disabled_links
+
+    def _parse_disabled_joints(self, root):
+        """Parse disabled joints from SRDF.
+
+        Args:
+            root: XML root element
+
+        Returns:
+            List of disabled joint names
+        """
+        disabled_joints = []
+        for disable_elem in root.findall('disable_joints'):
+            for joint_elem in disable_elem.findall('joint'):
+                joint_name = joint_elem.get('name')
+                if joint_name:
+                    disabled_joints.append(joint_name)
+
+        return disabled_joints
+
+    def _parse_end_effectors(self, root):
+        """Parse end effector definitions from SRDF.
+
+        Args:
+            root: XML root element
+
+        Returns:
+            List of end effector dictionaries
+        """
+        end_effectors = []
+        for ee_elem in root.findall('end_effector'):
+            ee_name = ee_elem.get('name')
+            if not ee_name:
+                continue
+
+            group = ee_elem.get('group')
+            parent_link = ee_elem.get('parent_link')
+            parent_group = ee_elem.get('parent_group')
+
+            end_effectors.append({
+                'name': ee_name,
+                'group': group,
+                'parent_link': parent_link,
+                'parent_group': parent_group
+            })
+
+            if self.verbose:
+                print(f"  End effector '{ee_name}': group={group}, parent_link={parent_link}")
+
+        return end_effectors
+
+    def _parse_virtual_joints(self, root):
+        """Parse virtual joint definitions from SRDF.
+
+        Args:
+            root: XML root element
+
+        Returns:
+            List of virtual joint dictionaries
+        """
+        virtual_joints = []
+        for vj_elem in root.findall('virtual_joint'):
+            vj_name = vj_elem.get('name')
+            if not vj_name:
+                continue
+
+            parent_frame = vj_elem.get('parent_frame')
+            child_link = vj_elem.get('child_link')
+            joint_type = vj_elem.get('type', 'fixed')
+
+            virtual_joints.append({
+                'name': vj_name,
+                'parent_frame': parent_frame,
+                'child_link': child_link,
+                'type': joint_type
+            })
+
+            if self.verbose:
+                print(f"  Virtual joint '{vj_name}': type={joint_type}, parent={parent_frame}, child={child_link}")
+
+        return virtual_joints
 
 
 # ============================================================================
@@ -4832,18 +5569,45 @@ class MJCFParser:
             return meshes_data
 
         mjcf_dir = os.path.dirname(mjcf_file_path)
+        parent_dir = os.path.dirname(mjcf_dir)  # 上位1階層
 
-        # Mesh search directories
-        search_dirs = [
-            mjcf_dir,
-            os.path.join(mjcf_dir, 'assets'),
-            os.path.join(mjcf_dir, 'meshes'),
-            os.path.join(mjcf_dir, '..', 'assets'),
-            os.path.join(mjcf_dir, '..', 'meshes'),
-            working_dir,
-            os.path.join(working_dir, 'assets'),
-            os.path.join(working_dir, 'meshes'),
-        ]
+        # Mesh search directories（上位1階層、そこから下位2階層まで）
+        def collect_search_dirs(base_dir, max_depth=2):
+            """指定されたディレクトリから、下位2階層までのディレクトリを収集"""
+            dirs = []
+            if not os.path.exists(base_dir):
+                return dirs
+            
+            def walk_dirs(current_dir, current_depth):
+                if current_depth > max_depth:
+                    return
+                if current_dir not in dirs:
+                    dirs.append(current_dir)
+                if current_depth < max_depth:
+                    try:
+                        for item in os.listdir(current_dir):
+                            item_path = os.path.join(current_dir, item)
+                            if os.path.isdir(item_path):
+                                walk_dirs(item_path, current_depth + 1)
+                    except Exception:
+                        pass
+            
+            walk_dirs(base_dir, 0)
+            return dirs
+
+        # 上位1階層から下位2階層までのディレクトリを収集
+        search_dirs = []
+        # MJCFディレクトリとその下位2階層
+        search_dirs.extend(collect_search_dirs(mjcf_dir, max_depth=2))
+        # 上位1階層とその下位2階層
+        if os.path.exists(parent_dir):
+            search_dirs.extend(collect_search_dirs(parent_dir, max_depth=2))
+        # working_dirとその下位2階層
+        if working_dir and os.path.exists(working_dir):
+            search_dirs.extend(collect_search_dirs(working_dir, max_depth=2))
+        
+        # 重複を除去
+        search_dirs = list(dict.fromkeys(search_dirs))  # 順序を保持しながら重複除去
 
         for mesh_elem in asset_elem.findall('mesh'):
             mesh_name = mesh_elem.get('name')
@@ -4891,16 +5655,37 @@ class MJCFParser:
                                 print(f"Found mesh: {mesh_name} -> {mesh_path}")
                             break
 
-                # Method 3: Search for basename in directories
+                # Method 3: Search for basename in directories (max 2 levels deep)
                 if not mesh_path:
                     for search_dir in search_dirs:
                         if not search_dir or not os.path.exists(search_dir):
                             continue
+                        # 直接のパスを試す
                         candidate = os.path.join(search_dir, mesh_basename)
                         if os.path.exists(candidate):
                             mesh_path = candidate
                             if self.verbose:
                                 print(f"Found mesh: {mesh_name} -> {mesh_path}")
+                            break
+                        
+                        # 下位2階層まで探索
+                        search_dir_depth = len(search_dir.split(os.sep))
+                        for root_dir, dirs, files in os.walk(search_dir):
+                            # 現在のディレクトリの深さを計算
+                            current_depth = len(root_dir.split(os.sep)) - search_dir_depth
+                            # 2階層まで探索
+                            if current_depth > 2:
+                                dirs[:] = []  # これより深い探索を停止
+                                continue
+                            
+                            if mesh_basename in files:
+                                candidate = os.path.join(root_dir, mesh_basename)
+                                mesh_path = candidate
+                                if self.verbose:
+                                    print(f"Found mesh: {mesh_name} -> {mesh_path} (depth {current_depth})")
+                                break
+                        
+                        if mesh_path:
                             break
 
                 if mesh_path:
