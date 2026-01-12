@@ -9,13 +9,13 @@ Meshファイルにジョイントポイントを設定し、ノードで接続�
 Beta2版ではMeshファイルとして.stlに加え新たに.obj,.daeファイルに対応しました。  
 Colliderの設定にも対応し、ColliderとしてMeshを設定できる他、立方体や円錐なども設定できるようになりました。  
 おまけ機能としてURDF,MJCFを読み込むことも可能となり、既存のファイルをGUI上で調整することができます。  
-（URDF,MJCFの読み込み機能はまだ簡易的で、とくにMJCFの再現はまだ弱いです。）  
+（URDF,MJCFの読み込み機能はまだ簡易的なもので、一部手作業による修正などが必要になる場合もあります。）  
   
 コードがPythonであるため、AIコーディングを活用すればユーザーが自由にUI変更やデバグ、機能拡張などをすることができます。  
   
 # Tools  
   
-### STEP 0 -  仕込み -  "Launcher"  
+### STEP 0 -  はじめに -  "Launcher"  
 <img width="200" alt="urdf_kitchen_beta" src="docs/URDF_kitchen_laucher_beta2_img1.png">  
 MeshSourcer, PartsEditor, Assemblerの3つのツールを起動できるラウンチャーです。  
 作業はフローはMeshSourcerでパーツの下拵えをし、PartsEditorで接続部分を設定、Assemblerで組み立てて仕上げるという流れになります。  
