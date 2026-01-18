@@ -2672,12 +2672,14 @@ class MJCFParser:
                 geom_pos = [float(v) for v in geom_pos_str.split()]
 
                 # Parse geom rotation (quat or euler)
-                # Note: geom quat/euler represents the relative orientation within the body frame
-                # If not specified, it defaults to identity (no rotation relative to body)
+                # Note: geom quat/euler represents the rotation RELATIVE to the body frame
+                # If not specified, the geom inherits the body's orientation
                 geom_quat_str = geom_elem.get('quat')
                 geom_euler_str = geom_elem.get('euler')
-                geom_rpy = [0.0, 0.0, 0.0]
-                geom_quat = [1.0, 0.0, 0.0, 0.0]
+                # Initialize with body's rotation (from xyaxes or euler)
+                # This ensures that geoms without explicit rotation inherit the body's orientation
+                geom_rpy = body_data.get('rpy', [0.0, 0.0, 0.0]).copy()
+                geom_quat = body_data.get('quat', [1.0, 0.0, 0.0, 0.0]).copy() if isinstance(body_data.get('quat'), list) else [1.0, 0.0, 0.0, 0.0]
 
                 if geom_quat_str:
                     geom_quat = [float(v) for v in geom_quat_str.split()]
@@ -2687,7 +2689,7 @@ class MJCFParser:
                     geom_rpy = self.conversion_utils.euler_to_rpy(euler_degrees, eulerseq)
                     # Convert RPY back to quat for storage
                     geom_quat = self.conversion_utils.rpy_to_quat(geom_rpy)
-                # If geom has no quat/euler, keep default identity (0,0,0)
+                # If geom has no quat/euler, it inherits the body's orientation
 
                 # Parse geom mesh scale
                 geom_meshscale = [1.0, 1.0, 1.0]
@@ -2799,8 +2801,12 @@ class MJCFParser:
                 geom_euler_str = geom_elem.get('euler')
                 if not geom_euler_str and 'euler' in geom_defaults:
                     geom_euler_str = geom_defaults['euler']
+                has_explicit_geom_rot = bool(geom_quat_str or geom_euler_str)
                 
-                geom_rpy = [0.0, 0.0, 0.0]
+                # Initialize geom_rpy with body's rotation (from xyaxes or euler).
+                # NOTE: If fromto is present, we will override this with the fromto direction
+                # unless an explicit geom rotation is provided.
+                geom_rpy = body_data.get('rpy', [0.0, 0.0, 0.0]).copy()
                 
                 if geom_quat_str:
                     geom_quat = [float(v) for v in geom_quat_str.split()]
@@ -2823,6 +2829,7 @@ class MJCFParser:
                     fromto_str = geom_defaults['fromto']
                 
                 # Handle fromto attribute (capsule-like geometry)
+                handled_fromto = False
                 if fromto_str:
                     fromto_values = [float(v) for v in fromto_str.split()]
                     if len(fromto_values) >= 6:
@@ -2830,8 +2837,9 @@ class MJCFParser:
                         to_point = fromto_values[3:6]
                         
                         # Calculate capsule parameters from fromto
+                        # MuJoCo fromto: 2点間の距離 = 中心軸の長さ（端点間）
                         direction = [to_point[i] - from_point[i] for i in range(3)]
-                        length = math.sqrt(sum(d*d for d in direction))
+                        fromto_distance = math.sqrt(sum(d*d for d in direction))
                         
                         # Get size (radius) from geom element or default class
                         if not size_str:
@@ -2842,15 +2850,55 @@ class MJCFParser:
                         # Center position
                         center_pos = [(from_point[i] + to_point[i]) / 2.0 for i in range(3)]
                         
+                        # MJCFのfromtoは中心軸の長さを指定するため、cylinder部分の長さはそのままdistance
+                        cylinder_length = fromto_distance
+                        
+                        # fromto方向から回転を計算（明示回転がない場合のみ）
+                        if fromto_distance > 0 and not has_explicit_geom_rot:
+                            # 方向ベクトルを正規化
+                            dx, dy, dz = (direction[0] / fromto_distance,
+                                          direction[1] / fromto_distance,
+                                          direction[2] / fromto_distance)
+                            # z軸(0,0,1)からdirectionへの回転を求める
+                            dot = max(min(dz, 1.0), -1.0)
+                            if dot > 0.999999:
+                                fromto_quat = [1.0, 0.0, 0.0, 0.0]
+                            elif dot < -0.999999:
+                                # 180度回転（x軸回りで反転）
+                                fromto_quat = [0.0, 1.0, 0.0, 0.0]
+                            else:
+                                # 回転軸 = z × direction
+                                ax = -dy
+                                ay = dx
+                                az = 0.0
+                                axis_len = math.sqrt(ax * ax + ay * ay + az * az)
+                                if axis_len > 0:
+                                    ax /= axis_len
+                                    ay /= axis_len
+                                    az /= axis_len
+                                angle = math.acos(dot)
+                                half = angle / 2.0
+                                s = math.sin(half)
+                                fromto_quat = [math.cos(half), ax * s, ay * s, az * s]
+                            geom_rpy = self.conversion_utils.quat_to_rpy(fromto_quat)
+                            # Update degrees after overriding geom_rpy
+                            geom_rpy_deg = [math.degrees(r) for r in geom_rpy]
+                        
+                        # capsule の length は cylinder 部分の長さとして保存
+                        # (両端の半球は別途描画されるため、lengthには含めない)
+                        fromto_geom_type = geom_type if geom_type in ['capsule', 'cylinder'] else 'capsule'
                         collider_data = {
-                            'type': 'capsule',
+                            'type': fromto_geom_type,
                             'geometry': {
                                 'radius': radius,
-                                'length': length
+                                'length': cylinder_length  # cylinder部分のみの長さ
                             },
                             'position': center_pos,
                             'rotation': geom_rpy_deg
                         }
+                        
+                        if self.verbose:
+                            print(f"{'  ' * level}      Set {fromto_geom_type} collider from fromto: fromto_distance={fromto_distance:.6f}, radius={radius}, cylinder_length={cylinder_length:.6f} (from class='{geom_class}')")
                         
                         # Add to colliders list
                         body_data['colliders'].append({
@@ -2870,7 +2918,11 @@ class MJCFParser:
                             body_data['collider_enabled'] = True
                             # if self.verbose:
                             #     print(f"{'  ' * level}    Set capsule collider from fromto: radius={radius}, length={length} (from class='{geom_class}')")
+                        handled_fromto = True
                 
+                if handled_fromto:
+                    continue
+
                 # Parse primitive geom types
                 # If type is not specified but size is available, infer type from size
                 if not fromto_str and size_str:
@@ -5407,11 +5459,11 @@ def import_mjcf(graph):
                 base_link_mjcf_node.node_color = base_data['color']
 
                 # Body Angle（初期回転角度）の設定（ラジアンで保持）
-                if 'rpy' in base_data:
-                    base_link_mjcf_node.body_angle = base_data['rpy']  # rpyは既にradianなのでそのまま保存
-                    print(f"    ✓ Set body_angle for base_link_mjcf: {[math.degrees(a) for a in base_link_mjcf_node.body_angle]} degrees (stored as radians)")
-                else:
-                    base_link_mjcf_node.body_angle = [0.0, 0.0, 0.0]
+                # MJCFインポートの場合、base bodyの姿勢は通常[0,0,0]なので、body_angleは初期化のみ
+                # （bodyの姿勢の二重適用を防ぐため）
+                base_link_mjcf_node.body_angle = [0.0, 0.0, 0.0]
+                if 'rpy' in base_data and any(a != 0.0 for a in base_data['rpy']):
+                    print(f"    ℹ Base body orientation from MJCF: {[math.degrees(a) for a in base_data['rpy']]} degrees (not applied to body_angle)")
 
                 # base_link_mjcfはbase_linkに固定されているので、rotation_axisを3（Fixed）に設定
                 # これにより、MJCF出力時にジョイントが出力されなくなる
@@ -5628,11 +5680,12 @@ def import_mjcf(graph):
                 node.node_color = body_data['color']
 
                 # Body Angle（初期回転角度）の設定（ラジアンで保持）
-                if 'rpy' in body_data:
-                    node.body_angle = body_data['rpy']  # rpyは既にradianなのでそのまま保存
-                    print(f"  ✓ Set body_angle for node '{body_name}': {[math.degrees(a) for a in node.body_angle]} degrees (stored as radians)")
-                else:
-                    node.body_angle = [0.0, 0.0, 0.0]
+                # MJCFインポートの場合、bodyの姿勢（xyaxes/euler/quatから）はparent_node.points[port_index]['rpy']に設定されるので、
+                # ここではbody_angleを初期化のみ行う（後でrefがある場合のみ設定される）
+                # これにより、bodyの姿勢が二重適用されるのを防ぐ
+                node.body_angle = [0.0, 0.0, 0.0]
+                if 'rpy' in body_data and any(a != 0.0 for a in body_data['rpy']):
+                    print(f"  ℹ Body orientation from MJCF (will be set in parent's point['rpy']): {[math.degrees(a) for a in body_data['rpy']]} degrees")
 
                 # Rotation axisの設定（joint要素のaxis属性から取得）
                 if 'rotation_axis' in body_data and body_data['rotation_axis'] is not None:
@@ -5949,13 +6002,16 @@ def import_mjcf(graph):
                     child_node.rotation_axis = 3
                     print(f"  Fixed joint -> rotation_axis: 3")
 
-                # MJCFのjointのref属性（参照角度）をAngle offsetとして設定
+                # MJCFのjointのref属性（参照角度）をbody_angleとして設定
+                # NOTE: ref = ジョイントのデフォルト姿勢/参照点
+                # body_angleのみに設定し、point['angle']には設定しない
+                # （point['angle']とbody_angleは連動するが、インポート時は片方のみに設定）
                 if 'ref' in joint_data and joint_data['type'] != 'fixed':
                     ref_angle_deg = joint_data['ref']  # 度単位
                     rotation_axis = child_node.rotation_axis
 
                     # 回転軸に応じて適切な軸のangleを設定
-                    # NOTE: body_angleとparent_node.points[]['angle']は"ラジアン"で保持される
+                    # NOTE: body_angleは"ラジアン"で保持される
                     # （3Dビジュアライゼーションでmath.degrees()で度に変換されるため）
                     angle_offset_rad = [0.0, 0.0, 0.0]
                     ref_angle_rad = math.radians(ref_angle_deg)
@@ -5966,14 +6022,10 @@ def import_mjcf(graph):
                     elif rotation_axis == 2:  # Z軸
                         angle_offset_rad[2] = ref_angle_rad
 
-                    # 子ノードのbody_angleに設定（Angle offset、ラジアンで保存）
+                    # 子ノードのbody_angleに設定（ラジアンで保存）
                     child_node.body_angle = angle_offset_rad
-                    print(f"  ✓ Set body_angle (Angle offset) from ref: {ref_angle_deg} degrees ({ref_angle_rad:.4f} radians)")
-
-                    # 親ノードのpoints[port_index]['angle']にも設定（ラジアンで保存）
-                    if port_index < len(parent_node.points):
-                        parent_node.points[port_index]['angle'] = angle_offset_rad
-                        print(f"  ✓ Set parent node points[{port_index}]['angle'] from ref: {ref_angle_deg} degrees ({ref_angle_rad:.4f} radians)")
+                    print(f"  ✓ Set body_angle from ref: {ref_angle_deg} degrees ({ref_angle_rad:.4f} radians)")
+                    print(f"  ℹ Note: point['angle'] not set (will be synced from body_angle when needed)")
 
                 # ポートを接続
                 is_base_link = parent_node.__class__.__name__ == 'BaseLinkNode'

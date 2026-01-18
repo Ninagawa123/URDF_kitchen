@@ -6157,6 +6157,10 @@ class STLViewerWidget(QtWidgets.QWidget):
             radius = float(geometry.get('radius', 0.5))
             # SDF import historically stored capsule length under 'height'.
             length = float(geometry.get('length', geometry.get('height', 1.0)))
+            
+            # DEBUG: Print capsule dimensions
+            if node:
+                print(f"[CAPSULE_DEBUG] Node: {node.name()}, radius={radius}, length={length}, total_length={length + 2 * radius}")
 
             # アペンドフィルターで結合
             append = vtk.vtkAppendPolyData()
@@ -11743,6 +11747,20 @@ class CustomNodeGraph(NodeGraph):
             print(f"  ⚠ DEBUG: Skipping child node processing for closed-loop node")
             return
 
+        # 現在のノードがまだ3Dビューに読み込まれていない場合は、先に読み込む
+        if hasattr(self, 'stl_viewer'):
+            if node not in self.stl_viewer.stl_actors or node not in self.stl_viewer.transforms:
+                # メッシュファイルが設定されている場合のみ読み込み
+                if hasattr(node, 'stl_file') and node.stl_file:
+                    print(f"  ℹ Node {node.name()} not loaded yet, loading now...")
+                    self.stl_viewer.load_stl_for_node(node, show_progress=False)
+                # メッシュが無いノードの場合は変換のみ作成
+                elif node not in self.stl_viewer.transforms:
+                    import vtk
+                    self.stl_viewer.transforms[node] = vtk.vtkTransform()
+                    self.stl_viewer.transforms[node].Identity()
+                    print(f"  ℹ Created transform for meshless node {node.name()}")
+
         # 現在のノードのHide Meshがオンの場合は3Dビューで非表示にする
         if hasattr(node, 'hide_mesh') and node.hide_mesh:
             if hasattr(self, 'stl_viewer') and node in self.stl_viewer.stl_actors:
@@ -11832,6 +11850,14 @@ class CustomNodeGraph(NodeGraph):
                         print("=== End Transform Debug ===\n")
 
                         # 計算した変換を子ノードに適用
+                        # ノードがまだ3Dビューに読み込まれていない場合は、先に読み込む
+                        if child_node not in self.stl_viewer.stl_actors or child_node not in self.stl_viewer.transforms:
+                            # メッシュファイルが設定されている場合のみ読み込み
+                            if hasattr(child_node, 'stl_file') and child_node.stl_file:
+                                print(f"  ℹ Node {child_node.name()} not loaded yet, loading now...")
+                                self.stl_viewer.load_stl_for_node(child_node, show_progress=False)
+                        
+                        # 再度確認して変換を適用
                         if child_node in self.stl_viewer.stl_actors and child_node in self.stl_viewer.transforms:
                             self.stl_viewer.transforms[child_node].DeepCopy(child_transform)
                             self.stl_viewer.stl_actors[child_node].SetUserTransform(self.stl_viewer.transforms[child_node])
@@ -11839,11 +11865,13 @@ class CustomNodeGraph(NodeGraph):
                             # コライダーアクターのtransformも更新
                             self.stl_viewer.update_collider_transform(child_node)
                         else:
-                            print(f"  ✗ WARNING: Cannot apply transform to {child_node.name()}")
-                            if child_node not in self.stl_viewer.stl_actors:
-                                print(f"      Reason: Node not in stl_actors")
+                            # メッシュファイルが無い場合（base_linkなど）は警告を表示しない
+                            if hasattr(child_node, 'stl_file') and child_node.stl_file:
+                                print(f"  ✗ WARNING: Cannot apply transform to {child_node.name()} even after loading")
+                            # BaseLinkNodeやメッシュを持たないノードは変換のみ保存
                             if child_node not in self.stl_viewer.transforms:
-                                print(f"      Reason: Node not in transforms")
+                                self.stl_viewer.transforms[child_node] = vtk.vtkTransform()
+                            self.stl_viewer.transforms[child_node].DeepCopy(child_transform)
 
                         # Hide Meshがオンの場合は3Dビューで非表示にする
                         if hasattr(child_node, 'hide_mesh') and child_node.hide_mesh:
@@ -15348,8 +15376,8 @@ class CustomNodeGraph(NodeGraph):
                 # created_jointsのjoint_nameも更新（actuator生成で使用される）
                 joint_info["name"] = unique_joint_name
             
-            # range, limited, margin, armature, frictionloss, damping, stiffnessを出力（velocityはMJCFに存在しないため削除）
-            joint_attrs = f'{joint_info["range"]}{joint_info["limited"]}{joint_info["margin"]}{joint_info["armature"]}{joint_info["frictionloss"]}{joint_info["damping"]}{joint_info["stiffness"]}'
+            # range, limited, margin, armature, frictionloss, damping, stiffness, refを出力（velocityはMJCFに存在しないため削除）
+            joint_attrs = f'{joint_info["range"]}{joint_info["limited"]}{joint_info["margin"]}{joint_info["armature"]}{joint_info["frictionloss"]}{joint_info["damping"]}{joint_info["stiffness"]}{joint_info["ref"]}'
             file.write(f'{indent_str}  <joint name="{unique_joint_name}" type="{joint_info["type"]}" pos="0 0 0" axis="{joint_info["axis"]}"{joint_attrs} />\n')
             is_moving_body = True  # jointを持つbodyはmoving body
 
@@ -15711,6 +15739,20 @@ class CustomNodeGraph(NodeGraph):
         stiffness_str = ""
         if hasattr(child_node, 'joint_stiffness') and child_node.joint_stiffness > 0:
             stiffness_str = f' stiffness="{format_float_no_exp(child_node.joint_stiffness)}"'
+        
+        # ref: body_angleからref属性を生成（デフォルト姿勢/参照角度）
+        # body_angleは[x_rad, y_rad, z_rad]の形式で、rotation_axisに対応する軸のみが非ゼロ
+        ref_str = ""
+        if hasattr(child_node, 'body_angle') and hasattr(child_node, 'rotation_axis'):
+            body_angle = child_node.body_angle
+            rotation_axis = child_node.rotation_axis
+            
+            # rotation_axisに対応する軸の角度を取得（ラジアン → 度に変換）
+            if rotation_axis in [0, 1, 2] and any(a != 0.0 for a in body_angle):
+                ref_angle_rad = body_angle[rotation_axis]
+                if abs(ref_angle_rad) > 1e-6:  # ゼロでない場合のみ出力
+                    ref_angle_deg = math.degrees(ref_angle_rad)
+                    ref_str = f' ref="{format_float_no_exp(ref_angle_deg)}"'
 
         # 作成されたジョイントをリストに追加（actuator用）
         joint_effort = getattr(child_node, 'joint_effort', 10.0)
@@ -15759,7 +15801,8 @@ class CustomNodeGraph(NodeGraph):
             'armature': armature_str,
             'frictionloss': frictionloss_str,
             'damping': damping_str,
-            'stiffness': stiffness_str
+            'stiffness': stiffness_str,
+            'ref': ref_str
         }
 
     def calculate_inertia_tensor_for_mirrored(self, poly_data, mass, center_of_mass):
