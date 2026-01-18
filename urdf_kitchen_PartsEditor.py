@@ -4,7 +4,7 @@ Description: A Python script for configuring connection points of parts for urdf
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 11, 2026
+Update.     : Jan 18, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -327,7 +327,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         self.num_points = 8  # ポイントの数を8に設定
         self.point_coords = [list(self.absolute_origin) for _ in range(self.num_points)]
-        self.point_angles = [[0.0, 0.0, 0.0] for _ in range(self.num_points)]  # Body angles for each point (degrees)
+        self.point_angles = [[0.0, 0.0, 0.0] for _ in range(self.num_points)]  # Body angles for each point (radians)
         self.point_actors = [None] * self.num_points
         self.point_checkboxes = []
         self.point_inputs = []
@@ -637,13 +637,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
         # # 最初の行を追加
         button_layout.addLayout(first_row)
 
-        # Load STLボタン
-        self.load_button = QPushButton("Load Mesh")
+        # Import Meshボタン
+        self.load_button = QPushButton("Import Mesh")
         self.load_button.clicked.connect(self.load_stl_file)
         first_row.addWidget(self.load_button)
 
         # Load XMLボタン
-        self.load_xml_button = QPushButton("Import XML")
+        self.load_xml_button = QPushButton("Load XML")
         self.load_xml_button.clicked.connect(self.load_xml_file)
         first_row.addWidget(self.load_xml_button)
 
@@ -655,8 +655,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
         # first_row_layout を first_row_widget にセット
         first_row_widget.setLayout(first_row_layout)
 
-        # Load STL with XMLボタン
-        self.load_stl_xml_button = QPushButton("Load Mesh with XML")
+        # Import Mesh with XMLボタン
+        self.load_stl_xml_button = QPushButton("Import Mesh with XML")
         self.load_stl_xml_button.clicked.connect(self.load_stl_with_xml)
         button_layout.addWidget(self.load_stl_xml_button)
 
@@ -2183,11 +2183,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
             self.renderer.AddActor(self.point_actors[index])
             print(f"DEBUG: Point {index+1} positioned at {self.point_coords[index]}")
 
-            # Update Angle UI fields with the selected point's angles
-            self.angle_x_input.setText(f"{self.point_angles[index][0]:.2f}")
-            self.angle_y_input.setText(f"{self.point_angles[index][1]:.2f}")
-            self.angle_z_input.setText(f"{self.point_angles[index][2]:.2f}")
-            print(f"DEBUG: Updated Angle UI to Point {index+1}: {self.point_angles[index]}")
+            # Update Angle UI fields with the selected point's angles (degrees for UI)
+            self.angle_x_input.setText(f"{math.degrees(self.point_angles[index][0]):.2f}")
+            self.angle_y_input.setText(f"{math.degrees(self.point_angles[index][1]):.2f}")
+            self.angle_z_input.setText(f"{math.degrees(self.point_angles[index][2]):.2f}")
+            print(f"DEBUG: Updated Angle UI to Point {index+1}: {self.point_angles[index]} (rad)")
         else:
             print(f"DEBUG: Unchecked - hiding Point {index+1}")
             if self.point_actors[index]:
@@ -2313,15 +2313,19 @@ class MainWindow(VTKViewerBase, QMainWindow):
             print("DEBUG: No point selected, cannot save angles")
             return
 
-        # UI入力値を読み取り
+        # UI入力値を読み取り（deg入力 → rad保存）
         try:
             angle_x = float(self.angle_x_input.text()) if self.angle_x_input.text() else 0.0
             angle_y = float(self.angle_y_input.text()) if self.angle_y_input.text() else 0.0
             angle_z = float(self.angle_z_input.text()) if self.angle_z_input.text() else 0.0
 
-            # 選択されたポイントに角度を保存
-            self.point_angles[selected_index] = [angle_x, angle_y, angle_z]
-            print(f"DEBUG: Saved angles for Point {selected_index+1}: {self.point_angles[selected_index]}")
+            # 選択されたポイントに角度を保存（radian）
+            self.point_angles[selected_index] = [
+                math.radians(angle_x),
+                math.radians(angle_y),
+                math.radians(angle_z)
+            ]
+            print(f"DEBUG: Saved angles for Point {selected_index+1}: {self.point_angles[selected_index]} (rad)")
 
             # 3Dビューのマーカーに角度を反映
             if self.point_actors[selected_index]:
@@ -2336,12 +2340,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
             return
 
         angles = self.point_angles[index]
-        # VTKでは角度を度数法で設定
+        # VTKでは角度を度数法で設定（内部はradian）
+        angles_deg = [math.degrees(a) for a in angles]
         self.point_actors[index].SetOrientation(0, 0, 0)  # リセット
-        self.point_actors[index].RotateX(angles[0])  # X軸回転
-        self.point_actors[index].RotateY(angles[1])  # Y軸回転
-        self.point_actors[index].RotateZ(angles[2])  # Z軸回転
-        print(f"DEBUG: Applied rotation to Point {index+1} marker: {angles}")
+        self.point_actors[index].RotateX(angles_deg[0])  # X軸回転
+        self.point_actors[index].RotateY(angles_deg[1])  # Y軸回転
+        self.point_actors[index].RotateZ(angles_deg[2])  # Z軸回転
+        print(f"DEBUG: Applied rotation to Point {index+1} marker: {angles_deg} (deg)")
 
     def create_com_coordinate(self, assembly, coords):
         """Center of Mass用の十字付き円を作成（赤色）"""
@@ -3143,13 +3148,18 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     self.point_coords[i] = [x, y, z]
                     points_with_data.add(i)
 
-                    # point_angleの読み込み
+                    # point_angleの読み込み（radian）
                     angle_element = point.find('point_angle')
                     if angle_element is not None and angle_element.text:
                         try:
                             angle_x, angle_y, angle_z = map(float, angle_element.text.strip().split())
+                            # Backward compatibility: if values look like degrees, convert to radians
+                            if any(abs(v) > 3.5 for v in [angle_x, angle_y, angle_z]):
+                                angle_x = math.radians(angle_x)
+                                angle_y = math.radians(angle_y)
+                                angle_z = math.radians(angle_z)
                             self.point_angles[i] = [angle_x, angle_y, angle_z]
-                            print(f"Loaded point_angle for point {i+1}: ({angle_x}, {angle_y}, {angle_z})")
+                            print(f"Loaded point_angle for point {i+1}: ({angle_x}, {angle_y}, {angle_z}) [rad]")
                         except (ValueError, IndexError) as e:
                             print(f"Warning: Invalid point_angle format for point {i+1}, using default [0, 0, 0]: {e}")
                             self.point_angles[i] = [0.0, 0.0, 0.0]
@@ -3497,6 +3507,24 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         
                         # 内部の座標データを更新
                         self.point_coords[i] = [x, y, z]
+
+                        # point_angleの読み込み（radian）
+                        angle_element = point.find('point_angle')
+                        if angle_element is not None and angle_element.text:
+                            try:
+                                angle_x, angle_y, angle_z = map(float, angle_element.text.strip().split())
+                                # Backward compatibility: if values look like degrees, convert to radians
+                                if any(abs(v) > 3.5 for v in [angle_x, angle_y, angle_z]):
+                                    angle_x = math.radians(angle_x)
+                                    angle_y = math.radians(angle_y)
+                                    angle_z = math.radians(angle_z)
+                                self.point_angles[i] = [angle_x, angle_y, angle_z]
+                                print(f"Loaded point_angle for point {i+1}: ({angle_x}, {angle_y}, {angle_z}) [rad]")
+                            except Exception as e:
+                                print(f"Warning: Invalid point_angle format for point {i+1}, using default [0, 0, 0]: {e}")
+                                self.point_angles[i] = [0.0, 0.0, 0.0]
+                        else:
+                            self.point_angles[i] = [0.0, 0.0, 0.0]
 
                         # チェックボックスを有効化
                         self.point_checkboxes[i].setChecked(True)

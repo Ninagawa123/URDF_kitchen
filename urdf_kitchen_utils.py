@@ -4,7 +4,7 @@ Description: Shared utilities for URDF Kitchen tools (Assembler, MeshSourcer, Pa
 
 Author      : Ninagawa123
 Created On  : Dec 28, 2025
-Update.     : Jan 11, 2026
+Update.     : Jan 18, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -3405,24 +3405,20 @@ class ConversionUtils:
         Returns:
             List of [roll, pitch, yaw] in radians
         """
-        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+        # Use rotation matrix extraction to stay consistent with rpy_to_quat()
+        # (R = Rz(yaw) * Ry(pitch) * Rx(roll))
+        R = ConversionUtils.quat_to_rotation_matrix(quat)
+        sy = math.sqrt(R[0, 0]**2 + R[1, 0]**2)
+        singular = sy < 1e-6
 
-        # Roll (x-axis rotation)
-        sinr_cosp = 2 * (w * x + y * z)
-        cosr_cosp = 1 - 2 * (x * x + y * y)
-        roll = math.atan2(sinr_cosp, cosr_cosp)
-
-        # Pitch (y-axis rotation)
-        sinp = 2 * (w * y - z * x)
-        if abs(sinp) >= 1:
-            pitch = math.copysign(math.pi / 2, sinp)  # use 90 degrees if out of range
+        if not singular:
+            roll = math.atan2(R[2, 1], R[2, 2])
+            pitch = math.atan2(-R[2, 0], sy)
+            yaw = math.atan2(R[1, 0], R[0, 0])
         else:
-            pitch = math.asin(sinp)
-
-        # Yaw (z-axis rotation)
-        siny_cosp = 2 * (w * z + x * y)
-        cosy_cosp = 1 - 2 * (y * y + z * z)
-        yaw = math.atan2(siny_cosp, cosy_cosp)
+            roll = math.atan2(-R[1, 2], R[1, 1])
+            pitch = math.atan2(-R[2, 0], sy)
+            yaw = 0.0
 
         return [roll, pitch, yaw]
 
@@ -3476,6 +3472,307 @@ class ConversionUtils:
             yaw = 0
 
         return [roll, pitch, yaw]
+
+    @staticmethod
+    def xyaxes_to_quat(xyaxes_str):
+        """Convert xyaxes attribute to quaternion (w, x, y, z).
+        
+        xyaxes format: "x1 x2 x3 y1 y2 y3" (two 3D vectors)
+        These define the x-axis and y-axis of the coordinate frame.
+        The z-axis is computed as the cross product: z = x × y
+        
+        Args:
+            xyaxes_str: String with 6 values "x1 x2 x3 y1 y2 y3"
+        
+        Returns:
+            List of [w, x, y, z] quaternion (MuJoCo convention)
+        """
+        import numpy as np
+        
+        values = [float(v) for v in xyaxes_str.split()]
+        if len(values) != 6:
+            raise ValueError(f"xyaxes must have 6 values, got {len(values)}")
+        
+        x_axis = np.array(values[0:3])
+        y_axis = np.array(values[3:6])
+        
+        # Normalize axes
+        x_axis = x_axis / np.linalg.norm(x_axis)
+        y_axis = y_axis / np.linalg.norm(y_axis)
+        
+        # Compute z-axis as cross product
+        z_axis = np.cross(x_axis, y_axis)
+        z_axis = z_axis / np.linalg.norm(z_axis)
+        
+        # Re-orthogonalize y-axis
+        y_axis = np.cross(z_axis, x_axis)
+        y_axis = y_axis / np.linalg.norm(y_axis)
+        
+        # Build rotation matrix
+        # NOTE: In MuJoCo, xyaxes defines x and y axes in the parent coordinate frame.
+        # The rotation matrix R transforms vectors from body local frame to parent frame.
+        # Standard rotation matrix: columns are body local axes expressed in parent frame.
+        # xyaxes provides x and y axes (first two columns), z is computed via cross product.
+        R = np.array([
+            [x_axis[0], y_axis[0], z_axis[0]],  # x-axis as column vector (parent frame)
+            [x_axis[1], y_axis[1], z_axis[1]],  # y-axis as column vector (parent frame)
+            [x_axis[2], y_axis[2], z_axis[2]]   # z-axis as column vector (parent frame)
+        ])
+        
+        # Convert rotation matrix to quaternion
+        trace = np.trace(R)
+        if trace > 0:
+            s = math.sqrt(trace + 1.0) * 2  # s = 4 * qw
+            w = 0.25 * s
+            x = (R[2, 1] - R[1, 2]) / s
+            y = (R[0, 2] - R[2, 0]) / s
+            z = (R[1, 0] - R[0, 1]) / s
+        elif (R[0, 0] > R[1, 1]) and (R[0, 0] > R[2, 2]):
+            s = math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2  # s = 4 * qx
+            w = (R[2, 1] - R[1, 2]) / s
+            x = 0.25 * s
+            y = (R[0, 1] + R[1, 0]) / s
+            z = (R[0, 2] + R[2, 0]) / s
+        elif R[1, 1] > R[2, 2]:
+            s = math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2  # s = 4 * qy
+            w = (R[0, 2] - R[2, 0]) / s
+            x = (R[0, 1] + R[1, 0]) / s
+            y = 0.25 * s
+            z = (R[1, 2] + R[2, 1]) / s
+        else:
+            s = math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2  # s = 4 * qz
+            w = (R[1, 0] - R[0, 1]) / s
+            x = (R[0, 2] + R[2, 0]) / s
+            y = (R[1, 2] + R[2, 1]) / s
+            z = 0.25 * s
+        
+        return [w, x, y, z]
+
+    @staticmethod
+    def quat_to_rotation_matrix(quat):
+        """Convert quaternion (w, x, y, z) to 3x3 rotation matrix.
+        
+        Args:
+            quat: List of [w, x, y, z] quaternion (MuJoCo convention)
+        
+        Returns:
+            3x3 numpy array rotation matrix
+        """
+        import numpy as np
+        
+        w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+        
+        # Normalize quaternion
+        norm = math.sqrt(w*w + x*x + y*y + z*z)
+        if norm > 0:
+            w, x, y, z = w/norm, x/norm, y/norm, z/norm
+        
+        # Build rotation matrix from quaternion
+        R = np.array([
+            [1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y)],
+            [2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x)],
+            [2*(x*z - w*y), 2*(y*z + w*x), 1 - 2*(x*x + y*y)]
+        ])
+        
+        return R
+
+    @staticmethod
+    def quat_multiply(q1, q2):
+        """Multiply two quaternions (w, x, y, z format).
+
+        Args:
+            q1: First quaternion [w, x, y, z]
+            q2: Second quaternion [w, x, y, z]
+
+        Returns:
+            Result quaternion [w, x, y, z] = q1 * q2
+        """
+        w1, x1, y1, z1 = q1
+        w2, x2, y2, z2 = q2
+        return [
+            w1*w2 - x1*x2 - y1*y2 - z1*z2,  # w
+            w1*x2 + x1*w2 + y1*z2 - z1*y2,  # x
+            w1*y2 - x1*z2 + y1*w2 + z1*x2,  # y
+            w1*z2 + x1*y2 - y1*x2 + z1*w2   # z
+        ]
+
+    @staticmethod
+    def check_scale_reversal(scale):
+        """Check if scale contains negative values indicating mesh reversal.
+        
+        Args:
+            scale: List of [x, y, z] scale values
+        
+        Returns:
+            bool: True if any scale component is negative (indicating reversal)
+        """
+        if not scale:
+            return False
+        return any(s < 0 for s in scale)
+
+    @staticmethod
+    def zaxis_to_quat(zaxis_str):
+        """Convert zaxis attribute to quaternion (w, x, y, z).
+        
+        zaxis format: "z1 z2 z3" (one 3D vector)
+        This defines the z-axis of the coordinate frame.
+        x and y axes are computed to form a right-handed coordinate system.
+        
+        Args:
+            zaxis_str: String with 3 values "z1 z2 z3"
+        
+        Returns:
+            List of [w, x, y, z] quaternion (MuJoCo convention)
+        """
+        import numpy as np
+        
+        values = [float(v) for v in zaxis_str.split()]
+        if len(values) != 3:
+            raise ValueError(f"zaxis must have 3 values, got {len(values)}")
+        
+        z_axis = np.array(values)
+        z_axis = z_axis / np.linalg.norm(z_axis)
+        
+        # Choose a perpendicular vector for x-axis
+        if abs(z_axis[0]) < 0.9:
+            x_axis = np.array([1.0, 0.0, 0.0])
+        else:
+            x_axis = np.array([0.0, 1.0, 0.0])
+        
+        # Make x-axis perpendicular to z-axis
+        x_axis = x_axis - np.dot(x_axis, z_axis) * z_axis
+        x_axis = x_axis / np.linalg.norm(x_axis)
+        
+        # Compute y-axis as cross product
+        y_axis = np.cross(z_axis, x_axis)
+        y_axis = y_axis / np.linalg.norm(y_axis)
+        
+        # Build rotation matrix
+        R = np.array([
+            [x_axis[0], y_axis[0], z_axis[0]],
+            [x_axis[1], y_axis[1], z_axis[1]],
+            [x_axis[2], y_axis[2], z_axis[2]]
+        ])
+        
+        # Convert rotation matrix to quaternion
+        trace = np.trace(R)
+        if trace > 0:
+            s = math.sqrt(trace + 1.0) * 2
+            w = 0.25 * s
+            x = (R[2, 1] - R[1, 2]) / s
+            y = (R[0, 2] - R[2, 0]) / s
+            z = (R[1, 0] - R[0, 1]) / s
+        elif (R[0, 0] > R[1, 1]) and (R[0, 0] > R[2, 2]):
+            s = math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2]) * 2
+            w = (R[2, 1] - R[1, 2]) / s
+            x = 0.25 * s
+            y = (R[0, 1] + R[1, 0]) / s
+            z = (R[0, 2] + R[2, 0]) / s
+        elif R[1, 1] > R[2, 2]:
+            s = math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2]) * 2
+            w = (R[0, 2] - R[2, 0]) / s
+            x = (R[0, 1] + R[1, 0]) / s
+            y = 0.25 * s
+            z = (R[1, 2] + R[2, 1]) / s
+        else:
+            s = math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1]) * 2
+            w = (R[1, 0] - R[0, 1]) / s
+            x = (R[0, 2] + R[2, 0]) / s
+            y = (R[1, 2] + R[2, 1]) / s
+            z = 0.25 * s
+        
+        return [w, x, y, z]
+
+    @staticmethod
+    def axisangle_to_quat(axisangle_str):
+        """Convert axisangle attribute to quaternion (w, x, y, z).
+        
+        axisangle format: "ax ay az angle" (axis vector + angle in degrees)
+        
+        Args:
+            axisangle_str: String with 4 values "ax ay az angle"
+        
+        Returns:
+            List of [w, x, y, z] quaternion (MuJoCo convention)
+        """
+        import numpy as np
+        
+        values = [float(v) for v in axisangle_str.split()]
+        if len(values) != 4:
+            raise ValueError(f"axisangle must have 4 values, got {len(values)}")
+        
+        axis = np.array(values[0:3])
+        angle_deg = values[3]
+        angle_rad = math.radians(angle_deg)
+        
+        # Normalize axis
+        axis_norm = np.linalg.norm(axis)
+        if axis_norm < 1e-6:
+            return [1.0, 0.0, 0.0, 0.0]  # Identity quaternion
+        
+        axis = axis / axis_norm
+        
+        # Convert to quaternion
+        half_angle = angle_rad * 0.5
+        w = math.cos(half_angle)
+        sin_half = math.sin(half_angle)
+        x = axis[0] * sin_half
+        y = axis[1] * sin_half
+        z = axis[2] * sin_half
+        
+        return [w, x, y, z]
+
+    @staticmethod
+    def normalize_pose_attributes(elem, eulerseq='xyz'):
+        """Normalize pose attributes (pos/quat/euler/axisangle/xyaxes/zaxis) to position and rotation_quat.
+        
+        Args:
+            elem: XML element with pose attributes
+            eulerseq: Euler sequence from compiler settings
+        
+        Returns:
+            dict with 'position' [x,y,z] and 'rotation_quat' [w,x,y,z]
+        """
+        import numpy as np
+        
+        # Parse position
+        pos_str = elem.get('pos', '0 0 0')
+        position = [float(v) for v in pos_str.split()]
+        if len(position) < 3:
+            position = position + [0.0] * (3 - len(position))
+        position = position[:3]
+        
+        # Parse rotation (try in order: quat, euler, axisangle, xyaxes, zaxis)
+        rotation_quat = [1.0, 0.0, 0.0, 0.0]  # Default identity
+        
+        quat_str = elem.get('quat')
+        if quat_str:
+            rotation_quat = [float(v) for v in quat_str.split()]
+        else:
+            euler_str = elem.get('euler')
+            if euler_str:
+                euler_degrees = [float(v) for v in euler_str.split()]
+                euler_rad = [math.radians(e) for e in euler_degrees]
+                # Convert euler to quat using eulerseq
+                rpy = ConversionUtils.euler_to_rpy(euler_degrees, eulerseq)
+                rotation_quat = ConversionUtils.rpy_to_quat(rpy)
+            else:
+                axisangle_str = elem.get('axisangle')
+                if axisangle_str:
+                    rotation_quat = ConversionUtils.axisangle_to_quat(axisangle_str)
+                else:
+                    xyaxes_str = elem.get('xyaxes')
+                    if xyaxes_str:
+                        rotation_quat = ConversionUtils.xyaxes_to_quat(xyaxes_str)
+                    else:
+                        zaxis_str = elem.get('zaxis')
+                        if zaxis_str:
+                            rotation_quat = ConversionUtils.zaxis_to_quat(zaxis_str)
+        
+        return {
+            'position': position,
+            'rotation_quat': rotation_quat
+        }
 
 
 # ============================================================================
@@ -3867,2149 +4164,3 @@ def resolve_path_in_xml_element(elem, attr_names, xacro_file_path, verbose=False
 # URDF PARSER
 # ============================================================================
 
-class URDFParser:
-    """Parser for URDF (Unified Robot Description Format) files.
-
-    This class provides methods to parse URDF XML files and extract
-    robot structure information including links, joints, materials,
-    and mesh file paths.
-
-    Usage:
-        parser = URDFParser()
-        result = parser.parse_urdf('/path/to/robot.urdf')
-        
-        # Access parsed data
-        robot_name = result['robot_name']
-        links_data = result['links']
-        joints_data = result['joints']
-        materials_data = result['materials']
-    """
-
-    def __init__(self, verbose=True):
-        """Initialize URDF parser.
-
-        Args:
-            verbose: If True, print parsing progress and information
-        """
-        self.verbose = verbose
-
-    def _expand_xacro(self, xacro_file_path):
-        """Expand xacro file to URDF XML string using xacrodoc.
-
-        Args:
-            xacro_file_path: Path to xacro file
-
-        Returns:
-            str: Expanded URDF XML string
-
-        Raises:
-            FileNotFoundError: If xacro file does not exist
-            RuntimeError: If xacrodoc is not available or expansion fails
-        """
-        if not os.path.exists(xacro_file_path):
-            raise FileNotFoundError(f"Xacro file not found: {xacro_file_path}")
-
-        if self.verbose:
-            print(f"Expanding xacro file using xacrodoc: {xacro_file_path}")
-
-        # Try xacrodoc library
-        try:
-            from xacrodoc import XacroDoc
-            
-            if self.verbose:
-                print("Using xacrodoc library")
-            
-            # xacroファイルからXacroDocオブジェクトを作成
-            xacro_file_abs = os.path.abspath(xacro_file_path)
-            doc = XacroDoc.from_file(xacro_file_abs)
-            
-            # URDF文字列に変換
-            urdf_xml_string = doc.to_urdf_string()
-            
-            # 生成されたXMLが正しくパースできるか確認
-            if urdf_xml_string:
-                try:
-                    root = ET.fromstring(urdf_xml_string)
-                    # robot要素の存在を確認
-                    if root.tag != 'robot':
-                        if self.verbose:
-                            print(f"  Warning: Root element is '{root.tag}', expected 'robot'")
-                        # robot要素が見つからない場合は、子要素を探す
-                        robot_elem = root.find('robot')
-                        if robot_elem is None:
-                            # ルート要素がrobotでない場合は警告を出すが、続行
-                            if self.verbose:
-                                print(f"  Warning: No 'robot' element found in expanded xacro")
-                    else:
-                        if self.verbose:
-                            print(f"  Successfully expanded xacro to URDF (robot element found)")
-                    
-                    # デバッグ: 展開されたXMLの構造を確認
-                    if self.verbose:
-                        link_count = len(root.findall('link'))
-                        joint_count = len(root.findall('joint'))
-                        print(f"  Found {link_count} link elements, {joint_count} joint elements in expanded XML")
-                        if link_count == 0:
-                            print(f"  WARNING: No links found in expanded xacro!")
-                            # XMLの最初の500文字を出力してデバッグ
-                            print(f"  First 500 chars of expanded XML:")
-                            print(f"  {urdf_xml_string[:500]}")
-                    
-                    return urdf_xml_string
-                except ET.ParseError as parse_err:
-                    if self.verbose:
-                        print(f"  Warning: Generated XML has parse error: {parse_err}")
-                        print(f"  First 200 chars: {urdf_xml_string[:200]}")
-                    raise RuntimeError(f"xacrodoc generated invalid XML: {parse_err}")
-            else:
-                raise RuntimeError("xacrodoc returned empty result")
-                
-        except ImportError:
-            error_msg = (
-                "xacrodoc library not found. Please install it using:\n\n"
-                "  pip install xacrodoc\n\n"
-                f"Xacro file: {xacro_file_path}"
-            )
-            raise RuntimeError(error_msg)
-        except Exception as e:
-            error_msg = (
-                f"Failed to expand xacro file using xacrodoc: {e}\n"
-                f"File: {xacro_file_path}\n"
-            )
-            if self.verbose:
-                import traceback
-                traceback.print_exc()
-            raise RuntimeError(error_msg)
-
-    def parse_urdf(self, urdf_file_path):
-        """Parse URDF file and extract robot structure information.
-        
-        Supports both .urdf and .xacro files. If a .xacro file is provided,
-        it will be automatically expanded before parsing.
-
-        Args:
-            urdf_file_path: Path to URDF or xacro file
-
-        Returns:
-            Dictionary containing:
-                - robot_name: Name of the robot
-                - links: Dictionary of link data
-                - joints: List of joint data
-                - materials: Dictionary of material colors
-                - missing_meshes: List of meshes that could not be found
-
-        Raises:
-            FileNotFoundError: If URDF/xacro file does not exist
-            ET.ParseError: If URDF file is not valid XML
-            RuntimeError: If xacro expansion fails
-        """
-        if not os.path.exists(urdf_file_path):
-            raise FileNotFoundError(f"URDF/xacro file not found: {urdf_file_path}")
-
-        # Check if file is a xacro file
-        file_ext = os.path.splitext(urdf_file_path)[1].lower()
-        is_xacro = file_ext in ['.xacro', '.xacro.urdf']
-
-        if is_xacro:
-            if self.verbose:
-                print(f"Detected xacro file: {urdf_file_path}")
-            
-            # Expand xacro to URDF
-            urdf_xml_string = self._expand_xacro(urdf_file_path)
-            
-            # 展開されたXML文字列が有効か確認
-            if not urdf_xml_string or not urdf_xml_string.strip():
-                raise RuntimeError("xacro expansion returned empty string")
-            
-            if self.verbose:
-                print(f"  Expanded xacro XML length: {len(urdf_xml_string)} characters")
-            
-            # Parse expanded URDF XML string
-            try:
-                root = ET.fromstring(urdf_xml_string)
-                
-                # デバッグ: 展開されたXMLの構造を確認
-                if self.verbose:
-                    print(f"  Expanded XML root tag: {root.tag}")
-                    # 最初の数個のリンクとジョイントを確認
-                    link_count = len(root.findall('link'))
-                    joint_count = len(root.findall('joint'))
-                    print(f"  Found {link_count} link elements, {joint_count} joint elements in expanded XML")
-                    if link_count == 0:
-                        print(f"  WARNING: No links found in expanded xacro!")
-                        # XMLの最初の500文字を出力してデバッグ
-                        print(f"  First 500 chars of expanded XML:")
-                        print(f"  {urdf_xml_string[:500]}")
-                
-                # robot要素の存在を確認
-                if root.tag != 'robot':
-                    if self.verbose:
-                        print(f"  Warning: Root element is '{root.tag}', expected 'robot'")
-                    # robot要素が見つからない場合は、子要素を探す
-                    robot_elem = root.find('robot')
-                    if robot_elem is not None:
-                        root = robot_elem
-                        if self.verbose:
-                            print(f"  Found 'robot' element as child, using it")
-                    else:
-                        if self.verbose:
-                            print(f"  Warning: No 'robot' element found, but continuing with root element '{root.tag}'")
-                else:
-                    if self.verbose:
-                        print(f"  Successfully parsed expanded xacro XML (robot element found)")
-            except ET.ParseError as e:
-                if self.verbose:
-                    print(f"Error parsing expanded xacro XML:")
-                    print(f"  First 500 chars: {urdf_xml_string[:500]}")
-                    print(f"  Last 200 chars: {urdf_xml_string[-200:]}")
-                raise RuntimeError(f"Failed to parse expanded xacro XML: {e}\nFirst 500 chars: {urdf_xml_string[:500]}")
-        else:
-            if self.verbose:
-                print(f"Parsing URDF from: {urdf_file_path}")
-            
-            # Parse URDF file directly
-            tree = ET.parse(urdf_file_path)
-            root = tree.getroot()
-            
-            # robot要素の存在を確認
-            if root.tag != 'robot':
-                if self.verbose:
-                    print(f"  Warning: Root element is '{root.tag}', expected 'robot'")
-                # robot要素が見つからない場合は、子要素を探す
-                robot_elem = root.find('robot')
-                if robot_elem is not None:
-                    root = robot_elem
-                    if self.verbose:
-                        print(f"  Found 'robot' element as child, using it")
-
-        # Get robot name from robot element or file name
-        robot_name = root.get('name')
-        if not robot_name:
-            # robot要素にname属性がない場合は、ファイル名から取得
-            robot_name = os.path.splitext(os.path.basename(urdf_file_path))[0]
-            if self.verbose:
-                print(f"  Robot name not found in XML, using filename: {robot_name}")
-        else:
-            if self.verbose:
-                print(f"Robot name from XML: {robot_name}")
-
-        # Extract data
-        materials_data = self._parse_materials(root)
-        links_data, missing_meshes = self._parse_links(root, urdf_file_path, materials_data)
-        joints_data = self._parse_joints(root, links_data)
-
-        return {
-            'robot_name': robot_name,
-            'links': links_data,
-            'joints': joints_data,
-            'materials': materials_data,
-            'missing_meshes': missing_meshes
-        }
-
-    def _parse_materials(self, root):
-        """Parse material information from URDF.
-
-        Args:
-            root: XML root element
-
-        Returns:
-            Dictionary mapping material names to RGBA colors
-        """
-        materials_data = {}
-
-        for material_elem in root.findall('material'):
-            mat_name = material_elem.get('name')
-            color_elem = material_elem.find('color')
-            if color_elem is not None:
-                rgba_str = color_elem.get('rgba', '1.0 1.0 1.0 1.0')
-                rgba = [float(v) for v in rgba_str.split()]
-                # RGBA（4要素）を保存（Alphaがない場合は1.0を追加）
-                if len(rgba) >= 4:
-                    materials_data[mat_name] = rgba[:4]
-                elif len(rgba) == 3:
-                    materials_data[mat_name] = rgba + [1.0]  # Alpha=1.0を追加
-                else:
-                    # 不正な形式の場合はデフォルト値
-                    materials_data[mat_name] = [1.0, 1.0, 1.0, 1.0]
-
-        if self.verbose:
-            print(f"Parsed {len(materials_data)} materials")
-
-        return materials_data
-
-    def _parse_links(self, root, urdf_file_path, materials_data):
-        """Parse link information from URDF.
-
-        Args:
-            root: XML root element
-            urdf_file_path: Path to URDF file (for resolving mesh paths)
-            materials_data: Dictionary of material colors
-
-        Returns:
-            Tuple of (links_data dict, missing_meshes list)
-        """
-        links_data = {}
-        missing_meshes = []
-
-        # デバッグ: リンク要素の数を確認
-        link_elems = root.findall('link')
-        if self.verbose:
-            print(f"\n[URDFParser] Found {len(link_elems)} link elements in URDF")
-
-        for link_elem in link_elems:
-            link_name = link_elem.get('name')
-            if not link_name:
-                if self.verbose:
-                    print(f"  Warning: Found link element without name attribute, skipping")
-                continue
-            
-            if self.verbose:
-                print(f"  Parsing link: {link_name}")
-            link_data = {
-                'name': link_name,
-                'mass': 0.0,
-                'inertia': {'ixx': 0.0, 'ixy': 0.0, 'ixz': 0.0, 'iyy': 0.0, 'iyz': 0.0, 'izz': 0.0},
-                'inertial_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
-                'visual_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
-                'stl_file': None,
-                'color': [1.0, 1.0, 1.0, 1.0],  # RGBA（4要素）に変更
-                'stl_filename_original': None,
-                'mesh_scale': [1.0, 1.0, 1.0],
-                'decorations': [],
-                'collision_mesh': None
-            }
-
-            # Parse inertial information
-            inertial_elem = link_elem.find('inertial')
-            if inertial_elem is not None:
-                mass_elem = inertial_elem.find('mass')
-                if mass_elem is not None:
-                    link_data['mass'] = float(mass_elem.get('value', 0.0))
-
-                inertia_elem = inertial_elem.find('inertia')
-                if inertia_elem is not None:
-                    for key in ['ixx', 'ixy', 'ixz', 'iyy', 'iyz', 'izz']:
-                        link_data['inertia'][key] = float(inertia_elem.get(key, 0.0))
-
-                origin_elem = inertial_elem.find('origin')
-                if origin_elem is not None:
-                    xyz_str = origin_elem.get('xyz', '0 0 0')
-                    rpy_str = origin_elem.get('rpy', '0 0 0')
-                    link_data['inertial_origin']['xyz'] = [float(v) for v in xyz_str.split()]
-                    link_data['inertial_origin']['rpy'] = [float(v) for v in rpy_str.split()]
-
-                if self.verbose:
-                    print(f"\n[URDF_INERTIAL] link_name={link_name}")
-                    print(f"  mass={link_data['mass']:.9e}")
-                    print(f"  origin_xyz={link_data['inertial_origin']['xyz']}")
-                    print(f"  origin_rpy={link_data['inertial_origin']['rpy']}")
-
-            # Parse visual information (multiple visual tags supported)
-            visual_elems = link_elem.findall('visual')
-            for visual_idx, visual_elem in enumerate(visual_elems):
-                is_main_visual = (visual_idx == 0)
-
-                current_stl_path = None
-                current_color = [1.0, 1.0, 1.0, 1.0]  # RGBA（4要素）に変更
-                current_visual_origin = {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]}
-
-                # Parse visual origin
-                visual_origin_elem = visual_elem.find('origin')
-                if visual_origin_elem is not None:
-                    xyz_str = visual_origin_elem.get('xyz', '0 0 0')
-                    rpy_str = visual_origin_elem.get('rpy', '0 0 0')
-                    try:
-                        xyz_values = [float(v) for v in xyz_str.split()]
-                        rpy_values = [float(v) for v in rpy_str.split()]
-                        if len(xyz_values) == 3:
-                            current_visual_origin['xyz'] = xyz_values
-                        if len(rpy_values) == 3:
-                            current_visual_origin['rpy'] = rpy_values
-                    except ValueError as e:
-                        if self.verbose:
-                            print(f"Warning: Invalid visual origin values: {e}")
-
-                # Parse geometry
-                geometry_elem = visual_elem.find('geometry')
-                mesh_scale = [1.0, 1.0, 1.0]
-                
-                if geometry_elem is not None:
-                    mesh_elem = geometry_elem.find('mesh')
-                    if mesh_elem is not None:
-                        mesh_filename = mesh_elem.get('filename', '')
-                        
-                        # Parse scale attribute
-                        scale_str = mesh_elem.get('scale', '')
-                        if scale_str:
-                            try:
-                                scale_values = [float(v) for v in scale_str.split()]
-                                if len(scale_values) == 3:
-                                    mesh_scale = scale_values
-                            except ValueError:
-                                if self.verbose:
-                                    print(f"Warning: Invalid scale attribute '{scale_str}'")
-
-                        # Resolve mesh file path
-                        resolved_path = self._resolve_mesh_path(mesh_filename, urdf_file_path)
-                        
-                        if resolved_path:
-                            current_stl_path = resolved_path
-                        else:
-                            if self.verbose:
-                                print(f"Could not find mesh file for link {link_name}: {mesh_filename}")
-                            mesh_basename = os.path.basename(mesh_filename)
-                            if is_main_visual:
-                                link_data['stl_filename_original'] = mesh_filename
-                                missing_meshes.append({
-                                    'link_name': link_name,
-                                    'filename': mesh_filename,
-                                    'basename': mesh_basename
-                                })
-                            else:
-                                # Decoration visualのメッシュファイルが見つからない場合も記録
-                                missing_meshes.append({
-                                    'link_name': link_name,
-                                    'filename': mesh_filename,
-                                    'basename': mesh_basename,
-                                    'is_decoration': True
-                                })
-
-                # Parse material color
-                material_elem = visual_elem.find('material')
-                if material_elem is not None:
-                    mat_name = material_elem.get('name')
-                    if mat_name in materials_data:
-                        # materials_dataからRGBA（4要素）を取得
-                        current_color = materials_data[mat_name]
-                    else:
-                        color_elem = material_elem.find('color')
-                        if color_elem is not None:
-                            rgba_str = color_elem.get('rgba', '1.0 1.0 1.0 1.0')
-                            rgba = [float(v) for v in rgba_str.split()]
-                            # RGBA（4要素）を保存（Alphaがない場合は1.0を追加）
-                            if len(rgba) >= 4:
-                                current_color = rgba[:4]
-                            elif len(rgba) == 3:
-                                current_color = rgba + [1.0]  # Alpha=1.0を追加
-                            else:
-                                current_color = [1.0, 1.0, 1.0, 1.0]  # デフォルト値
-                        elif mat_name and mat_name.startswith('#'):
-                            # Hex color code
-                            hex_color = mat_name[1:]
-                            if len(hex_color) == 6:
-                                r = int(hex_color[0:2], 16) / 255.0
-                                g = int(hex_color[2:4], 16) / 255.0
-                                b = int(hex_color[4:6], 16) / 255.0
-                                current_color = [r, g, b, 1.0]  # Alpha=1.0を追加
-                            else:
-                                current_color = [1.0, 1.0, 1.0, 1.0]  # デフォルト値
-                        else:
-                            current_color = [1.0, 1.0, 1.0, 1.0]  # デフォルト値
-
-                # Store data
-                if is_main_visual:
-                    if current_stl_path:
-                        link_data['stl_file'] = current_stl_path
-                    link_data['color'] = current_color
-                    link_data['mesh_scale'] = mesh_scale
-                    link_data['visual_origin'] = current_visual_origin
-                else:
-                    # Decoration visual
-                    # メッシュファイルが見つからない場合でもdecoration_dataを作成
-                    # ノード名を一意にするため、リンク名を含める
-                    if current_stl_path:
-                        stl_name = os.path.splitext(os.path.basename(current_stl_path))[0]
-                    else:
-                        # メッシュファイルが見つからない場合、ファイル名から推測
-                        mesh_basename = os.path.basename(mesh_filename) if mesh_filename else f"decoration_{visual_idx}"
-                        stl_name = os.path.splitext(mesh_basename)[0]
-                    
-                    # ノード名を一意にするため、リンク名を含める（同じメッシュが複数のリンクで使用される場合の衝突を回避）
-                    decoration_name = f"{link_name}_{stl_name}"
-                    
-                    decoration_data = {
-                        'name': decoration_name,
-                        'stl_file': current_stl_path,  # Noneの可能性もある
-                        'color': current_color,
-                        'mesh_scale': mesh_scale,
-                        'visual_origin': current_visual_origin,
-                        'original_name': stl_name  # 元のメッシュ名を保持
-                    }
-                    link_data['decorations'].append(decoration_data)
-
-            # Parse collision information
-            collision_elems = link_elem.findall('collision')
-            for collision_elem in collision_elems:
-                geometry_elem = collision_elem.find('geometry')
-                if geometry_elem is not None:
-                    # Check for mesh collision
-                    mesh_elem = geometry_elem.find('mesh')
-                    if mesh_elem is not None:
-                        mesh_filename = mesh_elem.get('filename', '')
-                        resolved_path = self._resolve_mesh_path(mesh_filename, urdf_file_path)
-                        if resolved_path:
-                            link_data['collision_mesh'] = resolved_path
-                            link_data['collider_type'] = 'mesh'
-                            link_data['collider_enabled'] = True
-                            break
-                    
-                    # Check for primitive collision geometries
-                    box_elem = geometry_elem.find('box')
-                    sphere_elem = geometry_elem.find('sphere')
-                    cylinder_elem = geometry_elem.find('cylinder')
-                    
-                    if box_elem is not None:
-                        # Parse box collision
-                        size_str = box_elem.get('size', '')
-                        if size_str:
-                            sizes = [float(s) for s in size_str.split()]
-                            if len(sizes) >= 3:
-                                collider_data = {
-                                    'type': 'box',
-                                    'geometry': {
-                                        'size_x': sizes[0],
-                                        'size_y': sizes[1],
-                                        'size_z': sizes[2]
-                                    },
-                                    'position': [0.0, 0.0, 0.0],
-                                    'rotation': [0.0, 0.0, 0.0]  # degrees
-                                }
-                                # Parse origin if present
-                                origin_elem = collision_elem.find('origin')
-                                if origin_elem is not None:
-                                    xyz_str = origin_elem.get('xyz', '0 0 0')
-                                    rpy_str = origin_elem.get('rpy', '0 0 0')
-                                    collider_data['position'] = [float(v) for v in xyz_str.split()]
-                                    rpy_rad = [float(v) for v in rpy_str.split()]
-                                    collider_data['rotation'] = [math.degrees(r) for r in rpy_rad]
-                                
-                                link_data['collider_data'] = collider_data
-                                link_data['collider_type'] = 'primitive'
-                                link_data['collider_enabled'] = True
-                                break
-                    
-                    elif sphere_elem is not None:
-                        # Parse sphere collision
-                        radius_str = sphere_elem.get('radius', '0.5')
-                        radius = float(radius_str)
-                        collider_data = {
-                            'type': 'sphere',
-                            'geometry': {
-                                'radius': radius
-                            },
-                            'position': [0.0, 0.0, 0.0],
-                            'rotation': [0.0, 0.0, 0.0]  # degrees
-                        }
-                        # Parse origin if present
-                        origin_elem = collision_elem.find('origin')
-                        if origin_elem is not None:
-                            xyz_str = origin_elem.get('xyz', '0 0 0')
-                            rpy_str = origin_elem.get('rpy', '0 0 0')
-                            collider_data['position'] = [float(v) for v in xyz_str.split()]
-                            rpy_rad = [float(v) for v in rpy_str.split()]
-                            collider_data['rotation'] = [math.degrees(r) for r in rpy_rad]
-                        
-                        link_data['collider_data'] = collider_data
-                        link_data['collider_type'] = 'primitive'
-                        link_data['collider_enabled'] = True
-                        break
-                    
-                    elif cylinder_elem is not None:
-                        # Parse cylinder collision
-                        radius_str = cylinder_elem.get('radius', '0.5')
-                        length_str = cylinder_elem.get('length', '1.0')
-                        radius = float(radius_str)
-                        length = float(length_str)
-                        collider_data = {
-                            'type': 'cylinder',
-                            'geometry': {
-                                'radius': radius,
-                                'length': length
-                            },
-                            'position': [0.0, 0.0, 0.0],
-                            'rotation': [0.0, 0.0, 0.0]  # degrees
-                        }
-                        # Parse origin if present
-                        origin_elem = collision_elem.find('origin')
-                        if origin_elem is not None:
-                            xyz_str = origin_elem.get('xyz', '0 0 0')
-                            rpy_str = origin_elem.get('rpy', '0 0 0')
-                            collider_data['position'] = [float(v) for v in xyz_str.split()]
-                            rpy_rad = [float(v) for v in rpy_str.split()]
-                            collider_data['rotation'] = [math.degrees(r) for r in rpy_rad]
-                        
-                        link_data['collider_data'] = collider_data
-                        link_data['collider_type'] = 'primitive'
-                        link_data['collider_enabled'] = True
-                        break
-
-            links_data[link_name] = link_data
-
-        if self.verbose:
-            print(f"\n[URDFParser] Successfully parsed {len(links_data)} links")
-            if missing_meshes:
-                print(f"  Warning: {len(missing_meshes)} mesh files could not be found")
-                for missing in missing_meshes[:5]:  # 最初の5つだけ表示
-                    print(f"    - {missing['link_name']}: {missing['basename']}")
-                if len(missing_meshes) > 5:
-                    print(f"    ... and {len(missing_meshes) - 5} more")
-
-        return links_data, missing_meshes
-
-    def _resolve_mesh_path(self, mesh_filename, urdf_file_path):
-        """Resolve mesh file path from URDF reference.
-
-        Tries multiple methods to find the mesh file:
-        1. package:// paths relative to description directory
-        2. Absolute paths
-        3. Relative paths from URDF directory
-        4. Search in common mesh directories
-
-        Args:
-            mesh_filename: Mesh file reference from URDF
-            urdf_file_path: Path to URDF file
-
-        Returns:
-            Absolute path to mesh file, or None if not found
-        """
-        urdf_dir = os.path.dirname(os.path.abspath(urdf_file_path))
-        urdf_file_abs = os.path.abspath(urdf_file_path)
-        description_dir = os.path.dirname(urdf_dir)  # メソッドの最初で定義
-        mesh_basename = os.path.basename(mesh_filename)
-
-        # Handle package:// paths
-        if mesh_filename.startswith('package://'):
-            parts = mesh_filename.split('/')
-            if len(parts) > 2:
-                package_name = parts[2]
-                relative_path = '/'.join(parts[3:]) if len(parts) > 3 else ''
-                
-                # パッケージルートを探す（xacroファイルの場所から）
-                package_root = find_package_root(urdf_file_abs, package_name, max_search_depth=10, verbose=self.verbose)
-                
-                if package_root:
-                    # パッケージルートからの相対パス
-                    if relative_path:
-                        candidate = os.path.join(package_root, relative_path)
-                    else:
-                        candidate = os.path.join(package_root, mesh_basename)
-                    
-                    if os.path.exists(candidate):
-                        if self.verbose:
-                            print(f"  Found mesh (package://): {candidate}")
-                        return candidate
-                
-                # パッケージルートが見つからない場合、従来の方法を試す
-                if relative_path:
-                    relative_path_full = relative_path
-                    # relative_pathから"robots/"プレフィックスを削除（例: "robots/asr_twodof_description/qb_meshes/dae/qb_base_flange_m.dae" -> "asr_twodof_description/qb_meshes/dae/qb_base_flange_m.dae"）
-                    if relative_path_full.startswith('robots/'):
-                        relative_path_without_robots = relative_path_full[7:]  # "robots/"を削除
-                    else:
-                        relative_path_without_robots = relative_path_full
-                else:
-                    relative_path_full = os.path.join('meshes', mesh_basename)
-                    relative_path_without_robots = relative_path_full
-
-                # Try multiple locations
-                candidates = [
-                    os.path.join(package_root, relative_path_full) if package_root else None,
-                    os.path.join(description_dir, relative_path_full),
-                    os.path.join(description_dir, relative_path_without_robots),  # "robots/"なしのパスも試す
-                    os.path.join(urdf_dir, relative_path_full),
-                    os.path.join(urdf_dir, relative_path_without_robots),  # "robots/"なしのパスも試す
-                    os.path.join(description_dir, 'meshes', mesh_basename),
-                    os.path.normpath(os.path.join(urdf_dir, '..', 'meshes', mesh_basename)),
-                    os.path.join(os.path.dirname(description_dir), relative_path_full),
-                    os.path.join(os.path.dirname(description_dir), relative_path_without_robots),  # "robots/"なしのパスも試す
-                    # xacroファイルと同じディレクトリ構造を試す
-                    os.path.normpath(os.path.join(urdf_dir, '..', '..', 'meshes', mesh_basename)),
-                    os.path.normpath(os.path.join(urdf_dir, '..', '..', package_name, 'meshes', mesh_basename)) if package_name else None,
-                    # 相対パスから直接ファイル名を抽出して検索
-                    os.path.join(description_dir, mesh_basename),
-                    os.path.join(urdf_dir, mesh_basename),
-                ]
-
-                for candidate in candidates:
-                    if candidate and os.path.exists(candidate):
-                        if self.verbose:
-                            print(f"  Found mesh (package:// fallback): {candidate}")
-                        return candidate
-
-        else:
-            # Absolute or relative paths
-            candidates = []
-            
-            # Try absolute path
-            if os.path.isabs(mesh_filename) and os.path.exists(mesh_filename):
-                return mesh_filename
-
-            # Try relative paths
-            candidates = [
-                os.path.join(urdf_dir, mesh_filename),
-                os.path.join(description_dir, mesh_filename),
-                os.path.join(description_dir, 'meshes', mesh_basename),
-            ]
-
-            for candidate in candidates:
-                if os.path.exists(candidate):
-                    if self.verbose:
-                        print(f"  Found mesh: {candidate}")
-                    return candidate
-
-        # メッシュが見つからない場合、一つ階層を上り、そこから下位4階層まで探索
-        if self.verbose:
-            print(f"  Mesh not found in standard locations, searching from parent directory (4 levels deep)...")
-        
-        # URDFファイルのディレクトリの親ディレクトリを取得
-        parent_dir = os.path.dirname(urdf_dir)
-        
-        if os.path.isdir(parent_dir):
-            # 親ディレクトリから4階層まで探索
-            parent_dir_depth = len(parent_dir.split(os.sep))
-            for root_dir, dirs, files in os.walk(parent_dir):
-                # 現在のディレクトリの深さを計算
-                current_depth = len(root_dir.split(os.sep)) - parent_dir_depth
-                # 4階層まで探索
-                if current_depth > 4:
-                    dirs[:] = []  # これより深い探索を停止
-                    continue
-                
-                # メッシュファイルのbasenameと一致するファイルを探す
-                if mesh_basename in files:
-                    candidate = os.path.join(root_dir, mesh_basename)
-                    if os.path.exists(candidate):
-                        if self.verbose:
-                            print(f"  Found mesh (parent directory search, depth {current_depth}): {candidate}")
-                        return candidate
-
-        return None
-
-    def _parse_joints(self, root, links_data):
-        """Parse joint information from URDF.
-
-        Args:
-            root: XML root element
-            links_data: Dictionary of link data
-
-        Returns:
-            List of joint data dictionaries
-        """
-        joints_data = []
-
-        # デバッグ: ジョイント要素の数を確認
-        joint_elems = root.findall('joint')
-        if self.verbose:
-            print(f"\n[URDFParser] Found {len(joint_elems)} joint elements in URDF")
-
-        for joint_elem in joint_elems:
-            joint_data = {
-                'name': joint_elem.get('name'),
-                'type': joint_elem.get('type', 'fixed'),
-                'parent': None,
-                'child': None,
-                'origin_xyz': [0.0, 0.0, 0.0],
-                'origin_rpy': [0.0, 0.0, 0.0],
-                'axis': [1.0, 0.0, 0.0],
-                'limit': {'lower': -3.14159, 'upper': 3.14159, 'effort': 10.0, 'velocity': 3.0, 'friction': 0.05},
-                'dynamics': {'damping': 0.0, 'friction': 0.0}
-            }
-
-            # Parse parent and child links
-            parent_elem = joint_elem.find('parent')
-            if parent_elem is not None:
-                joint_data['parent'] = parent_elem.get('link')
-
-            child_elem = joint_elem.find('child')
-            if child_elem is not None:
-                joint_data['child'] = child_elem.get('link')
-
-            # Parse origin
-            origin_elem = joint_elem.find('origin')
-            if origin_elem is not None:
-                xyz_str = origin_elem.get('xyz', '0 0 0')
-                rpy_str = origin_elem.get('rpy', '0 0 0')
-                joint_data['origin_xyz'] = [float(v) for v in xyz_str.split()]
-                joint_data['origin_rpy'] = [float(v) for v in rpy_str.split()]
-
-            # Parse axis
-            axis_elem = joint_elem.find('axis')
-            if axis_elem is not None:
-                axis_str = axis_elem.get('xyz', '1 0 0')
-                joint_data['axis'] = [float(v) for v in axis_str.split()]
-
-            # Parse limit
-            limit_elem = joint_elem.find('limit')
-            if limit_elem is not None:
-                joint_data['limit']['lower'] = float(limit_elem.get('lower', -3.14159))
-                joint_data['limit']['upper'] = float(limit_elem.get('upper', 3.14159))
-                joint_data['limit']['effort'] = float(limit_elem.get('effort', 10.0))
-                joint_data['limit']['velocity'] = float(limit_elem.get('velocity', 3.0))
-                joint_data['limit']['friction'] = float(limit_elem.get('friction', 0.05))
-
-            # Parse dynamics
-            dynamics_elem = joint_elem.find('dynamics')
-            if dynamics_elem is not None:
-                joint_data['dynamics']['damping'] = float(dynamics_elem.get('damping', 0.0))
-                joint_data['dynamics']['friction'] = float(dynamics_elem.get('friction', 0.0))
-
-            joints_data.append(joint_data)
-
-        if self.verbose:
-            print(f"[URDFParser] Successfully parsed {len(joints_data)} joints")
-
-        # Detect root links and connect to base_link
-        if self.verbose:
-            print("\n=== Detecting root links ===")
-
-        child_links = set()
-        for joint_data in joints_data:
-            if joint_data['child']:
-                child_links.add(joint_data['child'])
-
-        root_links = []
-        for link_name in links_data.keys():
-            if link_name not in child_links and link_name not in ['base_link', 'BaseLink']:
-                root_links.append(link_name)
-                if self.verbose:
-                    print(f"  Found root link: {link_name}")
-
-        # Create synthetic joints from base_link to root links
-        if root_links:
-            if self.verbose:
-                print(f"  Connecting {len(root_links)} root link(s) to base_link")
-
-            for root_link_name in root_links:
-                synthetic_joint = {
-                    'name': f'base_to_{root_link_name}',
-                    'type': 'fixed',
-                    'parent': 'base_link',
-                    'child': root_link_name,
-                    'origin_xyz': [0.0, 0.0, 0.0],
-                    'origin_rpy': [0.0, 0.0, 0.0],
-                    'axis': [1.0, 0.0, 0.0],
-                    'limit': {'lower': 0.0, 'upper': 0.0, 'effort': 0.0, 'velocity': 0.0, 'friction': 0.0},
-                    'dynamics': {'damping': 0.0, 'friction': 0.0}
-                }
-                joints_data.append(synthetic_joint)
-                if self.verbose:
-                    print(f"  Created synthetic joint: base_link -> {root_link_name}")
-
-        if self.verbose:
-            print(f"Parsed {len(joints_data)} joints (including synthetic joints)")
-
-        return joints_data
-
-
-# ============================================================================
-# SRDF PARSER
-# ============================================================================
-
-class SRDFParser:
-    """Parser for SRDF (Semantic Robot Description Format) files.
-
-    This class provides methods to parse SRDF XML files and extract
-    semantic information including groups, disabled collisions,
-    end effectors, and virtual joints.
-
-    Usage:
-        parser = SRDFParser()
-        result = parser.parse_srdf('/path/to/robot.srdf')
-        
-        # Access parsed data
-        groups = result['groups']
-        disabled_collisions = result['disabled_collisions']
-        end_effectors = result['end_effectors']
-    """
-
-    def __init__(self, verbose=True):
-        """Initialize SRDF parser.
-
-        Args:
-            verbose: If True, print parsing progress and information
-        """
-        self.verbose = verbose
-
-    def parse_srdf(self, srdf_file_path):
-        """Parse SRDF file and extract semantic information.
-
-        Args:
-            srdf_file_path: Path to SRDF XML file
-
-        Returns:
-            Dictionary containing:
-                - groups: List of group definitions
-                - disabled_collisions: List of disabled collision pairs
-                - disabled_links: List of disabled link names
-                - disabled_joints: List of disabled joint names
-                - end_effectors: List of end effector definitions
-                - virtual_joints: List of virtual joint definitions
-
-        Raises:
-            FileNotFoundError: If SRDF file does not exist
-            ET.ParseError: If SRDF file is not valid XML
-            ValueError: If root element is not 'robot'
-        """
-        if not os.path.exists(srdf_file_path):
-            raise FileNotFoundError(f"SRDF file not found: {srdf_file_path}")
-
-        if self.verbose:
-            print(f"Parsing SRDF from: {srdf_file_path}")
-
-        # Parse SRDF file
-        tree = ET.parse(srdf_file_path)
-        root = tree.getroot()
-
-        if root.tag != 'robot':
-            raise ValueError("Root element must be 'robot' for valid SRDF file")
-
-        robot_name = root.get('name', 'robot')
-        if self.verbose:
-            print(f"Robot name: {robot_name}")
-
-        # Parse groups
-        groups = self._parse_groups(root)
-
-        # Parse disabled collisions
-        disabled_collisions = self._parse_disabled_collisions(root)
-
-        # Parse disabled links
-        disabled_links = self._parse_disabled_links(root)
-
-        # Parse disabled joints
-        disabled_joints = self._parse_disabled_joints(root)
-
-        # Parse end effectors
-        end_effectors = self._parse_end_effectors(root)
-
-        # Parse virtual joints
-        virtual_joints = self._parse_virtual_joints(root)
-
-        if self.verbose:
-            print(f"Parsed {len(groups)} groups, {len(disabled_collisions)} disabled collisions, "
-                  f"{len(disabled_links)} disabled links, {len(disabled_joints)} disabled joints, "
-                  f"{len(end_effectors)} end effectors, {len(virtual_joints)} virtual joints")
-
-        return {
-            'robot_name': robot_name,
-            'groups': groups,
-            'disabled_collisions': disabled_collisions,
-            'disabled_links': disabled_links,
-            'disabled_joints': disabled_joints,
-            'end_effectors': end_effectors,
-            'virtual_joints': virtual_joints
-        }
-
-
-class SDFParser:
-    """Parser for SDF (Simulation Description Format) files.
-    
-    This class provides methods to parse SDF XML files and convert them
-    to URDF-like format for compatibility with the URDF parser.
-    
-    Usage:
-        parser = SDFParser()
-        result = parser.parse_sdf('/path/to/robot.sdf')
-    """
-    
-    def __init__(self, verbose=True):
-        """Initialize SDF parser.
-        
-        Args:
-            verbose: If True, print parsing progress and information
-        """
-        self.verbose = verbose
-    
-    def parse_sdf(self, sdf_file_path):
-        """Parse SDF file and convert to URDF-like format.
-        
-        Args:
-            sdf_file_path: Path to SDF XML file
-            
-        Returns:
-            Dictionary containing:
-                - robot_name: Name of the robot/model
-                - links_data: Dictionary of link data (URDF format)
-                - joints_data: List of joint data (URDF format)
-                - materials_data: Dictionary of material data
-                - missing_meshes: List of missing mesh files
-                
-        Raises:
-            FileNotFoundError: If SDF file does not exist
-            ET.ParseError: If SDF file is not valid XML
-            ValueError: If root element is not 'sdf'
-        """
-        if not os.path.exists(sdf_file_path):
-            raise FileNotFoundError(f"SDF file not found: {sdf_file_path}")
-        
-        if self.verbose:
-            print(f"Parsing SDF from: {sdf_file_path}")
-        
-        # Parse SDF file
-        tree = ET.parse(sdf_file_path)
-        root = tree.getroot()
-        
-        # SDFファイルのルート要素は'sdf'または'gazebo'
-        if root.tag not in ['sdf', 'gazebo']:
-            raise ValueError(f"Root element must be 'sdf' or 'gazebo' for valid SDF file, got '{root.tag}'")
-        
-        # SDFバージョンを取得
-        sdf_version = root.get('version', '1.0')
-        if self.verbose:
-            print(f"SDF version: {sdf_version}")
-        
-        # <model>要素を探す
-        model_elem = root.find('model')
-        if model_elem is None:
-            # <world>要素の中に<model>がある場合
-            world_elem = root.find('world')
-            if world_elem is not None:
-                model_elem = world_elem.find('model')
-        
-        if model_elem is None:
-            raise ValueError("No <model> element found in SDF file")
-        
-        robot_name = model_elem.get('name', 'robot')
-        if self.verbose:
-            print(f"Model name: {robot_name}")
-        
-        # SDFをURDF形式に変換するために、URDFParserを使用
-        # まず、SDFを一時的にURDF形式に変換
-        # 注: これは簡易的な実装で、完全なSDF→URDF変換ではない
-        # より完全な実装には、sdf2urdfツールの使用を推奨
-        
-        # SDFの<link>と<joint>をパース
-        links_data = {}
-        joints_data = []
-        materials_data = {}
-        missing_meshes = []
-        
-        # Parse links
-        # まず、リンクのpose情報を保存するための辞書を作成
-        link_poses = {}  # {link_name: {'xyz': [...], 'rpy': [...]}}
-        
-        for link_elem in model_elem.findall('link'):
-            link_name = link_elem.get('name')
-            if not link_name:
-                continue
-            
-            # Parse link pose (モデル座標系での位置)
-            link_pose = {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]}
-            pose_elem = link_elem.find('pose')
-            if pose_elem is not None:
-                pose_str = pose_elem.text
-                if pose_str:
-                    pose_values = [float(v) for v in pose_str.split()]
-                    if len(pose_values) >= 3:
-                        link_pose['xyz'] = pose_values[:3]
-                    if len(pose_values) >= 6:
-                        link_pose['rpy'] = pose_values[3:6]
-            link_poses[link_name] = link_pose
-            
-            link_data = {
-                'name': link_name,
-                'mass': 0.0,
-                'inertia': {'ixx': 0.0, 'iyy': 0.0, 'izz': 0.0, 'ixy': 0.0, 'ixz': 0.0, 'iyz': 0.0},
-                'inertial_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
-                'stl_file': None,
-                'stl_filename_original': None,  # 元のメッシュファイル名（見つからない場合に使用）
-                'color': [1.0, 1.0, 1.0, 1.0],
-                'mesh_scale': [1.0, 1.0, 1.0],
-                'visual_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
-                'decorations': [],
-                'collider_type': None,
-                'collider_enabled': False,
-                'collider_data': None,
-                'collision_mesh': None
-            }
-            
-            # Parse inertial
-            inertial_elem = link_elem.find('inertial')
-            if inertial_elem is not None:
-                # Parse pose (inertial origin)
-                pose_elem = inertial_elem.find('pose')
-                if pose_elem is not None:
-                    pose_str = pose_elem.text
-                    if pose_str:
-                        pose_values = [float(v) for v in pose_str.split()]
-                        if len(pose_values) >= 3:
-                            link_data['inertial_origin']['xyz'] = pose_values[:3]
-                        if len(pose_values) >= 6:
-                            link_data['inertial_origin']['rpy'] = pose_values[3:6]
-                
-                mass_elem = inertial_elem.find('mass')
-                if mass_elem is not None:
-                    link_data['mass'] = float(mass_elem.get('value', 0.0))
-                
-                inertia_elem = inertial_elem.find('inertia')
-                if inertia_elem is not None:
-                    link_data['inertia'] = {
-                        'ixx': float(inertia_elem.get('ixx', 0.0)),
-                        'iyy': float(inertia_elem.get('iyy', 0.0)),
-                        'izz': float(inertia_elem.get('izz', 0.0)),
-                        'ixy': float(inertia_elem.get('ixy', 0.0)),
-                        'ixz': float(inertia_elem.get('ixz', 0.0)),
-                        'iyz': float(inertia_elem.get('iyz', 0.0))
-                    }
-            
-            # Parse visual
-            visual_elems = link_elem.findall('visual')
-            for visual_idx, visual_elem in enumerate(visual_elems):
-                # Parse pose (visual origin)
-                visual_origin = {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]}
-                pose_elem = visual_elem.find('pose')
-                if pose_elem is not None:
-                    pose_str = pose_elem.text
-                    if pose_str:
-                        pose_values = [float(v) for v in pose_str.split()]
-                        if len(pose_values) >= 3:
-                            visual_origin['xyz'] = pose_values[:3]
-                        if len(pose_values) >= 6:
-                            visual_origin['rpy'] = pose_values[3:6]
-                
-                # Parse material (color)
-                color = [1.0, 1.0, 1.0, 1.0]
-                material_elem = visual_elem.find('material')
-                if material_elem is not None:
-                    ambient_elem = material_elem.find('ambient')
-                    if ambient_elem is not None:
-                        ambient_str = ambient_elem.text
-                        if ambient_str:
-                            ambient_values = [float(v) for v in ambient_str.split()]
-                            if len(ambient_values) >= 3:
-                                color = ambient_values[:3] + [1.0] if len(ambient_values) < 4 else ambient_values[:4]
-                
-                geometry_elem = visual_elem.find('geometry')
-                if geometry_elem is not None:
-                    mesh_elem = geometry_elem.find('mesh')
-                    if mesh_elem is not None:
-                        # Parse scale
-                        mesh_scale = [1.0, 1.0, 1.0]
-                        scale_elem = mesh_elem.find('scale')
-                        if scale_elem is not None:
-                            scale_str = scale_elem.text
-                            if scale_str:
-                                scale_values = [float(v) for v in scale_str.split()]
-                                if len(scale_values) >= 3:
-                                    mesh_scale = scale_values[:3]
-                        
-                        uri_elem = mesh_elem.find('uri')
-                        if uri_elem is not None:
-                            mesh_filename = uri_elem.text
-                            if mesh_filename:
-                                # package://パスを解決
-                                resolved_path = self._resolve_mesh_path(mesh_filename, sdf_file_path)
-                                if resolved_path:
-                                    if visual_idx == 0:
-                                        link_data['stl_file'] = resolved_path
-                                        link_data['visual_origin'] = visual_origin
-                                        link_data['mesh_scale'] = mesh_scale
-                                        link_data['color'] = color
-                                    else:
-                                        # Decoration
-                                        link_data['decorations'].append({
-                                            'name': f"{link_name}_{os.path.splitext(os.path.basename(mesh_filename))[0]}",
-                                            'stl_file': resolved_path,
-                                            'color': color,
-                                            'mesh_scale': mesh_scale,
-                                            'visual_origin': visual_origin
-                                        })
-                                else:
-                                    # メッシュファイルが見つからない場合、stl_filename_originalを設定
-                                    if visual_idx == 0:
-                                        link_data['stl_filename_original'] = mesh_filename
-                                        link_data['visual_origin'] = visual_origin
-                                        link_data['mesh_scale'] = mesh_scale
-                                        link_data['color'] = color
-                                    missing_meshes.append({
-                                        'link_name': link_name,
-                                        'filename': mesh_filename,
-                                        'basename': os.path.basename(mesh_filename),
-                                        'is_decoration': visual_idx > 0
-                                    })
-            
-            links_data[link_name] = link_data
-        
-        # Parse joints
-        for joint_elem in model_elem.findall('joint'):
-            joint_name = joint_elem.get('name')
-            if not joint_name:
-                continue
-            
-            joint_type = joint_elem.get('type', 'fixed')
-            # SDFのjoint typeをURDFのjoint typeに変換
-            # gearbox, ball, screwなどの特殊なタイプはfixedとして処理
-            # （URDF Kitchenは基本的にツリー構造を前提としているため）
-            type_mapping = {
-                'revolute': 'revolute',
-                'prismatic': 'prismatic',
-                'fixed': 'fixed',
-                'continuous': 'continuous',
-                'ball': 'fixed',  # ballジョイントはfixedとして処理
-                'gearbox': 'fixed',  # gearboxジョイントはfixedとして処理
-                'screw': 'fixed'  # screwジョイントはfixedとして処理
-            }
-            urdf_joint_type = type_mapping.get(joint_type, 'fixed')
-            
-            # gearboxタイプのジョイントの場合、gearbox_reference_bodyを保存
-            gearbox_reference_body = None
-            if joint_type == 'gearbox':
-                gearbox_ref_elem = joint_elem.find('gearbox_reference_body')
-                if gearbox_ref_elem is not None:
-                    gearbox_reference_body = gearbox_ref_elem.text
-                    if self.verbose:
-                        print(f"  Joint '{joint_name}' (gearbox): reference_body = {gearbox_reference_body}")
-            
-            parent_elem = joint_elem.find('parent')
-            child_elem = joint_elem.find('child')
-            
-            parent_link = parent_elem.text if parent_elem is not None else None
-            child_link = child_elem.text if child_elem is not None else None
-            
-            # Parse origin
-            origin_xyz = [0.0, 0.0, 0.0]
-            origin_rpy = [0.0, 0.0, 0.0]
-            pose_elem = joint_elem.find('pose')
-            if pose_elem is not None:
-                pose_str = pose_elem.text
-                if pose_str:
-                    pose_values = [float(v) for v in pose_str.split()]
-                    if len(pose_values) >= 3:
-                        origin_xyz = pose_values[:3]
-                    if len(pose_values) >= 6:
-                        origin_rpy = pose_values[3:6]
-            else:
-                # <joint>に<pose>がない場合、親リンクと子リンクの<pose>の差から計算
-                if parent_link and child_link and parent_link in link_poses and child_link in link_poses:
-                    parent_pose = link_poses[parent_link]
-                    child_pose = link_poses[child_link]
-                    # 位置の差を計算
-                    origin_xyz = [
-                        child_pose['xyz'][0] - parent_pose['xyz'][0],
-                        child_pose['xyz'][1] - parent_pose['xyz'][1],
-                        child_pose['xyz'][2] - parent_pose['xyz'][2]
-                    ]
-                    # 回転の差を計算（簡易版：RPYの差）
-                    origin_rpy = [
-                        child_pose['rpy'][0] - parent_pose['rpy'][0],
-                        child_pose['rpy'][1] - parent_pose['rpy'][1],
-                        child_pose['rpy'][2] - parent_pose['rpy'][2]
-                    ]
-                    if self.verbose:
-                        print(f"  Joint '{joint_name}': Calculated origin from link poses")
-                        print(f"    Parent '{parent_link}' pose: {parent_pose}")
-                        print(f"    Child '{child_link}' pose: {child_pose}")
-                        print(f"    Calculated origin: xyz={origin_xyz}, rpy={origin_rpy}")
-            
-            # Parse axis
-            axis = [1.0, 0.0, 0.0]
-            axis_elem = joint_elem.find('axis')
-            if axis_elem is not None:
-                xyz_elem = axis_elem.find('xyz')
-                if xyz_elem is not None:
-                    axis_str = xyz_elem.text
-                    if axis_str:
-                        axis = [float(v) for v in axis_str.split()]
-            
-            # Parse limits
-            limit = {'lower': -3.14159, 'upper': 3.14159, 'effort': 10.0, 'velocity': 3.0, 'friction': 0.05}
-            if axis_elem is not None:
-                limit_elem = axis_elem.find('limit')
-                if limit_elem is not None:
-                    lower = limit_elem.find('lower')
-                    upper = limit_elem.find('upper')
-                    effort = limit_elem.find('effort')
-                    velocity = limit_elem.find('velocity')
-                    
-                    if lower is not None:
-                        limit['lower'] = float(lower.text) if lower.text else -3.14159
-                    if upper is not None:
-                        limit['upper'] = float(upper.text) if upper.text else 3.14159
-                    if effort is not None:
-                        limit['effort'] = float(effort.text) if effort.text else 10.0
-                    if velocity is not None:
-                        limit['velocity'] = float(velocity.text) if velocity.text else 3.0
-            
-            joint_data = {
-                'name': joint_name,
-                'type': urdf_joint_type,
-                'parent': parent_link,
-                'child': child_link,
-                'origin_xyz': origin_xyz,
-                'origin_rpy': origin_rpy,
-                'axis': axis,
-                'limit': limit,
-                'dynamics': {'damping': 0.0, 'friction': 0.0},
-                'gearbox_reference_body': gearbox_reference_body  # gearboxタイプの場合のみ設定
-            }
-            
-            joints_data.append(joint_data)
-        
-        if self.verbose:
-            print(f"Parsed {len(links_data)} links and {len(joints_data)} joints from SDF")
-        
-        return {
-            'robot_name': robot_name,
-            'links_data': links_data,
-            'joints_data': joints_data,
-            'materials_data': materials_data,
-            'missing_meshes': missing_meshes
-        }
-    
-    def _resolve_mesh_path(self, mesh_filename, sdf_file_path):
-        """Resolve mesh file path from SDF reference.
-        
-        Args:
-            mesh_filename: Mesh file reference from SDF
-            sdf_file_path: Path to SDF file
-            
-        Returns:
-            Absolute path to mesh file, or None if not found
-        """
-        # URDFParserの_resolve_mesh_pathと同様の処理
-        # 簡易実装のため、URDFParserを再利用することも可能
-        urdf_dir = os.path.dirname(os.path.abspath(sdf_file_path))
-        mesh_basename = os.path.basename(mesh_filename)
-        
-        # package://パスの処理
-        if mesh_filename.startswith('package://'):
-            # package://パスを処理（簡易実装）
-            parts = mesh_filename.split('/')
-            if len(parts) > 2:
-                package_name = parts[2]
-                relative_path = '/'.join(parts[3:]) if len(parts) > 3 else ''
-                
-                # パッケージルートを探す（循環参照を避けるため、直接関数を呼び出す）
-                package_root = find_package_root(sdf_file_path, package_name, max_search_depth=10, verbose=self.verbose)
-                
-                if package_root:
-                    if relative_path:
-                        candidate = os.path.join(package_root, relative_path)
-                    else:
-                        candidate = os.path.join(package_root, mesh_basename)
-                    
-                    if os.path.exists(candidate):
-                        return candidate
-        
-        # 相対パスの処理
-        candidates = [
-            os.path.join(urdf_dir, mesh_filename),
-            os.path.join(urdf_dir, 'meshes', mesh_basename),
-            os.path.join(os.path.dirname(urdf_dir), 'meshes', mesh_basename),
-        ]
-        
-        for candidate in candidates:
-            if os.path.exists(candidate):
-                return candidate
-        
-        return None
-
-    def _parse_groups(self, root):
-        """Parse group definitions from SRDF.
-
-        Args:
-            root: XML root element
-
-        Returns:
-            List of group dictionaries with 'name', 'links', and 'joints'
-        """
-        groups = []
-        for group_elem in root.findall('group'):
-            group_name = group_elem.get('name')
-            if not group_name:
-                continue
-
-            links = []
-            for link_elem in group_elem.findall('link'):
-                link_name = link_elem.get('name')
-                if link_name:
-                    links.append(link_name)
-
-            joints = []
-            for joint_elem in group_elem.findall('joint'):
-                joint_name = joint_elem.get('name')
-                if joint_name:
-                    joints.append(joint_name)
-
-            groups.append({
-                'name': group_name,
-                'links': links,
-                'joints': joints
-            })
-
-            if self.verbose:
-                print(f"  Group '{group_name}': {len(links)} links, {len(joints)} joints")
-
-        return groups
-
-    def _parse_disabled_collisions(self, root):
-        """Parse disabled collision pairs from SRDF.
-
-        Args:
-            root: XML root element
-
-        Returns:
-            List of disabled collision dictionaries with 'link1' and 'link2'
-        """
-        disabled_collisions = []
-        for disable_elem in root.findall('disable_collisions'):
-            link1 = disable_elem.get('link1')
-            link2 = disable_elem.get('link2')
-            if link1 and link2:
-                disabled_collisions.append({
-                    'link1': link1,
-                    'link2': link2,
-                    'reason': disable_elem.get('reason', '')
-                })
-
-        return disabled_collisions
-
-    def _parse_disabled_links(self, root):
-        """Parse disabled links from SRDF.
-
-        Args:
-            root: XML root element
-
-        Returns:
-            List of disabled link names
-        """
-        disabled_links = []
-        for disable_elem in root.findall('disable_links'):
-            for link_elem in disable_elem.findall('link'):
-                link_name = link_elem.get('name')
-                if link_name:
-                    disabled_links.append(link_name)
-
-        return disabled_links
-
-    def _parse_disabled_joints(self, root):
-        """Parse disabled joints from SRDF.
-
-        Args:
-            root: XML root element
-
-        Returns:
-            List of disabled joint names
-        """
-        disabled_joints = []
-        for disable_elem in root.findall('disable_joints'):
-            for joint_elem in disable_elem.findall('joint'):
-                joint_name = joint_elem.get('name')
-                if joint_name:
-                    disabled_joints.append(joint_name)
-
-        return disabled_joints
-
-    def _parse_end_effectors(self, root):
-        """Parse end effector definitions from SRDF.
-
-        Args:
-            root: XML root element
-
-        Returns:
-            List of end effector dictionaries
-        """
-        end_effectors = []
-        for ee_elem in root.findall('end_effector'):
-            ee_name = ee_elem.get('name')
-            if not ee_name:
-                continue
-
-            group = ee_elem.get('group')
-            parent_link = ee_elem.get('parent_link')
-            parent_group = ee_elem.get('parent_group')
-
-            end_effectors.append({
-                'name': ee_name,
-                'group': group,
-                'parent_link': parent_link,
-                'parent_group': parent_group
-            })
-
-            if self.verbose:
-                print(f"  End effector '{ee_name}': group={group}, parent_link={parent_link}")
-
-        return end_effectors
-
-    def _parse_virtual_joints(self, root):
-        """Parse virtual joint definitions from SRDF.
-
-        Args:
-            root: XML root element
-
-        Returns:
-            List of virtual joint dictionaries
-        """
-        virtual_joints = []
-        for vj_elem in root.findall('virtual_joint'):
-            vj_name = vj_elem.get('name')
-            if not vj_name:
-                continue
-
-            parent_frame = vj_elem.get('parent_frame')
-            child_link = vj_elem.get('child_link')
-            joint_type = vj_elem.get('type', 'fixed')
-
-            virtual_joints.append({
-                'name': vj_name,
-                'parent_frame': parent_frame,
-                'child_link': child_link,
-                'type': joint_type
-            })
-
-            if self.verbose:
-                print(f"  Virtual joint '{vj_name}': type={joint_type}, parent={parent_frame}, child={child_link}")
-
-        return virtual_joints
-
-
-# ============================================================================
-# MJCF PARSER
-# ============================================================================
-
-class MJCFParser:
-    """Parser for MJCF (MuJoCo Model Format) files.
-
-    This class provides methods to parse MJCF XML files and extract
-    robot structure information including bodies, joints, meshes,
-    and default classes.
-
-    Usage:
-        parser = MJCFParser()
-        result = parser.parse_mjcf('/path/to/robot.xml', working_dir='/tmp')
-        
-        # Access parsed data
-        robot_name = result['robot_name']
-        bodies_data = result['bodies']
-        joints_data = result['joints']
-        meshes_data = result['meshes']
-    """
-
-    def __init__(self, verbose=True):
-        """Initialize MJCF parser.
-
-        Args:
-            verbose: If True, print parsing progress and information
-        """
-        self.verbose = verbose
-        self.conversion_utils = ConversionUtils()
-
-    def parse_mjcf(self, mjcf_file_path, working_dir=None):
-        """Parse MJCF file and extract robot structure information.
-
-        Args:
-            mjcf_file_path: Path to MJCF XML file
-            working_dir: Working directory for resolving mesh paths (optional)
-
-        Returns:
-            Dictionary containing:
-                - robot_name: Name of the robot
-                - bodies: List of body data
-                - joints: List of joint data
-                - meshes: Dictionary of mesh information
-                - eulerseq: Euler sequence from compiler settings
-                - default_classes: Dictionary of default class settings
-
-        Raises:
-            FileNotFoundError: If MJCF file does not exist
-            ET.ParseError: If MJCF file is not valid XML
-            ValueError: If root element is not 'mujoco'
-        """
-        if not os.path.exists(mjcf_file_path):
-            raise FileNotFoundError(f"MJCF file not found: {mjcf_file_path}")
-
-        if self.verbose:
-            print(f"Parsing MJCF from: {mjcf_file_path}")
-
-        # Parse MJCF file
-        tree = ET.parse(mjcf_file_path)
-        root = tree.getroot()
-
-        if root.tag != 'mujoco':
-            raise ValueError("Root element must be 'mujoco' for valid MJCF file")
-
-        # Get robot name from file name
-        robot_name = os.path.splitext(os.path.basename(mjcf_file_path))[0]
-        if self.verbose:
-            print(f"Robot name: {robot_name}")
-
-        # Parse compiler settings
-        eulerseq = self._parse_compiler(root)
-
-        # Parse default classes
-        default_classes = self._parse_defaults(root)
-
-        # Parse asset meshes
-        if working_dir is None:
-            working_dir = os.path.dirname(mjcf_file_path)
-        meshes_data = self._parse_assets(root, mjcf_file_path, working_dir)
-
-        # Parse body hierarchy
-        bodies_data = []
-        joints_data = []
-        worldbody = root.find('worldbody')
-        if worldbody is not None:
-            for body_elem in worldbody.findall('body'):
-                self._parse_body(body_elem, None, 0, bodies_data, joints_data, 
-                                meshes_data, default_classes, eulerseq)
-
-        if self.verbose:
-            print(f"Parsed {len(bodies_data)} bodies and {len(joints_data)} joints")
-
-        return {
-            'robot_name': robot_name,
-            'bodies': bodies_data,
-            'joints': joints_data,
-            'meshes': meshes_data,
-            'eulerseq': eulerseq,
-            'default_classes': default_classes
-        }
-
-    def _parse_compiler(self, root):
-        """Parse compiler settings from MJCF.
-
-        Args:
-            root: XML root element
-
-        Returns:
-            Euler sequence string (default 'xyz')
-        """
-        eulerseq = 'xyz'  # Default
-        compiler_elem = root.find('compiler')
-        if compiler_elem is not None:
-            eulerseq_attr = compiler_elem.get('eulerseq')
-            if eulerseq_attr:
-                eulerseq = eulerseq_attr.lower()
-                if self.verbose:
-                    print(f"Compiler eulerseq: {eulerseq}")
-
-        return eulerseq
-
-    def _parse_defaults(self, root):
-        """Parse default classes from MJCF.
-
-        Args:
-            root: XML root element
-
-        Returns:
-            Dictionary of default class settings
-        """
-        default_classes = {}
-
-        def parse_defaults_recursive(default_elem, parent_class_name=None):
-            """Recursively parse default classes."""
-            class_name = default_elem.get('class', parent_class_name)
-
-            # Inherit from parent class
-            class_defaults = {}
-            if parent_class_name and parent_class_name in default_classes:
-                class_defaults = default_classes[parent_class_name].copy()
-
-            # Get joint defaults
-            joint_elem = default_elem.find('joint')
-            if joint_elem is not None:
-                axis_str = joint_elem.get('axis')
-                if axis_str:
-                    class_defaults['joint_axis'] = [float(v) for v in axis_str.split()]
-
-                range_str = joint_elem.get('range')
-                if range_str:
-                    class_defaults['joint_range'] = [float(v) for v in range_str.split()]
-
-                damping_str = joint_elem.get('damping')
-                if damping_str:
-                    class_defaults['joint_damping'] = float(damping_str)
-
-                armature_str = joint_elem.get('armature')
-                if armature_str:
-                    class_defaults['joint_armature'] = float(armature_str)
-
-                frictionloss_str = joint_elem.get('frictionloss')
-                if frictionloss_str:
-                    class_defaults['joint_frictionloss'] = float(frictionloss_str)
-
-                stiffness_str = joint_elem.get('stiffness')
-                if stiffness_str:
-                    class_defaults['joint_stiffness'] = float(stiffness_str)
-
-            # Save class if it has a name
-            if class_name:
-                default_classes[class_name] = class_defaults
-                if self.verbose:
-                    print(f"Default class '{class_name}': {class_defaults}")
-
-            # Parse child default classes recursively
-            for child_default in default_elem.findall('default'):
-                parse_defaults_recursive(child_default, class_name)
-
-        # Find and parse all default elements
-        for default_elem in root.findall('default'):
-            parse_defaults_recursive(default_elem)
-
-        if self.verbose:
-            print(f"Parsed {len(default_classes)} default classes")
-
-        return default_classes
-
-    def _parse_assets(self, root, mjcf_file_path, working_dir):
-        """Parse asset mesh information from MJCF.
-
-        Args:
-            root: XML root element
-            mjcf_file_path: Path to MJCF file
-            working_dir: Working directory for mesh search
-
-        Returns:
-            Dictionary mapping mesh names to mesh info (path and scale)
-        """
-        meshes_data = {}
-        asset_elem = root.find('asset')
-        
-        if asset_elem is None:
-            return meshes_data
-
-        mjcf_dir = os.path.dirname(mjcf_file_path)
-        parent_dir = os.path.dirname(mjcf_dir)  # 上位1階層
-
-        # Mesh search directories（上位1階層、そこから下位2階層まで）
-        def collect_search_dirs(base_dir, max_depth=2):
-            """指定されたディレクトリから、下位2階層までのディレクトリを収集"""
-            dirs = []
-            if not os.path.exists(base_dir):
-                return dirs
-            
-            def walk_dirs(current_dir, current_depth):
-                if current_depth > max_depth:
-                    return
-                if current_dir not in dirs:
-                    dirs.append(current_dir)
-                if current_depth < max_depth:
-                    try:
-                        for item in os.listdir(current_dir):
-                            item_path = os.path.join(current_dir, item)
-                            if os.path.isdir(item_path):
-                                walk_dirs(item_path, current_depth + 1)
-                    except Exception:
-                        pass
-            
-            walk_dirs(base_dir, 0)
-            return dirs
-
-        # 上位1階層から下位2階層までのディレクトリを収集
-        search_dirs = []
-        # MJCFディレクトリとその下位2階層
-        search_dirs.extend(collect_search_dirs(mjcf_dir, max_depth=2))
-        # 上位1階層とその下位2階層
-        if os.path.exists(parent_dir):
-            search_dirs.extend(collect_search_dirs(parent_dir, max_depth=2))
-        # working_dirとその下位2階層
-        if working_dir and os.path.exists(working_dir):
-            search_dirs.extend(collect_search_dirs(working_dir, max_depth=2))
-        
-        # 重複を除去
-        search_dirs = list(dict.fromkeys(search_dirs))  # 順序を保持しながら重複除去
-
-        for mesh_elem in asset_elem.findall('mesh'):
-            mesh_name = mesh_elem.get('name')
-            mesh_file = mesh_elem.get('file', '')
-
-            # Derive mesh name from filename if not specified
-            if not mesh_name and mesh_file:
-                mesh_name = os.path.splitext(os.path.basename(mesh_file))[0]
-                if self.verbose:
-                    print(f"Mesh name derived from file: {mesh_name}")
-
-            # Parse mesh scale attribute
-            mesh_scale = [1.0, 1.0, 1.0]
-            scale_str = mesh_elem.get('scale')
-            if scale_str:
-                scale_values = [float(v) for v in scale_str.split()]
-                if len(scale_values) == 3:
-                    mesh_scale = scale_values
-                elif len(scale_values) == 1:
-                    mesh_scale = [scale_values[0]] * 3
-                if self.verbose:
-                    print(f"  Mesh '{mesh_name}' scale: {mesh_scale}")
-
-            # Resolve mesh file path
-            if mesh_file:
-                mesh_path = None
-                mesh_basename = os.path.basename(mesh_file)
-
-                # Method 1: Try original path relative to MJCF dir
-                candidate = os.path.join(mjcf_dir, mesh_file)
-                if os.path.exists(candidate):
-                    mesh_path = candidate
-                    if self.verbose:
-                        print(f"Found mesh: {mesh_name} -> {mesh_path}")
-
-                # Method 2: Try in search directories with original structure
-                if not mesh_path:
-                    for search_dir in search_dirs:
-                        if not search_dir or not os.path.exists(search_dir):
-                            continue
-                        candidate = os.path.join(search_dir, mesh_file)
-                        if os.path.exists(candidate):
-                            mesh_path = candidate
-                            if self.verbose:
-                                print(f"Found mesh: {mesh_name} -> {mesh_path}")
-                            break
-
-                # Method 3: Search for basename in directories (max 2 levels deep)
-                if not mesh_path:
-                    for search_dir in search_dirs:
-                        if not search_dir or not os.path.exists(search_dir):
-                            continue
-                        # 直接のパスを試す
-                        candidate = os.path.join(search_dir, mesh_basename)
-                        if os.path.exists(candidate):
-                            mesh_path = candidate
-                            if self.verbose:
-                                print(f"Found mesh: {mesh_name} -> {mesh_path}")
-                            break
-                        
-                        # 下位2階層まで探索
-                        search_dir_depth = len(search_dir.split(os.sep))
-                        for root_dir, dirs, files in os.walk(search_dir):
-                            # 現在のディレクトリの深さを計算
-                            current_depth = len(root_dir.split(os.sep)) - search_dir_depth
-                            # 2階層まで探索
-                            if current_depth > 2:
-                                dirs[:] = []  # これより深い探索を停止
-                                continue
-                            
-                            if mesh_basename in files:
-                                candidate = os.path.join(root_dir, mesh_basename)
-                                mesh_path = candidate
-                                if self.verbose:
-                                    print(f"Found mesh: {mesh_name} -> {mesh_path} (depth {current_depth})")
-                                break
-                        
-                        if mesh_path:
-                            break
-
-                if mesh_path:
-                    meshes_data[mesh_name] = {
-                        'path': mesh_path,
-                        'scale': mesh_scale
-                    }
-                else:
-                    if self.verbose:
-                        print(f"Warning: Could not find mesh file: {mesh_file}")
-
-        if self.verbose:
-            print(f"Parsed {len(meshes_data)} mesh assets")
-
-        return meshes_data
-
-    def _parse_body(self, body_elem, parent_name, level, bodies_data, joints_data, 
-                    meshes_data, default_classes, eulerseq):
-        """Recursively parse body element from MJCF.
-
-        Args:
-            body_elem: Body XML element
-            parent_name: Name of parent body (None for root)
-            level: Recursion level for indentation
-            bodies_data: List to append body data to
-            joints_data: List to append joint data to
-            meshes_data: Dictionary of mesh information
-            default_classes: Dictionary of default class settings
-            eulerseq: Euler sequence from compiler settings
-        """
-        body_name = body_elem.get('name', f'body_{len(bodies_data)}')
-
-        body_data = {
-            'name': body_name,
-            'parent': parent_name,
-            'mass': 0.0,
-            'inertia': {'ixx': 0.0, 'ixy': 0.0, 'ixz': 0.0, 'iyy': 0.0, 'iyz': 0.0, 'izz': 0.0},
-            'inertial_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
-            'stl_file': None,
-            'visuals': [],
-            'color': [1.0, 1.0, 1.0],
-            'collision_mesh': None,
-            'mesh_scale': [1.0, 1.0, 1.0],
-            'visual_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
-            'pos': [0.0, 0.0, 0.0],
-            'quat': [1.0, 0.0, 0.0, 0.0],
-            'rpy': [0.0, 0.0, 0.0]
-        }
-
-        # Parse position
-        pos_str = body_elem.get('pos', '0 0 0')
-        body_data['pos'] = [float(v) for v in pos_str.split()]
-
-        # Parse quaternion and convert to RPY
-        quat_str = body_elem.get('quat')
-        if quat_str:
-            body_data['quat'] = [float(v) for v in quat_str.split()]
-            body_data['rpy'] = self.conversion_utils.quat_to_rpy(body_data['quat'])
-            if self.verbose:
-                print(f"{'  ' * level}  Body quat: {body_data['quat']} -> rpy: {body_data['rpy']}")
-
-        # Parse euler angles
-        euler_str = body_elem.get('euler')
-        if euler_str:
-            euler_degrees = [float(v) for v in euler_str.split()]
-            body_data['rpy'] = [math.radians(e) for e in euler_degrees]
-            if self.verbose:
-                print(f"{'  ' * level}  Body euler (deg): {euler_degrees} -> rpy (rad): {body_data['rpy']}")
-
-        # Parse inertial information
-        inertial_elem = body_elem.find('inertial')
-        if inertial_elem is not None:
-            mass_str = inertial_elem.get('mass')
-            if mass_str:
-                body_data['mass'] = float(mass_str)
-
-            inertial_pos = inertial_elem.get('pos', '0 0 0')
-            body_data['inertial_origin']['xyz'] = [float(v) for v in inertial_pos.split()]
-
-            diaginertia_str = inertial_elem.get('diaginertia')
-            if diaginertia_str:
-                diag = [float(v) for v in diaginertia_str.split()]
-                if len(diag) >= 3:
-                    body_data['inertia']['ixx'] = diag[0]
-                    body_data['inertia']['iyy'] = diag[1]
-                    body_data['inertia']['izz'] = diag[2]
-
-        # Parse geometry (geom elements)
-        geom_elems = body_elem.findall('geom')
-        if geom_elems and self.verbose:
-            print(f"{'  ' * level}  Found {len(geom_elems)} geom element(s)")
-
-        for idx, geom_elem in enumerate(geom_elems):
-            mesh_name = geom_elem.get('mesh')
-            
-            # Determine geom type (visual or collision)
-            geom_class = geom_elem.get('class', '')
-            geom_group = geom_elem.get('group', '')
-            contype = geom_elem.get('contype')
-            conaffinity = geom_elem.get('conaffinity')
-
-            is_collision_geom = (geom_class == 'collision' or 
-                                geom_group in ['0', '3'])
-            is_visual_geom = (geom_class == 'visual' or 
-                             geom_group in ['1', '2'] or
-                             (contype == '0') or (conaffinity == '0'))
-
-            if not is_collision_geom and not is_visual_geom:
-                is_visual_geom = True
-                is_collision_geom = True
-
-            if self.verbose:
-                print(f"{'  ' * level}    Geom[{idx}] type: visual={is_visual_geom}, collision={is_collision_geom}")
-
-            if mesh_name and mesh_name in meshes_data:
-                mesh_info = meshes_data[mesh_name]
-                mesh_path = mesh_info['path']
-                asset_mesh_scale = mesh_info['scale']
-
-                # Parse geom position
-                geom_pos_str = geom_elem.get('pos', '0 0 0')
-                geom_pos = [float(v) for v in geom_pos_str.split()]
-
-                # Parse geom rotation (quat or euler)
-                geom_quat_str = geom_elem.get('quat')
-                geom_euler_str = geom_elem.get('euler')
-                geom_rpy = [0.0, 0.0, 0.0]
-                geom_quat = [1.0, 0.0, 0.0, 0.0]
-
-                if geom_quat_str:
-                    geom_quat = [float(v) for v in geom_quat_str.split()]
-                    geom_rpy = self.conversion_utils.quat_to_rpy(geom_quat)
-                elif geom_euler_str:
-                    euler_degrees = [float(v) for v in geom_euler_str.split()]
-                    geom_rpy = self.conversion_utils.euler_to_rpy(euler_degrees, eulerseq)
-                    # Convert RPY back to quat for storage
-                    geom_quat = self.conversion_utils.rpy_to_quat(geom_rpy)
-
-                # Parse geom mesh scale
-                geom_meshscale = [1.0, 1.0, 1.0]
-                meshscale_str = geom_elem.get('meshscale')
-                if meshscale_str:
-                    scale_values = [float(v) for v in meshscale_str.split()]
-                    if len(scale_values) == 3:
-                        geom_meshscale = scale_values
-                    elif len(scale_values) == 1:
-                        geom_meshscale = [scale_values[0]] * 3
-
-                # Combine scales
-                combined_scale = [
-                    asset_mesh_scale[0] * geom_meshscale[0],
-                    asset_mesh_scale[1] * geom_meshscale[1],
-                    asset_mesh_scale[2] * geom_meshscale[2]
-                ]
-
-                # Parse color
-                geom_color = [1.0, 1.0, 1.0]
-                rgba_str = geom_elem.get('rgba')
-                if rgba_str:
-                    rgba = [float(v) for v in rgba_str.split()]
-                    geom_color = rgba[:3]
-
-                # Add to visuals list if visual geom
-                if is_visual_geom:
-                    visual_data = {
-                        'mesh': mesh_path,
-                        'pos': geom_pos,
-                        'quat': geom_quat,
-                        'color': geom_color
-                    }
-                    body_data['visuals'].append(visual_data)
-
-                    # Set first visual as main stl_file for backward compatibility
-                    if body_data['stl_file'] is None:
-                        body_data['stl_file'] = mesh_path
-                        body_data['color'] = geom_color
-                        body_data['mesh_scale'] = combined_scale
-                        body_data['visual_origin'] = {
-                            'xyz': geom_pos,
-                            'rpy': geom_rpy
-                        }
-
-                # Set as collision mesh if collision geom
-                if is_collision_geom and body_data['collision_mesh'] is None:
-                    body_data['collision_mesh'] = mesh_path
-
-        bodies_data.append(body_data)
-
-        # Parse joints in this body
-        joint_elems = body_elem.findall('joint')
-        for joint_elem in joint_elems:
-            joint_name = joint_elem.get('name', f'joint_{len(joints_data)}')
-            joint_type = joint_elem.get('type', 'hinge')
-            
-            # Map MJCF joint types to URDF types
-            type_mapping = {
-                'hinge': 'revolute',
-                'slide': 'prismatic',
-                'ball': 'spherical',
-                'free': 'floating'
-            }
-            urdf_type = type_mapping.get(joint_type, 'revolute')
-
-            joint_data = {
-                'name': joint_name,
-                'type': urdf_type,
-                'parent': parent_name if parent_name else 'base_link',
-                'child': body_name,
-                'origin_xyz': body_data['pos'],
-                'origin_rpy': body_data['rpy'],
-                'axis': [1.0, 0.0, 0.0],
-                'limit': {'lower': -3.14159, 'upper': 3.14159, 'effort': 10.0, 
-                         'velocity': 3.0, 'friction': 0.05},
-                'dynamics': {'damping': 0.0, 'friction': 0.0}
-            }
-
-            # Parse axis
-            axis_str = joint_elem.get('axis')
-            if axis_str:
-                joint_data['axis'] = [float(v) for v in axis_str.split()]
-
-            # Parse range (limits)
-            range_str = joint_elem.get('range')
-            if range_str:
-                range_vals = [float(v) for v in range_str.split()]
-                if len(range_vals) >= 2:
-                    joint_data['limit']['lower'] = range_vals[0]
-                    joint_data['limit']['upper'] = range_vals[1]
-
-            # Parse damping
-            damping_str = joint_elem.get('damping')
-            if damping_str:
-                joint_data['dynamics']['damping'] = float(damping_str)
-
-            # Parse friction
-            frictionloss_str = joint_elem.get('frictionloss')
-            if frictionloss_str:
-                joint_data['dynamics']['friction'] = float(frictionloss_str)
-
-            joints_data.append(joint_data)
-
-        # Recursively parse child bodies
-        for child_body_elem in body_elem.findall('body'):
-            self._parse_body(child_body_elem, body_name, level + 1, bodies_data, 
-                           joints_data, meshes_data, default_classes, eulerseq)
-
-    def parse_primitive_geom(self, geom_elem, geom_type, level=0):
-        """Parse MJCF primitive geom and convert to Assembler collider_data format.
-
-        Args:
-            geom_elem: MJCF geom element
-            geom_type: Primitive type ('cylinder', 'box', 'sphere', 'capsule')
-            level: Logging indentation level
-
-        Returns:
-            collider_data: Dictionary in Assembler collider_data format,
-                          or None if size attribute is missing
-        """
-        collider_data = {
-            'type': geom_type,
-            'geometry': {},
-            'position': [0.0, 0.0, 0.0],
-            'rotation': [0.0, 0.0, 0.0]  # degrees
-        }
-
-        # Parse position
-        pos_str = geom_elem.get('pos', '0 0 0')
-        collider_data['position'] = [float(v) for v in pos_str.split()]
-
-        # Parse rotation (quat or euler to RPY in degrees)
-        quat_str = geom_elem.get('quat')
-        euler_str = geom_elem.get('euler')
-
-        if quat_str:
-            quat = [float(v) for v in quat_str.split()]
-            rpy_rad = self.conversion_utils.quat_to_rpy(quat)
-            collider_data['rotation'] = [math.degrees(r) for r in rpy_rad]
-        elif euler_str:
-            euler_deg = [float(v) for v in euler_str.split()]
-            collider_data['rotation'] = euler_deg  # Already in degrees
-
-        # Parse size (convert from MJCF format to Assembler format)
-        size_str = geom_elem.get('size')
-        if not size_str:
-            if self.verbose:
-                print(f"{'  ' * level}      Warning: No size attribute for primitive geom")
-            return None
-
-        size_values = [float(v) for v in size_str.split()]
-
-        if geom_type == 'cylinder':
-            # MJCF: [radius, half_length] → Assembler: {radius, length}
-            if len(size_values) >= 2:
-                collider_data['geometry']['radius'] = str(size_values[0])
-                collider_data['geometry']['length'] = str(size_values[1] * 2.0)  # half → full
-                if self.verbose:
-                    print(f"{'  ' * level}      Cylinder: radius={size_values[0]}, length={size_values[1]*2}")
-
-        elif geom_type == 'box':
-            # MJCF: [half_x, half_y, half_z] → Assembler: {size_x, size_y, size_z}
-            if len(size_values) >= 3:
-                collider_data['geometry']['size_x'] = str(size_values[0] * 2.0)
-                collider_data['geometry']['size_y'] = str(size_values[1] * 2.0)
-                collider_data['geometry']['size_z'] = str(size_values[2] * 2.0)
-                if self.verbose:
-                    print(f"{'  ' * level}      Box: x={size_values[0]*2}, y={size_values[1]*2}, z={size_values[2]*2}")
-
-        elif geom_type == 'sphere':
-            # MJCF: [radius] → Assembler: {radius}
-            if len(size_values) >= 1:
-                collider_data['geometry']['radius'] = str(size_values[0])
-                if self.verbose:
-                    print(f"{'  ' * level}      Sphere: radius={size_values[0]}")
-
-        elif geom_type == 'capsule':
-            # MJCF: [radius, half_length] → Assembler: {radius, length}
-            if len(size_values) >= 2:
-                collider_data['geometry']['radius'] = str(size_values[0])
-                collider_data['geometry']['length'] = str(size_values[1] * 2.0)
-                if self.verbose:
-                    print(f"{'  ' * level}      Capsule: radius={size_values[0]}, length={size_values[1]*2}")
-
-        if self.verbose:
-            print(f"{'  ' * level}      Position: {collider_data['position']}")
-            print(f"{'  ' * level}      Rotation: {collider_data['rotation']} (degrees)")
-
-        return collider_data

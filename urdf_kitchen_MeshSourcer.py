@@ -4,7 +4,7 @@ Description: A Python script for reconfiguring the center coordinates and axis d
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 11, 2026
+Update.     : Jan 18, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -280,7 +280,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.collider_type = "box"
         self.collider_params = {"box": [1.0, 1.0, 1.0], "sphere": [0.5], "cylinder": [0.5, 1.0], "capsule": [0.5, 1.0]}
         self.collider_position = [0.0, 0.0, 0.0]
-        self.collider_rotation = [0.0, 0.0, 0.0]
+        self.collider_rotation = [0.0, 0.0, 0.0]  # RPY in radians (internal)
         self.collider_rotation_quaternion = np.array([1.0, 0.0, 0.0, 0.0])
         self.collider_actor = None
         self.collider_surface_actor = None
@@ -826,6 +826,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
         """Apply VTK cleaning filters to polydata"""
         import vtk
 
+        if polydata is None:
+            return polydata
+
+        original_poly_count = polydata.GetNumberOfPolys()
+
         # Step 1: Clean polydata - remove duplicate points and degenerate cells
         clean_filter = vtk.vtkCleanPolyData()
         clean_filter.SetInputData(polydata)
@@ -834,9 +839,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
         clean_filter.SetAbsoluteTolerance(1e-6)
         clean_filter.Update()
 
-        # Step 2: Compute and fix normals
+        # Step 2: Ensure triangles to keep OBJ writer stable (especially for DAE -> OBJ)
+        triangle_filter = vtk.vtkTriangleFilter()
+        triangle_filter.SetInputConnection(clean_filter.GetOutputPort())
+        triangle_filter.Update()
+
+        # Step 3: Compute and fix normals
         normals_filter = vtk.vtkPolyDataNormals()
-        normals_filter.SetInputConnection(clean_filter.GetOutputPort())
+        normals_filter.SetInputConnection(triangle_filter.GetOutputPort())
         normals_filter.ComputePointNormalsOn()
         normals_filter.ComputeCellNormalsOn()
         normals_filter.ConsistencyOn()  # Make normals consistent
@@ -844,7 +854,137 @@ class MainWindow(VTKViewerBase, QMainWindow):
         normals_filter.SplittingOff()  # Don't split vertices (smooth shading)
         normals_filter.Update()
 
-        return normals_filter.GetOutput()
+        # Step 4: Re-triangulate after normals to ensure OBJ writer compatibility
+        post_triangle_filter = vtk.vtkTriangleFilter()
+        post_triangle_filter.SetInputConnection(normals_filter.GetOutputPort())
+        post_triangle_filter.Update()
+
+        cleaned = post_triangle_filter.GetOutput()
+        # Safety: if cleaning dropped all polys, fall back to original
+        if original_poly_count > 0 and cleaned.GetNumberOfPolys() == 0:
+            print("Warning: CleanMesh removed all polygons; using original mesh data.")
+            return polydata
+
+        return cleaned
+
+    def clean_polydata_conservative(self, polydata):
+        """Apply conservative VTK cleaning for OBJ files (preserves normals and vertices)"""
+        import vtk
+
+        if polydata is None:
+            return polydata
+
+        original_poly_count = polydata.GetNumberOfPolys()
+
+        # Step 1: Remove only degenerate cells (zero-area triangles)
+        # Use vtkCleanPolyData with PointMergingOff to preserve vertex structure
+        clean_filter = vtk.vtkCleanPolyData()
+        clean_filter.SetInputData(polydata)
+        clean_filter.PointMergingOff()  # Do NOT merge vertices - preserves OBJ vertex normals
+        clean_filter.ConvertLinesToPointsOff()
+        clean_filter.ConvertPolysToLinesOff()
+        clean_filter.ConvertStripsToPolysOff()
+        clean_filter.Update()
+
+        # Step 2: Ensure triangles for format compatibility
+        triangle_filter = vtk.vtkTriangleFilter()
+        triangle_filter.SetInputConnection(clean_filter.GetOutputPort())
+        triangle_filter.PassVertsOff()
+        triangle_filter.PassLinesOff()
+        triangle_filter.Update()
+
+        cleaned = triangle_filter.GetOutput()
+
+        # Safety check: if cleaning removed too many polygons, use original
+        if original_poly_count > 0:
+            new_poly_count = cleaned.GetNumberOfPolys()
+            # If more than 10% of faces were removed, something went wrong
+            if new_poly_count < original_poly_count * 0.9:
+                print(f"Warning: Conservative clean removed too many faces ({original_poly_count} -> {new_poly_count}), using original mesh.")
+                return polydata
+
+        return cleaned
+
+    def save_obj_with_trimesh(self, polydata, file_path):
+        """Save OBJ using trimesh (more robust for cleaned DAE meshes)."""
+        try:
+            import trimesh
+            import numpy as np
+            import vtk
+        except ImportError:
+            return False
+
+        if polydata is None:
+            return False
+
+        # Ensure triangles
+        tri_filter = vtk.vtkTriangleFilter()
+        tri_filter.SetInputData(polydata)
+        tri_filter.Update()
+        tri_poly = tri_filter.GetOutput()
+
+        num_points = tri_poly.GetNumberOfPoints()
+        num_cells = tri_poly.GetNumberOfCells()
+        if num_points == 0 or num_cells == 0:
+            return False
+
+        vertices = np.zeros((num_points, 3))
+        for i in range(num_points):
+            vertices[i] = tri_poly.GetPoint(i)
+
+        faces = []
+        for i in range(num_cells):
+            cell = tri_poly.GetCell(i)
+            if cell.GetNumberOfPoints() == 3:
+                faces.append([
+                    cell.GetPointId(0),
+                    cell.GetPointId(1),
+                    cell.GetPointId(2)
+                ])
+
+        if not faces:
+            return False
+
+        faces = np.array(faces, dtype=np.int64)
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+        mesh.export(file_path)
+        return True
+
+    def convert_dae_to_obj_with_trimesh_clean(self, dae_path, obj_path):
+        """Clean and convert DAE to OBJ using trimesh directly (avoid VTK cleanup issues)."""
+        try:
+            import trimesh
+        except ImportError:
+            return False
+
+        try:
+            mesh = trimesh.load(str(dae_path), force='mesh')
+            # Handle Scene fallback
+            if isinstance(mesh, trimesh.Scene):
+                if len(mesh.geometry) == 0:
+                    return False
+                mesh = trimesh.util.concatenate([g for g in mesh.geometry.values()])
+
+            if mesh is None:
+                return False
+
+            # Clean operations
+            mesh.remove_degenerate_faces()
+            mesh.remove_duplicate_faces()
+            mesh.remove_unreferenced_vertices()
+            try:
+                mesh.merge_vertices(epsilon=1e-6)
+            except Exception:
+                pass
+            try:
+                mesh.process(validate=True)
+            except Exception:
+                pass
+
+            mesh.export(str(obj_path))
+            return True
+        except Exception:
+            return False
 
     def batch_convert_meshes(self):
         """Batch convert mesh files from input format to output format"""
@@ -920,9 +1060,26 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 polydata, volume, color = load_mesh_to_polydata(str(input_file))
                 if polydata:
                     if clean_mesh_enabled:
-                        polydata = self.clean_polydata(polydata)
+                        # DAE -> OBJ with Clean Mesh: use trimesh direct path for stability
+                        if input_ext == ".dae" and output_ext == ".obj":
+                            if self.convert_dae_to_obj_with_trimesh_clean(input_file, output_file):
+                                action = "Cleaned"
+                                print(f"{action}: {input_file.name} → {output_file.name}")
+                                success_files.append(input_file.name)
+                                success_count += 1
+                                continue
+                        # Use conservative cleaning for OBJ input to preserve vertex normals
+                        if input_ext == ".obj":
+                            polydata = self.clean_polydata_conservative(polydata)
+                        else:
+                            polydata = self.clean_polydata(polydata)
 
-                    save_polydata_to_mesh(str(output_file), polydata, mesh_color=color)
+                    # For cleaned DAE -> OBJ, use trimesh export to avoid VTK OBJ writer issues
+                    saved = False
+                    if output_ext == ".obj" and clean_mesh_enabled:
+                        saved = self.save_obj_with_trimesh(polydata, str(output_file))
+                    if not saved:
+                        save_polydata_to_mesh(str(output_file), polydata, mesh_color=color)
 
                     action = "Cleaned" if (input_ext == output_ext and clean_mesh_enabled) else "Converted"
                     print(f"{action}: {input_file.name} → {output_file.name}")
@@ -1243,16 +1400,21 @@ class MainWindow(VTKViewerBase, QMainWindow):
     def on_collider_rotation_input_changed(self, index):
         """Handle collider rotation input change"""
         try:
-            value = float(self.collider_rotation_inputs[index].text())
-            self.collider_rotation[index] = value
-            # Format to 2 decimal places with rounding
-            self.collider_rotation_inputs[index].setText(f"{value:.2f}")
+            import math
+            value_deg = float(self.collider_rotation_inputs[index].text())
+            # Store internally in radians
+            self.collider_rotation[index] = math.radians(value_deg)
+            # Format to 2 decimal places (degrees for UI)
+            self.collider_rotation_inputs[index].setText(f"{value_deg:.2f}")
 
-            # Update quaternion from Euler angles
+            # Update quaternion from Euler angles (VTK expects degrees for euler_to_quaternion)
+            roll_deg = math.degrees(self.collider_rotation[0])
+            pitch_deg = math.degrees(self.collider_rotation[1])
+            yaw_deg = math.degrees(self.collider_rotation[2])
             self.collider_rotation_quaternion = euler_to_quaternion(
-                self.collider_rotation[0],
-                self.collider_rotation[1],
-                self.collider_rotation[2]
+                roll_deg,
+                pitch_deg,
+                yaw_deg
             )
 
             if self.collider_show:
@@ -1347,6 +1509,15 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.camera_controller.reset_camera(position=[10, 0, 0], view_up=[0, 0, 1])
         self.camera_rotation = [0, 0, 0]
         self.current_rotation = 0
+        # 回転アニメーションの状態をリセット
+        if hasattr(self, 'animation_timer') and self.animation_timer.isActive():
+            self.animation_timer.stop()
+        self.is_animating = False
+        if hasattr(self, 'animated_rotation') and self.animated_rotation:
+            self.animated_rotation.is_animating = False
+            self.animated_rotation.current_frame = 0
+            self.animated_rotation.target_angle = 0
+            self.animated_rotation.rotation_type = None
 
         if hasattr(self, 'axes_widget') and self.axes_widget is not None:
             self.renderer.RemoveViewProp(self.axes_widget.GetOrientationMarker())
@@ -1535,7 +1706,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             try:
                 self.show_stl(file_path)
-                # Camera is already fitted by show_stl(), no need to reset
+                # 読み込み直後はRと同じカメラ初期化を行う（WASDの90度回転を正確にするため）
+                self.reset_camera()
 
                 # Reset all Center Position points to origin
                 for i in range(self.num_points):
@@ -2062,7 +2234,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         # Reset position to origin
         self.collider_position = [0.0, 0.0, 0.0]
 
-        # Reset rotation to zero (identity quaternion)
+        # Reset rotation to zero (identity quaternion) - radians internal
         self.collider_rotation = [0.0, 0.0, 0.0]
         self.collider_rotation_quaternion = np.array([1.0, 0.0, 0.0, 0.0])
 
@@ -2074,7 +2246,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             "capsule": [0.5, 1.0]
         }
 
-        # Update UI with reset values
+        # Update UI with reset values (degrees for display)
         for i in range(3):
             self.collider_position_inputs[i].setText("0.0000")
             self.collider_rotation_inputs[i].setText("0.00")
@@ -2217,11 +2389,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
             position_elem.set("y", f"{round(self.collider_position[1], 4):.4f}")
             position_elem.set("z", f"{round(self.collider_position[2], 4):.4f}")
 
-            # Add rotation (2 decimal places)
+            # Add rotation (radians, 6 decimal places)
             rotation_elem = ET.SubElement(collider_elem, "rotation")
-            rotation_elem.set("roll", f"{round(self.collider_rotation[0], 2):.2f}")
-            rotation_elem.set("pitch", f"{round(self.collider_rotation[1], 2):.2f}")
-            rotation_elem.set("yaw", f"{round(self.collider_rotation[2], 2):.2f}")
+            rotation_elem.set("roll", f"{self.collider_rotation[0]:.6f}")
+            rotation_elem.set("pitch", f"{self.collider_rotation[1]:.6f}")
+            rotation_elem.set("yaw", f"{self.collider_rotation[2]:.6f}")
 
             # Pretty print XML
             xml_str = ET.tostring(root, encoding='unicode')
@@ -2305,34 +2477,34 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.collider_position_inputs[1].setText(f"{y:.4f}")
                 self.collider_position_inputs[2].setText(f"{z:.4f}")
 
-            # Get rotation
+            # Get rotation (radians in file)
             rotation_elem = collider_elem.find("rotation")
             if rotation_elem is not None:
-                roll = float(rotation_elem.get("roll", "0.0"))
-                pitch = float(rotation_elem.get("pitch", "0.0"))
-                yaw = float(rotation_elem.get("yaw", "0.0"))
-                self.collider_rotation = [roll, pitch, yaw]
-
-                # Update rotation input fields
-                self.collider_rotation_inputs[0].setText(f"{roll:.2f}")
-                self.collider_rotation_inputs[1].setText(f"{pitch:.2f}")
-                self.collider_rotation_inputs[2].setText(f"{yaw:.2f}")
-
-                # Convert RPY to quaternion for internal use
                 import math
-                r, p, y_val = math.radians(roll), math.radians(pitch), math.radians(yaw)
-                cy = math.cos(y_val * 0.5)
-                sy = math.sin(y_val * 0.5)
-                cp = math.cos(p * 0.5)
-                sp = math.sin(p * 0.5)
-                cr = math.cos(r * 0.5)
-                sr = math.sin(r * 0.5)
+                roll_rad = float(rotation_elem.get("roll", "0.0"))
+                pitch_rad = float(rotation_elem.get("pitch", "0.0"))
+                yaw_rad = float(rotation_elem.get("yaw", "0.0"))
+                # Backward compatibility: if values look like degrees, convert to radians
+                if any(abs(v) > 3.5 for v in [roll_rad, pitch_rad, yaw_rad]):
+                    roll_rad = math.radians(roll_rad)
+                    pitch_rad = math.radians(pitch_rad)
+                    yaw_rad = math.radians(yaw_rad)
+                self.collider_rotation = [roll_rad, pitch_rad, yaw_rad]
 
-                w = cr * cp * cy + sr * sp * sy
-                x_q = sr * cp * cy - cr * sp * sy
-                y_q = cr * sp * cy + sr * cp * sy
-                z_q = cr * cp * sy - sr * sp * cy
-                self.collider_rotation_quaternion = np.array([w, x_q, y_q, z_q])
+                # Update rotation input fields (degrees for UI)
+                roll_deg = math.degrees(roll_rad)
+                pitch_deg = math.degrees(pitch_rad)
+                yaw_deg = math.degrees(yaw_rad)
+                self.collider_rotation_inputs[0].setText(f"{roll_deg:.2f}")
+                self.collider_rotation_inputs[1].setText(f"{pitch_deg:.2f}")
+                self.collider_rotation_inputs[2].setText(f"{yaw_deg:.2f}")
+
+                # Convert RPY to quaternion for internal use (degrees for helper)
+                self.collider_rotation_quaternion = euler_to_quaternion(
+                    roll_deg,
+                    pitch_deg,
+                    yaw_deg
+                )
 
             # Update parameter input fields
             self.update_collider_param_inputs()
@@ -2343,7 +2515,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             print(f"Collider loaded from: {file_path}")
             print(f"  Type: {collider_type}")
             print(f"  Position: {self.collider_position}")
-            print(f"  Rotation: {self.collider_rotation}")
+            print(f"  Rotation (rad): {self.collider_rotation}")
 
         except Exception as e:
             print(f"Error loading collider: {e}")
@@ -2993,8 +3165,15 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             # Apply cleaning if checkbox is checked
             if self.reorient_clean_mesh_checkbox.isChecked():
-                output_polydata = self.clean_polydata(output_polydata)
-                print("Mesh cleaning applied (normals fixed, duplicates removed)")
+                # Use conservative cleaning for OBJ input to preserve vertex normals
+                import os
+                input_ext = os.path.splitext(self.current_stl_path)[1].lower() if self.current_stl_path else ""
+                if input_ext == ".obj":
+                    output_polydata = self.clean_polydata_conservative(output_polydata)
+                    print("Mesh cleaning applied (conservative mode for OBJ)")
+                else:
+                    output_polydata = self.clean_polydata(output_polydata)
+                    print("Mesh cleaning applied (normals fixed, duplicates removed)")
 
             # Use common utility function to save mesh
             save_polydata_to_mesh(file_path, output_polydata)
