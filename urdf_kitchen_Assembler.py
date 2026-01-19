@@ -4,7 +4,7 @@ Description: A Python script to assembling files configured with urdf_kitchen_Pa
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 18, 2026
+Update.     : Jan 19, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -1987,17 +1987,24 @@ class InspectorWindow(QtWidgets.QWidget):
             print(f"Error updating coordinate: {str(e)}")
 
     def update_port_angle(self, port_index, angle_index, value):
-        """ポート角度の更新"""
+        """ポート角度の更新（UIは度、内部はラジアンで保存）"""
         try:
             if self.current_node and hasattr(self.current_node, 'points'):
                 if 0 <= port_index < len(self.current_node.points):
                     try:
-                        new_value = float(value)
+                        new_value_deg = float(value)
+                        # 度からラジアンに変換して保存
+                        new_value_rad = math.radians(new_value_deg)
                         # angleキーが存在しない場合は初期化
                         if 'angle' not in self.current_node.points[port_index]:
                             self.current_node.points[port_index]['angle'] = [0.0, 0.0, 0.0]
-                        self.current_node.points[port_index]['angle'][angle_index] = new_value
-                        print(f"Updated port {port_index+1} angle {angle_index} to {new_value}")
+                        self.current_node.points[port_index]['angle'][angle_index] = new_value_rad
+                        print(f"Updated port {port_index+1} angle {angle_index} to {new_value_deg} degrees ({new_value_rad} rad)")
+
+                        # NOTE: body_angleは同期しない
+                        # body_angleはMJCFのref属性（参照角度）専用
+                        # point['angle']はジョイント原点の回転（origin rpy）
+                        # これらは異なる意味を持つため、別々に管理する
 
                         # 3Dビューを更新（子ノードの回転を更新）
                         if self.stl_viewer:
@@ -2107,9 +2114,12 @@ class InspectorWindow(QtWidgets.QWidget):
 
             # 親ノードのangle値がある場合はそれを使用、なければnode.body_angleを使用
             if parent_angle is not None:
-                # 親ノードのangle値（ラジアン）をbody_angleに反映
-                node.body_angle = list(parent_angle)
-                # UIには度数法で表示
+                # NOTE: body_angleが既に設定済み（MJCFのref等）の場合は上書きしない
+                existing_body_angle = getattr(node, 'body_angle', [0.0, 0.0, 0.0])
+                if not any(a != 0.0 for a in existing_body_angle):
+                    # body_angleが未設定の場合のみ同期
+                    node.body_angle = list(parent_angle)
+                # UIには親ノードのangle値を度数法で表示
                 self.angle_x_input.setText(str(round(math.degrees(parent_angle[0]), 2)))
                 self.angle_y_input.setText(str(round(math.degrees(parent_angle[1]), 2)))
                 self.angle_z_input.setText(str(round(math.degrees(parent_angle[2]), 2)))
@@ -3343,16 +3353,18 @@ class InspectorWindow(QtWidgets.QWidget):
         # ノードの各ポートに対してウィジェットを作成
         if hasattr(node, 'points'):
             for i, point in enumerate(node.points):
-                # point_angleを取得（デフォルトは[0.0, 0.0, 0.0]）
-                angle = point.get('angle', [0.0, 0.0, 0.0])
+                # point_angleを取得（内部はラジアン、UIには度で表示）
+                angle_rad = point.get('angle', [0.0, 0.0, 0.0])
+                # ラジアンから度に変換してUIに渡す
+                angle_deg = [math.degrees(a) for a in angle_rad]
                 port_widget, _, _ = self.create_port_widget(
                     i + 1,
                     point['xyz'][0],
                     point['xyz'][1],
                     point['xyz'][2],
-                    angle[0],
-                    angle[1],
-                    angle[2]
+                    angle_deg[0],
+                    angle_deg[1],
+                    angle_deg[2]
                 )
                 self.ports_layout.addWidget(port_widget)
                 self.port_widgets.append(port_widget)
@@ -12972,8 +12984,10 @@ class CustomNodeGraph(NodeGraph):
                                     port_idx = int(parts[1]) - 1
                                     if port_idx < len(parent_node.points):
                                         origin_xyz = parent_node.points[port_idx]['xyz']
-                                        # origin_rpyを取得（radianで保存されているのでそのまま使用）
-                                        origin_rpy = parent_node.points[port_idx].get('rpy', [0.0, 0.0, 0.0])
+                                        # Use angle if available (UI-edited value), otherwise fallback to rpy
+                                        # Both are stored in radians
+                                        origin_rpy = parent_node.points[port_idx].get('angle',
+                                                     parent_node.points[port_idx].get('rpy', [0.0, 0.0, 0.0]))
                         except Exception as e:
                             print(f"Warning: Error processing port {port.name()}: {str(e)}")
                         break
@@ -15657,10 +15671,11 @@ class CustomNodeGraph(NodeGraph):
         joint_axis = [1, 0, 0]
 
         # ジョイント位置とRPYを取得
+        # Use angle if available (UI-edited value), otherwise fallback to rpy
         if hasattr(parent_node, 'points') and port_index < len(parent_node.points):
             point_data = parent_node.points[port_index]
             joint_xyz = point_data.get('xyz', [0, 0, 0])
-            joint_rpy = point_data.get('rpy', [0, 0, 0])
+            joint_rpy = point_data.get('angle', point_data.get('rpy', [0, 0, 0]))
 
         # ジョイント軸を取得
         if hasattr(child_node, 'rotation_axis'):

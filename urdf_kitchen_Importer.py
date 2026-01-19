@@ -7,8 +7,8 @@ Description: URDF/MJCF Import functionality for URDF Kitchen.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Jan 18, 2026
-Version     : 0.2.0
+Update.     : Jan 19, 2026
+Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
 Copyright (c) 2024 Ninagawa123
@@ -2673,13 +2673,14 @@ class MJCFParser:
 
                 # Parse geom rotation (quat or euler)
                 # Note: geom quat/euler represents the rotation RELATIVE to the body frame
-                # If not specified, the geom inherits the body's orientation
+                # If not specified, the geom is aligned with the body frame (no additional rotation)
                 geom_quat_str = geom_elem.get('quat')
                 geom_euler_str = geom_elem.get('euler')
-                # Initialize with body's rotation (from xyaxes or euler)
-                # This ensures that geoms without explicit rotation inherit the body's orientation
-                geom_rpy = body_data.get('rpy', [0.0, 0.0, 0.0]).copy()
-                geom_quat = body_data.get('quat', [1.0, 0.0, 0.0, 0.0]).copy() if isinstance(body_data.get('quat'), list) else [1.0, 0.0, 0.0, 0.0]
+                # Initialize with identity (no rotation relative to body frame)
+                # The body's orientation is already handled in point['angle'] (origin_rpy)
+                # visual_origin should only contain the geom's LOCAL rotation within the body frame
+                geom_rpy = [0.0, 0.0, 0.0]
+                geom_quat = [1.0, 0.0, 0.0, 0.0]
 
                 if geom_quat_str:
                     geom_quat = [float(v) for v in geom_quat_str.split()]
@@ -2689,7 +2690,7 @@ class MJCFParser:
                     geom_rpy = self.conversion_utils.euler_to_rpy(euler_degrees, eulerseq)
                     # Convert RPY back to quat for storage
                     geom_quat = self.conversion_utils.rpy_to_quat(geom_rpy)
-                # If geom has no quat/euler, it inherits the body's orientation
+                # If geom has no quat/euler, geom_rpy remains [0,0,0] (aligned with body frame)
 
                 # Parse geom mesh scale
                 geom_meshscale = [1.0, 1.0, 1.0]
@@ -2988,6 +2989,13 @@ class MJCFParser:
                         # if self.verbose:
                         #     print(f"{'  ' * level}    Warning: parse_primitive_geom returned None for {geom_type}")
                         pass
+
+        # Check for freejoint element (MJCF's 6-DOF free joint)
+        freejoint_elem = body_elem.find('freejoint')
+        if freejoint_elem is not None:
+            body_data['has_freejoint'] = True
+            if self.verbose:
+                print(f"{'  ' * level}  Body '{body_name}' has freejoint (6-DOF floating base)")
 
         # Parse joints in this body (before appending to bodies_data)
         # This ensures rotation_axis is set before body_data is added to the list
@@ -4698,13 +4706,13 @@ def import_urdf(graph):
 
                 # 親ノードのpointsにジョイントのorigin情報を設定
                 if port_index < len(parent_node.points):
+                    origin_rpy = joint_data['origin_rpy']
                     parent_node.points[port_index]['xyz'] = joint_data['origin_xyz']
-                    parent_node.points[port_index]['rpy'] = joint_data['origin_rpy']  # RPY情報を追加
+                    parent_node.points[port_index]['rpy'] = [0.0, 0.0, 0.0]  # Keep rpy as zero (3D view uses angle)
                     parent_node.points[port_index]['name'] = joint_data['name']
                     parent_node.points[port_index]['type'] = joint_data['type']
-                    # angle値を初期化（子ノードのbody_angleと同期させるため）
-                    if 'angle' not in parent_node.points[port_index]:
-                        parent_node.points[port_index]['angle'] = [0.0, 0.0, 0.0]
+                    # Set angle for 3D view display and UI editing (radians)
+                    parent_node.points[port_index]['angle'] = list(origin_rpy)
 
                 # 子ノードにジョイント情報を設定
                 # 回転軸の設定
@@ -4827,11 +4835,9 @@ def import_urdf(graph):
                         output_port.connect_to(input_port)
                         print(f"  ✓ Successfully connected {parent_link}.{output_port_name} to {child_link}.{input_port_name}")
                         
-                        # 子ノードのbody_angleを親ノードのpoints[port_index]['angle']と同期
-                        if port_index < len(parent_node.points):
-                            parent_angle = parent_node.points[port_index].get('angle', [0.0, 0.0, 0.0])
-                            child_node.body_angle = list(parent_angle)
-                            print(f"  ✓ Synchronized child_node.body_angle with parent angle: {parent_angle}")
+                        # NOTE: body_angleは同期しない（MJCFのref専用）
+                        # point['angle']（origin_rpy）とbody_angle（ref）は別々の回転として3Dビューで適用される
+                        # 同期すると二重回転が発生する
                     else:
                         if not output_port:
                             print(f"  ✗ ERROR: Output port '{output_port_name}' not found on {parent_link}")
@@ -5013,12 +5019,13 @@ def import_urdf(graph):
                     })
 
                 # 親ノードのpointsに閉リンクジョイントのorigin情報を設定
+                origin_rpy = joint_data.get('origin_rpy', [0.0, 0.0, 0.0])
                 parent_node.points[parent_port_index]['xyz'] = joint_data.get('origin_xyz', [0.0, 0.0, 0.0])
-                parent_node.points[parent_port_index]['rpy'] = joint_data.get('origin_rpy', [0.0, 0.0, 0.0])
+                parent_node.points[parent_port_index]['rpy'] = [0.0, 0.0, 0.0]  # Keep rpy as zero (3D view uses angle)
                 parent_node.points[parent_port_index]['name'] = joint_name
                 parent_node.points[parent_port_index]['type'] = joint_data.get('original_type', 'ball')
-                # angle値を初期化（既に存在する場合も上書き）
-                parent_node.points[parent_port_index]['angle'] = [0.0, 0.0, 0.0]
+                # Set angle for 3D view display and UI editing (radians)
+                parent_node.points[parent_port_index]['angle'] = list(origin_rpy)
 
                 # 親リンクのポート名を取得
                 is_base_link_node = parent_node.__class__.__name__ == 'BaseLinkNode'
@@ -5411,6 +5418,101 @@ def import_mjcf(graph):
                 )
                 nodes['base_link'] = base_node
 
+            # MJCF用のbase_link_subノードを作成（URDFと同様の中間ノード）
+            base_link_sub_node = None
+            try:
+                base_link_sub_node = graph.get_node_by_name('base_link_sub')
+            except Exception:
+                base_link_sub_node = None
+            if not base_link_sub_node:
+                base_link_sub_node = graph.create_node(
+                    'insilico.nodes.FooNode',
+                    name='base_link_sub',
+                    pos=QtCore.QPointF(200, 50)
+                )
+                # base_link_subは固定ノード
+                base_link_sub_node.rotation_axis = 3
+                base_link_sub_node.body_angle = [0.0, 0.0, 0.0]
+            nodes['base_link_sub'] = base_link_sub_node
+
+            # base_link -> base_link_sub を固定で接続
+            try:
+                base_output_port = base_node.output_ports()[0]
+                base_link_sub_input_port = base_link_sub_node.input_ports()[0]
+                base_output_port.connect_to(base_link_sub_input_port)
+                print("    ✓ Connected base_link -> base_link_sub")
+            except Exception:
+                pass
+
+            # MJCFのルートbody（freejoint）をbase_link_subに吸収
+            base_link_sub_additional_visuals = []
+            mjcf_root_body_name = None
+            root_bodies = [b for b in bodies_data_list if not b.get('parent')]
+            print(f"\n[DEBUG] Searching for freejoint root body")
+            print(f"[DEBUG] Found {len(root_bodies)} root bodies (no parent): {[b.get('name') for b in root_bodies]}")
+            for root_body in root_bodies:
+                if root_body.get('has_freejoint'):
+                    mjcf_root_body_name = root_body.get('name')
+                    print(f"[DEBUG] Found freejoint root: {mjcf_root_body_name}")
+                    break
+            if mjcf_root_body_name and mjcf_root_body_name != 'base_link':
+                root_body_data = bodies_data.get(mjcf_root_body_name)
+                if root_body_data:
+                    print(f"\n  Using root body '{mjcf_root_body_name}' as base_link_sub (freejoint)")
+                    # Count children of root body BEFORE absorption
+                    root_children = [b for b in bodies_data_list if b.get('parent') == mjcf_root_body_name]
+                    print(f"  [DEBUG] Root body '{mjcf_root_body_name}' has {len(root_children)} direct children: {[b.get('name') for b in root_children]}")
+                    # base bodyのz座標を保存（MJCF/URDFエクスポート時に使用）
+                    if 'pos' in root_body_data and len(root_body_data['pos']) >= 3:
+                        graph.base_link_height = root_body_data['pos'][2]
+                        print(f"    ✓ Saved base_link_height: {graph.base_link_height} (from MJCF root body pos)")
+                    # base_link_subにパラメータを設定
+                    base_link_sub_node.mass_value = root_body_data['mass']
+                    base_link_sub_node.inertia = root_body_data['inertia']
+                    base_link_sub_node.inertial_origin = root_body_data['inertial_origin']
+                    base_link_sub_node.node_color = root_body_data['color']
+                    base_link_sub_node.stl_file = root_body_data.get('stl_file')
+                    base_link_sub_node.mesh_scale = root_body_data.get('mesh_scale', [1.0, 1.0, 1.0])
+                    base_link_sub_node.visual_origin = root_body_data.get('visual_origin', {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]})
+                    if root_body_data.get('collision_mesh'):
+                        base_link_sub_node.collider_mesh = root_body_data['collision_mesh']
+                        if root_body_data.get('collider_enabled'):
+                            base_link_sub_node.collider_type = root_body_data.get('collider_type', 'mesh')
+                            base_link_sub_node.collider_enabled = True
+                    if root_body_data.get('collider_data'):
+                        base_link_sub_node.collider_data = root_body_data['collider_data']
+                        base_link_sub_node.collider_type = 'primitive'
+                        base_link_sub_node.collider_enabled = True
+                    # 追加visual
+                    base_link_sub_additional_visuals = root_body_data.get('visuals', [])[1:]
+
+                    # root bodyを削除（子をbase_link_subへ付け替え）
+                    bodies_data.pop(mjcf_root_body_name, None)
+                    bodies_data_list = [b for b in bodies_data_list if b.get('name') != mjcf_root_body_name]
+                    updated_children_count = 0
+                    for body_data in bodies_data_list:
+                        if body_data.get('parent') == mjcf_root_body_name:
+                            body_data['parent'] = 'base_link_sub'
+                            updated_children_count += 1
+                            print(f"    ✓ Updated body '{body_data.get('name')}' parent: {mjcf_root_body_name} -> base_link_sub")
+                    print(f"  [DEBUG] Updated {updated_children_count} children to point to base_link_sub")
+                    
+                    # jointの親参照を更新、rootボディへのジョイントは削除
+                    new_joints = []
+                    updated_joints_count = 0
+                    for joint_data in joints_data:
+                        if joint_data.get('child') == mjcf_root_body_name:
+                            print(f"    ✓ Skipping joint to root body: {joint_data.get('name')}")
+                            continue
+                        if joint_data.get('parent') == mjcf_root_body_name:
+                            joint_data['parent'] = 'base_link_sub'
+                            updated_joints_count += 1
+                            print(f"    ✓ Updated joint '{joint_data.get('name')}' parent: {mjcf_root_body_name} -> base_link_sub")
+                        new_joints.append(joint_data)
+                    joints_data = new_joints
+                    print(f"  [DEBUG] Updated {updated_joints_count} joints to point to base_link_sub")
+                    print(f"  [DEBUG] After absorption: bodies_data has {len(bodies_data)} bodies, bodies_data_list has {len(bodies_data_list)} bodies")
+
             # MJCFのbase_linkデータがある場合、base_link_mjcfノードを作成
             base_link_mjcf_node = None
             base_link_mjcf_additional_visuals = []
@@ -5497,11 +5599,14 @@ def import_mjcf(graph):
                     base_link_mjcf_node.collider_enabled = True
                     print(f"    ✓ Assigned primitive collider to base_link_mjcf: {base_data['collider_data']['type']}")
 
-                # base_linkからbase_link_mjcfへ接続
-                base_output_port = base_node.output_ports()[0]
-                base_link_mjcf_input_port = base_link_mjcf_node.input_ports()[0]
-                base_output_port.connect_to(base_link_mjcf_input_port)
-                print(f"    ✓ Connected base_link -> base_link_mjcf")
+                # base_link_subからbase_link_mjcfへ接続
+                try:
+                    base_link_sub_output_port = base_link_sub_node.output_ports()[0]
+                    base_link_mjcf_input_port = base_link_mjcf_node.input_ports()[0]
+                    base_link_sub_output_port.connect_to(base_link_mjcf_input_port)
+                    print("    ✓ Connected base_link_sub -> base_link_mjcf")
+                except Exception:
+                    pass
 
                 # base_link_mjcfの追加visual情報を保存（後で処理するため）
                 base_link_mjcf_additional_visuals = base_data.get('visuals', [])[1:]  # 2つ目以降のvisual
@@ -5514,11 +5619,25 @@ def import_mjcf(graph):
                     if joint_data['parent'] == 'base_link':
                         joint_data['parent'] = 'base_link_mjcf'
                         print(f"    ✓ Updated joint '{joint_data['name']}' parent: base_link -> base_link_mjcf")
+                # bodies_data_listの親参照も更新（接続順の安定化）
+                for body_data in bodies_data_list:
+                    if body_data.get('parent') == 'base_link':
+                        body_data['parent'] = 'base_link_mjcf'
             else:
                 # base bodyがない場合、デフォルトの高さを設定
                 if not hasattr(graph, 'base_link_height'):
                     graph.base_link_height = 0.5
                     print(f"  ✓ Using default base_link_height: {graph.base_link_height} (no base body in MJCF)")
+
+            # base_link_mjcfがない場合、base_link_subに親参照を寄せる
+            if base_link_mjcf_node is None:
+                for joint_data in joints_data:
+                    if joint_data['parent'] == 'base_link':
+                        joint_data['parent'] = 'base_link_sub'
+                        print(f"    ✓ Updated joint '{joint_data['name']}' parent: base_link -> base_link_sub")
+                for body_data in bodies_data_list:
+                    if body_data.get('parent') == 'base_link':
+                        body_data['parent'] = 'base_link_sub'
 
             # 各ボディの子ジョイント数をカウント
             body_child_counts = {}
@@ -5528,11 +5647,36 @@ def import_mjcf(graph):
             # base_link_mjcfが作成されている場合は追加
             if base_link_mjcf_node is not None:
                 body_child_counts['base_link_mjcf'] = 0
+            # base_link_subは常にカウント対象
+            body_child_counts['base_link_sub'] = 0
 
             for joint_data in joints_data:
                 parent = joint_data['parent']
                 if parent in body_child_counts:
                     body_child_counts[parent] += 1
+
+            # 親→子の順序マップ（XML順に基づく）
+            child_order_by_parent = {}
+            default_root_parent = 'base_link_sub' if base_link_sub_node is not None else 'base_link'
+            print(f"\n[DEBUG] Creating child_order_by_parent map")
+            print(f"[DEBUG] default_root_parent: {default_root_parent}")
+            print(f"[DEBUG] bodies_data_list length: {len(bodies_data_list)}")
+            print(f"[DEBUG] bodies_data keys: {list(bodies_data.keys())}")
+            for body_data in bodies_data_list:
+                child_name = body_data.get('name')
+                if not child_name or child_name not in bodies_data:
+                    print(f"[DEBUG] Skipping body: child_name={child_name}, in_bodies_data={child_name in bodies_data if child_name else False}")
+                    continue
+                parent_name = body_data.get('parent') or default_root_parent
+                print(f"[DEBUG] Processing body: {child_name}, parent: {parent_name}")
+                if parent_name not in child_order_by_parent:
+                    child_order_by_parent[parent_name] = []
+                if child_name not in child_order_by_parent[parent_name]:
+                    child_order_by_parent[parent_name].append(child_name)
+            
+            print(f"\n[DEBUG] child_order_by_parent created:")
+            for parent, children in child_order_by_parent.items():
+                print(f"  {parent}: {children}")
 
             # base_link_mjcfに子ジョイント数に応じた出力ポートを追加
             if base_link_mjcf_node is not None:
@@ -5609,8 +5753,8 @@ def import_mjcf(graph):
                             'name': f'visual_{visual_idx}_attachment',
                             'type': 'fixed',
                             'xyz': visual_data['pos'],  # geomのローカル位置
-                            'rpy': visual_rpy,  # geomのローカル姿勢（RPYに変換済み）
-                            'angle': [0.0, 0.0, 0.0]  # angle値を初期化
+                            'rpy': [0.0, 0.0, 0.0],  # Keep rpy as zero (3D view uses angle)
+                            'angle': list(visual_rpy)  # Set angle for 3D view display (radians)
                         }
                         print(f"      Visual pos: {visual_data['pos']}, quat: {visual_data['quat']} -> rpy: {visual_rpy}")
 
@@ -5632,6 +5776,93 @@ def import_mjcf(graph):
                             print(f"      ✓ Connected")
                         else:
                             print(f"      ✗ Output port not found: {output_port_name} (have {len(output_ports)} ports)")
+
+            # base_link_subに必要な出力ポートを追加（子ボディ + 追加visual用）
+            base_link_sub_child_count = body_child_counts.get('base_link_sub', 0)
+            print(f"\n[DEBUG] base_link_sub port configuration:")
+            print(f"  Child count from body_child_counts: {base_link_sub_child_count}")
+            print(f"  base_link_sub needs {base_link_sub_child_count} output ports for child bodies")
+            
+            # 現在の出力ポート数を取得
+            current_base_link_sub_ports = len(base_link_sub_node.output_ports())
+            print(f"  Current output ports: {current_base_link_sub_ports}")
+            needed_ports_for_children = base_link_sub_child_count - current_base_link_sub_ports
+            print(f"  Needed ports: {needed_ports_for_children}")
+            if needed_ports_for_children > 0:
+                for _ in range(needed_ports_for_children):
+                    base_link_sub_node._add_output()
+                print(f"  ✓ Added {needed_ports_for_children} output port(s) to base_link_sub for children")
+            print(f"  Total output ports after addition: {len(base_link_sub_node.output_ports())}")
+
+            # base_link_subの追加visual処理（freejointルートを吸収した場合）
+            if base_link_sub_additional_visuals:
+                child_count = body_child_counts.get('base_link_sub', 0)
+                print(f"  base_link_sub has {len(base_link_sub_additional_visuals)} additional visual(s)")
+                for _ in range(len(base_link_sub_additional_visuals)):
+                    base_link_sub_node._add_output()
+
+                if hasattr(base_link_sub_node, 'pos') and callable(base_link_sub_node.pos):
+                    mjcf_pos = base_link_sub_node.pos()
+                    if hasattr(mjcf_pos, 'x') and callable(mjcf_pos.x):
+                        base_mjcf_pos_x = mjcf_pos.x()
+                        base_mjcf_pos_y = mjcf_pos.y()
+                    elif isinstance(mjcf_pos, (list, tuple)) and len(mjcf_pos) >= 2:
+                        base_mjcf_pos_x = mjcf_pos[0]
+                        base_mjcf_pos_y = mjcf_pos[1]
+                    else:
+                        base_mjcf_pos_x = 200
+                        base_mjcf_pos_y = 50
+                else:
+                    base_mjcf_pos_x = 200
+                    base_mjcf_pos_y = 50
+
+                for visual_idx, visual_data in enumerate(base_link_sub_additional_visuals, start=1):
+                    visual_node_name = f"base_link_sub_visual_{visual_idx}"
+                    visual_pos_x = base_mjcf_pos_x + 50 + visual_idx * 30
+                    visual_pos_y = base_mjcf_pos_y + 100
+
+                    visual_node = graph.create_node(
+                        'insilico.nodes.FooNode',
+                        name=visual_node_name,
+                        pos=QtCore.QPointF(visual_pos_x, visual_pos_y)
+                    )
+                    nodes[visual_node_name] = visual_node
+                    visual_node.stl_file = visual_data['mesh']
+                    visual_node.node_color = visual_data['color']
+                    visual_node.mass_value = 0.0
+
+                    visual_rpy = ConversionUtils.quat_to_rpy(visual_data['quat'])
+                    if not hasattr(base_link_sub_node, 'points'):
+                        base_link_sub_node.points = []
+
+                    point_index = child_count + visual_idx - 1
+                    while len(base_link_sub_node.points) <= point_index:
+                        base_link_sub_node.points.append({
+                            'name': f'point_{len(base_link_sub_node.points)}',
+                            'type': 'fixed',
+                            'xyz': [0.0, 0.0, 0.0],
+                            'rpy': [0.0, 0.0, 0.0]
+                        })
+
+                    base_link_sub_node.points[point_index] = {
+                        'name': f'visual_{visual_idx}_attachment',
+                        'type': 'fixed',
+                        'xyz': visual_data['pos'],
+                        'rpy': [0.0, 0.0, 0.0],  # Keep rpy as zero (3D view uses angle)
+                        'angle': list(visual_rpy)  # Set angle for 3D view display (radians)
+                    }
+
+                    output_port_index = child_count + visual_idx - 1
+                    output_port_name = f'out_{output_port_index + 1}'
+                    input_port_name = 'in'
+                    output_ports = base_link_sub_node.output_ports()
+                    if output_port_index < len(output_ports):
+                        output_port = output_ports[output_port_index]
+                        input_port = visual_node.input_ports()[0]
+                        output_port.connect_to(input_port)
+                        print(f"      ✓ Connected base_link_sub -> {visual_node_name}")
+                    else:
+                        print(f"      ✗ Output port not found on base_link_sub: {output_port_name} (have {len(output_ports)} ports)")
 
             # 他のボディのノードを作成
             grid_spacing = 200
@@ -5658,6 +5889,11 @@ def import_mjcf(graph):
             for body_name, body_data in bodies_data.items():
                 # base_linkはスキップ（既に処理済み）
                 if body_name == 'base_link':
+                    continue
+                
+                # freejoint rootbodyはbase_link_subに吸収されたのでスキップ
+                if mjcf_root_body_name and body_name == mjcf_root_body_name:
+                    print(f"  ℹ Skipping node creation for '{body_name}' (freejoint root, absorbed into base_link_sub)")
                     continue
 
                 # グリッドレイアウトで位置を計算
@@ -5861,8 +6097,8 @@ def import_mjcf(graph):
                             'name': f'visual_{visual_idx}_attachment',
                             'type': 'fixed',
                             'xyz': visual_data['pos'],  # geomのローカル位置
-                            'rpy': visual_rpy,  # geomのローカル姿勢（RPYに変換済み）
-                            'angle': [0.0, 0.0, 0.0]  # angle値を初期化
+                            'rpy': [0.0, 0.0, 0.0],  # Keep rpy as zero (3D view uses angle)
+                            'angle': list(visual_rpy)  # Set angle for 3D view display (radians)
                         }
                         print(f"      Visual pos: {visual_data['pos']}, quat: {visual_data['quat']} -> rpy: {visual_rpy}")
 
@@ -5895,24 +6131,62 @@ def import_mjcf(graph):
 
                 node_count += 1
 
+            # 子ボディ数に合わせて出力ポートを追加（MJCF用）
+            # NOTE: ベースボディ（例: "base"）が複数の脚を持つ場合、
+            # 出力ポートが不足すると脚が接続されない
+            for body_name, child_count in body_child_counts.items():
+                if body_name not in nodes:
+                    continue
+                node = nodes[body_name]
+                try:
+                    current_output_count = len(node.output_ports())
+                except Exception:
+                    current_output_count = 0
+                needed_ports = child_count - current_output_count
+                if needed_ports > 0 and hasattr(node, '_add_output'):
+                    for _ in range(needed_ports):
+                        node._add_output()
+                    print(f"  ✓ Added {needed_ports} output port(s) to '{body_name}' (children: {child_count})")
+
             # ジョイント情報を反映して接続
             parent_port_indices = {}
+            connected_pairs = set()
+
+            print(f"\n[DEBUG] Starting joint connections")
+            print(f"[DEBUG] Total joints to process: {len(joints_data)}")
+            print(f"[DEBUG] Available nodes: {list(nodes.keys())}")
 
             for joint_data in joints_data:
                 parent_name = joint_data['parent']
                 child_name = joint_data['child']
 
+                print(f"\n[DEBUG] Processing joint: {joint_data.get('name')}")
+                print(f"  parent: {parent_name}, child: {child_name}")
+
                 if parent_name not in nodes or child_name not in nodes:
+                    print(f"  [DEBUG] Skipping: parent_in_nodes={parent_name in nodes}, child_in_nodes={child_name in nodes}")
                     continue
 
                 parent_node = nodes[parent_name]
                 child_node = nodes[child_name]
 
+                # 既に同じ親子が接続されている場合はスキップ（多自由度ジョイント対策）
+                pair_key = (parent_name, child_name)
+                if pair_key in connected_pairs:
+                    print(f"  ℹ Skip duplicate joint connection: {parent_name} -> {child_name}")
+                    continue
+
                 # 親ノードの現在のポートインデックスを取得
-                if parent_name not in parent_port_indices:
-                    parent_port_indices[parent_name] = 0
-                port_index = parent_port_indices[parent_name]
-                parent_port_indices[parent_name] += 1
+                port_index = None
+                if parent_name in child_order_by_parent and child_name in child_order_by_parent[parent_name]:
+                    port_index = child_order_by_parent[parent_name].index(child_name)
+                    print(f"  [DEBUG] port_index from child_order_by_parent: {port_index}")
+                if port_index is None:
+                    if parent_name not in parent_port_indices:
+                        parent_port_indices[parent_name] = 0
+                    port_index = parent_port_indices[parent_name]
+                    parent_port_indices[parent_name] += 1
+                    print(f"  [DEBUG] port_index from parent_port_indices: {port_index}")
 
                 # ポイント情報を親ノードに追加
                 if not hasattr(parent_node, 'points'):
@@ -5929,12 +6203,14 @@ def import_mjcf(graph):
                 # ジョイントタイプを文字列に変換
                 joint_type_str = joint_data['type']
 
+                # Set angle for 3D view and UI display, keep rpy as zero to avoid double rotation
+                # angle is used for 3D view display and URDF/MJCF export
                 parent_node.points[port_index] = {
                     'name': joint_data['name'],
                     'type': joint_type_str,
                     'xyz': joint_data['origin_xyz'],
-                    'rpy': joint_data['origin_rpy'],
-                    'angle': [0.0, 0.0, 0.0]  # angle値を初期化（子ノードのbody_angleと同期させるため）
+                    'rpy': [0.0, 0.0, 0.0],  # Keep rpy as zero (3D view uses angle)
+                    'angle': list(joint_data['origin_rpy'])  # Set angle for 3D view display (radians)
                 }
 
                 # 子ノードにジョイント情報を設定
@@ -6029,6 +6305,17 @@ def import_mjcf(graph):
 
                 # ポートを接続
                 is_base_link = parent_node.__class__.__name__ == 'BaseLinkNode'
+                # 親ノードの出力ポート数が足りない場合は追加（MJCF用の保険）
+                if hasattr(parent_node, '_add_output'):
+                    try:
+                        current_output_count = len(parent_node.output_ports())
+                    except Exception:
+                        current_output_count = 0
+                    needed_ports = (port_index + 1) - current_output_count
+                    if needed_ports > 0:
+                        for _ in range(needed_ports):
+                            parent_node._add_output()
+                        print(f"  ✓ Added {needed_ports} output port(s) to '{parent_name}' before connect (port_index={port_index})")
                 if is_base_link:
                     output_port_name = 'out' if port_index == 0 else f'out_{port_index + 1}'
                 else:
@@ -6045,13 +6332,12 @@ def import_mjcf(graph):
 
                     if output_port and input_port:
                         output_port.connect_to(input_port)
+                        connected_pairs.add(pair_key)
                         print(f"  ✓ Connected")
                         
-                        # 子ノードのbody_angleを親ノードのpoints[port_index]['angle']と同期
-                        if port_index < len(parent_node.points):
-                            parent_angle = parent_node.points[port_index].get('angle', [0.0, 0.0, 0.0])
-                            child_node.body_angle = list(parent_angle)
-                            print(f"  ✓ Synchronized child_node.body_angle with parent angle: {parent_angle}")
+                        # NOTE: body_angleは同期しない（MJCFのref専用）
+                        # point['angle']（origin_rpy）とbody_angle（ref）は別々の回転として3Dビューで適用される
+                        # 同期すると二重回転が発生する
                     else:
                         print(f"  ✗ Port not found")
                 except Exception as e:
@@ -6074,8 +6360,8 @@ def import_mjcf(graph):
                 # INが接続されていないノードを探す
                 unconnected_nodes = []
                 for body_name, node in nodes.items():
-                    # base_linkとbase_link_mjcfは除外
-                    if body_name == 'base_link' or body_name == 'base_link_mjcf':
+                    # base_link系は除外
+                    if body_name in ['base_link', 'base_link_mjcf', 'base_link_sub']:
                         continue
                     
                     # 入力ポートが接続されているかチェック
@@ -6099,7 +6385,7 @@ def import_mjcf(graph):
                 else:
                     print("  No unconnected nodes found")
 
-            # base候補ノードが見つかった場合、base_linkまたはbase_link_mjcfに接続
+            # base候補ノードが見つかった場合、base_link_subを優先して接続
             if base_candidate_node and base_candidate_name:
                 # 既に接続されている場合はスキップ
                 input_ports = base_candidate_node.input_ports()
@@ -6111,45 +6397,27 @@ def import_mjcf(graph):
                 
                 if not is_already_connected:
                     try:
-                        # base_link_mjcfが存在する場合は、base_link_mjcfに接続
-                        # そうでない場合は、base_linkに接続
-                        if base_link_mjcf_node is not None:
-                            # base_link_mjcfの出力ポートを取得（最初の空いているポートを使用）
-                            base_link_mjcf_output_ports = base_link_mjcf_node.output_ports()
+                        target_parent_node = base_link_sub_node or base_link_mjcf_node or base_node
+                        if target_parent_node is None:
+                            print("  ✗ No parent node available for base connection")
+                        else:
                             # 接続されていない出力ポートを探す
+                            output_ports = target_parent_node.output_ports()
                             available_output_port = None
-                            for output_port in base_link_mjcf_output_ports:
+                            for output_port in output_ports:
                                 if not output_port.connected_ports():
                                     available_output_port = output_port
                                     break
-                            
+                            if available_output_port is None and hasattr(target_parent_node, '_add_output'):
+                                target_parent_node._add_output()
+                                available_output_port = target_parent_node.output_ports()[-1]
+                                print(f"  ✓ Added output port to {target_parent_node.name()} for base connection")
                             if available_output_port:
-                                # base候補ノードの入力ポートを取得
                                 base_candidate_input_port = base_candidate_node.input_ports()[0]
-                                
-                                # 接続
                                 available_output_port.connect_to(base_candidate_input_port)
-                                print(f"  ✓ Connected base_link_mjcf -> {base_candidate_name}")
+                                print(f"  ✓ Connected {target_parent_node.name()} -> {base_candidate_name}")
                             else:
-                                # 出力ポートが全て使用されている場合は、新しい出力ポートを追加
-                                base_link_mjcf_node._add_output()
-                                new_output_port = base_link_mjcf_node.output_ports()[-1]
-                                base_candidate_input_port = base_candidate_node.input_ports()[0]
-                                new_output_port.connect_to(base_candidate_input_port)
-                                print(f"  ✓ Added output port to base_link_mjcf and connected -> {base_candidate_name}")
-                        else:
-                            # base_linkの出力ポートを取得
-                            base_output_port = base_node.output_ports()[0]
-                            # base候補ノードの入力ポートを取得
-                            base_candidate_input_port = base_candidate_node.input_ports()[0]
-                            
-                            # base_linkの出力ポートが既に接続されているかチェック
-                            if base_output_port.connected_ports():
-                                print(f"  Warning: base_link output port is already connected, skipping connection to {base_candidate_name}")
-                            else:
-                                # 接続
-                                base_output_port.connect_to(base_candidate_input_port)
-                                print(f"  ✓ Connected base_link -> {base_candidate_name}")
+                                print(f"  ✗ No available output port on {target_parent_node.name()}")
                     except Exception as e:
                         print(f"  ✗ Error connecting to {base_candidate_name}: {str(e)}")
                         traceback.print_exc()
@@ -6263,12 +6531,13 @@ def import_mjcf(graph):
                                         })
                                     
                                     # ジョイント情報を設定
+                                    origin_rpy = joint_data_for_node['origin_rpy']
                                     parent_node.points[port_index] = {
                                         'name': joint_data_for_node['name'],
                                         'type': joint_data_for_node['type'],
                                         'xyz': joint_data_for_node['origin_xyz'],
-                                        'rpy': joint_data_for_node['origin_rpy'],
-                                        'angle': [0.0, 0.0, 0.0]
+                                        'rpy': [0.0, 0.0, 0.0],  # Keep rpy as zero (3D view uses angle)
+                                        'angle': list(origin_rpy)  # Set angle for 3D view display (radians)
                                     }
                                     
                                     # 子ノードにジョイント情報を設定
@@ -6421,11 +6690,12 @@ def import_mjcf(graph):
                         })
                     
                     # 親ノードのpointsに閉リンクジョイントのorigin情報を設定
+                    origin_rpy = joint_data.get('origin_rpy', [0.0, 0.0, 0.0])
                     parent_node.points[parent_port_index]['xyz'] = joint_data.get('origin_xyz', [0.0, 0.0, 0.0])
-                    parent_node.points[parent_port_index]['rpy'] = joint_data.get('origin_rpy', [0.0, 0.0, 0.0])
+                    parent_node.points[parent_port_index]['rpy'] = [0.0, 0.0, 0.0]  # Keep rpy as zero (3D view uses angle)
                     parent_node.points[parent_port_index]['name'] = joint_name
                     parent_node.points[parent_port_index]['type'] = joint_data.get('original_type', 'ball')
-                    parent_node.points[parent_port_index]['angle'] = [0.0, 0.0, 0.0]
+                    parent_node.points[parent_port_index]['angle'] = list(origin_rpy)  # Set angle for 3D view (radians)
                     
                     # 親リンクのポート名を取得
                     is_base_link_node = parent_node.__class__.__name__ == 'BaseLinkNode'
@@ -6718,6 +6988,8 @@ class ImporterWindow(QtWidgets.QWidget):
             result = import_urdf(self.graph)
             if result:
                 print("URDF/SDF import completed successfully")
+                # Close window after successful import
+                QtCore.QTimer.singleShot(0, self.close)
         except Exception as e:
             print(f"Error during URDF/SDF import: {str(e)}")
             traceback.print_exc()
@@ -6728,12 +7000,18 @@ class ImporterWindow(QtWidgets.QWidget):
             result = import_mjcf(self.graph)
             if result:
                 print("MJCF import completed successfully")
+                # Close window after successful import
+                QtCore.QTimer.singleShot(0, self.close)
         except Exception as e:
             print(f"Error during MJCF import: {str(e)}")
             traceback.print_exc()
 
     def keyPressEvent(self, event):
         """Handle key press events"""
+        # Close window with standard close shortcut (Cmd+W / Ctrl+W)
+        if event.matches(QtGui.QKeySequence.Close):
+            self.close()
+            return
         # Close window with Escape key
         if event.key() == QtCore.Qt.Key_Escape:
             self.close()
