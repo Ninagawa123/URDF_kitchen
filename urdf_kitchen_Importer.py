@@ -7,8 +7,8 @@ Description: URDF/MJCF Import functionality for URDF Kitchen.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Jan 19, 2026
-Version     : 0.1.0
+Update.     : Jan 18, 2026
+Version     : 0.2.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
 Copyright (c) 2024 Ninagawa123
@@ -2081,6 +2081,7 @@ class MJCFParser:
 
         # Parse default classes
         default_classes = self._parse_defaults(root)
+        self.default_classes = default_classes  # Store as instance variable for _parse_assets
 
         # Parse asset meshes
         if working_dir is None:
@@ -2243,15 +2244,35 @@ class MJCFParser:
                 if fromto_str:
                     geom_defaults['fromto'] = fromto_str
                 
+                # Parse mesh attribute (for visual geoms)
+                mesh_str = geom_elem.get('mesh')
+                if mesh_str:
+                    geom_defaults['mesh'] = mesh_str
+                
                 # Store geom defaults
                 if geom_defaults:
                     class_defaults['geom'] = geom_defaults
 
-            # Save class if it has a name
-            if class_name:
-                default_classes[class_name] = class_defaults
+            # Get mesh defaults
+            mesh_elem = default_elem.find('mesh')
+            if mesh_elem is not None:
+                scale_str = mesh_elem.get('scale')
+                if scale_str:
+                    scale_values = [float(v) for v in scale_str.split()]
+                    if len(scale_values) == 3:
+                        class_defaults['mesh_scale'] = scale_values
+                    elif len(scale_values) == 1:
+                        class_defaults['mesh_scale'] = [scale_values[0]] * 3
+                    # if self.verbose:
+                    #     print(f"  Default class '{class_name}' mesh scale: {class_defaults['mesh_scale']}")
+
+            # Save class (use None for global default if no class name)
+            # グローバルdefault（class名なし）もNoneキーで保存
+            key = class_name if class_name else None
+            if class_defaults:  # Only save if there are actual defaults
+                default_classes[key] = class_defaults
                 # if self.verbose:
-                #     print(f"Default class '{class_name}': {class_defaults}")
+                #     print(f"Default class '{key}': {class_defaults}")
 
             # Parse child default classes recursively (pass ancestor classes)
             for child_default in default_elem.findall('default'):
@@ -2427,7 +2448,24 @@ class MJCFParser:
                     print(f"Mesh name derived from file: {mesh_name}")
 
             # Parse mesh scale attribute
+            # First, check if mesh has a class attribute and inherit scale from default
             mesh_scale = [1.0, 1.0, 1.0]
+            mesh_class = mesh_elem.get('class')
+            
+            # Inherit from class-specific default
+            if mesh_class and mesh_class in self.default_classes:
+                if 'mesh_scale' in self.default_classes[mesh_class]:
+                    mesh_scale = self.default_classes[mesh_class]['mesh_scale'][:]
+                    if self.verbose:
+                        print(f"  Mesh '{mesh_name}' inherited scale from class '{mesh_class}': {mesh_scale}")
+            # Inherit from global default (None key) if no class specified
+            elif not mesh_class and None in self.default_classes:
+                if 'mesh_scale' in self.default_classes[None]:
+                    mesh_scale = self.default_classes[None]['mesh_scale'][:]
+                    if self.verbose:
+                        print(f"  Mesh '{mesh_name}' inherited scale from global default: {mesh_scale}")
+            
+            # Direct scale attribute overrides class default
             scale_str = mesh_elem.get('scale')
             if scale_str:
                 scale_values = [float(v) for v in scale_str.split()]
@@ -2647,6 +2685,25 @@ class MJCFParser:
             geom_group = geom_elem.get('group', '')
             contype = geom_elem.get('contype')
             conaffinity = geom_elem.get('conaffinity')
+            
+            # Inherit mesh from class default if not specified directly
+            if not mesh_name:
+                # Try class-specific default first
+                if geom_class and geom_class in default_classes:
+                    if 'geom' in default_classes[geom_class]:
+                        geom_defaults = default_classes[geom_class]['geom']
+                        if 'mesh' in geom_defaults:
+                            mesh_name = geom_defaults['mesh']
+                            if self.verbose:
+                                print(f"{'  ' * level}    Geom[{idx}] inherits mesh '{mesh_name}' from class '{geom_class}'")
+                # Try global default if no class or class didn't have mesh
+                if not mesh_name and None in default_classes:
+                    if 'geom' in default_classes[None]:
+                        geom_defaults = default_classes[None]['geom']
+                        if 'mesh' in geom_defaults:
+                            mesh_name = geom_defaults['mesh']
+                            if self.verbose:
+                                print(f"{'  ' * level}    Geom[{idx}] inherits mesh '{mesh_name}' from global default")
 
             # Check if collision geom (class="collision", "collision-left", "collision-right", etc.)
             is_collision_geom = (geom_class.startswith('collision') or 
@@ -2673,15 +2730,46 @@ class MJCFParser:
 
                 # Parse geom rotation (quat or euler)
                 # Note: geom quat/euler represents the rotation RELATIVE to the body frame
-                # If not specified, the geom is aligned with the body frame (no additional rotation)
-                geom_quat_str = geom_elem.get('quat')
-                geom_euler_str = geom_elem.get('euler')
-                # Initialize with identity (no rotation relative to body frame)
-                # The body's orientation is already handled in point['angle'] (origin_rpy)
-                # visual_origin should only contain the geom's LOCAL rotation within the body frame
+                # Parse geom orientation (quat or euler)
+                # First, try to inherit from class default
                 geom_rpy = [0.0, 0.0, 0.0]
                 geom_quat = [1.0, 0.0, 0.0, 0.0]
-
+                
+                # Inherit orientation from class-specific default first
+                if geom_class and geom_class in default_classes:
+                    if 'geom' in default_classes[geom_class]:
+                        geom_defaults = default_classes[geom_class]['geom']
+                        # Inherit quat from class default
+                        if 'quat' in geom_defaults:
+                            quat_values = [float(v) for v in geom_defaults['quat'].split()]
+                            if len(quat_values) == 4:
+                                geom_quat = quat_values
+                                geom_rpy = self.conversion_utils.quat_to_rpy(geom_quat)
+                        # Inherit euler from class default (quat takes precedence)
+                        elif 'euler' in geom_defaults:
+                            euler_values = [float(v) for v in geom_defaults['euler'].split()]
+                            geom_rpy = self.conversion_utils.euler_to_rpy(euler_values, eulerseq)
+                            geom_quat = self.conversion_utils.rpy_to_quat(geom_rpy)
+                # Inherit from global default if no class or class didn't have orientation
+                elif None in default_classes:
+                    if 'geom' in default_classes[None]:
+                        geom_defaults = default_classes[None]['geom']
+                        # Inherit quat from global default
+                        if 'quat' in geom_defaults:
+                            quat_values = [float(v) for v in geom_defaults['quat'].split()]
+                            if len(quat_values) == 4:
+                                geom_quat = quat_values
+                                geom_rpy = self.conversion_utils.quat_to_rpy(geom_quat)
+                        # Inherit euler from global default (quat takes precedence)
+                        elif 'euler' in geom_defaults:
+                            euler_values = [float(v) for v in geom_defaults['euler'].split()]
+                            geom_rpy = self.conversion_utils.euler_to_rpy(euler_values, eulerseq)
+                            geom_quat = self.conversion_utils.rpy_to_quat(geom_rpy)
+                
+                # Direct attributes override class defaults
+                geom_quat_str = geom_elem.get('quat')
+                geom_euler_str = geom_elem.get('euler')
+                
                 if geom_quat_str:
                     geom_quat = [float(v) for v in geom_quat_str.split()]
                     geom_rpy = self.conversion_utils.quat_to_rpy(geom_quat)
@@ -2729,7 +2817,8 @@ class MJCFParser:
                         'mesh': mesh_path,
                         'pos': geom_pos,
                         'quat': geom_quat,
-                        'color': geom_color
+                        'color': geom_color,
+                        'scale': combined_scale  # ← mesh scale を追加！
                     }
                     body_data['visuals'].append(visual_data)
 
@@ -5729,8 +5818,12 @@ def import_mjcf(graph):
                         visual_node.stl_file = visual_data['mesh']
                         visual_node.node_color = visual_data['color']
                         visual_node.mass_value = 0.0  # ビジュアルのみなので質量0
+                        visual_node.mesh_scale = visual_data.get('scale', [1.0, 1.0, 1.0])  # ← mesh scale を設定！
 
-                        print(f"      ✓ Created visual node '{visual_node_name}' with mesh: {os.path.basename(visual_data['mesh'])}")
+                        if mjcf_parser.verbose:
+                            print(f"      ✓ Created visual node '{visual_node_name}' with mesh: {os.path.basename(visual_data['mesh'])} (scale: {visual_node.mesh_scale})")
+                        else:
+                            print(f"      ✓ Created visual node '{visual_node_name}' with mesh: {os.path.basename(visual_data['mesh'])}")
 
                         # visualのクォータニオンをRPYに変換
                         visual_rpy = ConversionUtils.quat_to_rpy(visual_data['quat'])
@@ -5830,6 +5923,7 @@ def import_mjcf(graph):
                     visual_node.stl_file = visual_data['mesh']
                     visual_node.node_color = visual_data['color']
                     visual_node.mass_value = 0.0
+                    visual_node.mesh_scale = visual_data.get('scale', [1.0, 1.0, 1.0])  # ← mesh scale を設定！
 
                     visual_rpy = ConversionUtils.quat_to_rpy(visual_data['quat'])
                     if not hasattr(base_link_sub_node, 'points'):
@@ -5865,6 +5959,12 @@ def import_mjcf(graph):
                         print(f"      ✗ Output port not found on base_link_sub: {output_port_name} (have {len(output_ports)} ports)")
 
             # 他のボディのノードを作成
+            if mjcf_parser.verbose:
+                print(f"\n=== Creating Body Nodes ===")
+                print(f"bodies_data contains {len(bodies_data)} bodies:")
+                for body_name in bodies_data.keys():
+                    print(f"  - {body_name}")
+            
             grid_spacing = 200
             # base_linkノードの位置を基準に子ノードを配置
             if hasattr(base_node, 'pos') and callable(base_node.pos):
@@ -5885,8 +5985,13 @@ def import_mjcf(graph):
             current_y = base_y
             nodes_per_row = 4
             node_count = 0
-
+            
+            if mjcf_parser.verbose:
+                print(f"\nStarting body node creation loop...")
+            
             for body_name, body_data in bodies_data.items():
+                if mjcf_parser.verbose:
+                    print(f"[LOOP] Processing body: {body_name}")
                 # base_linkはスキップ（既に処理済み）
                 if body_name == 'base_link':
                     continue
@@ -5944,6 +6049,8 @@ def import_mjcf(graph):
 
                 # メッシュのスケール情報を設定
                 node.mesh_scale = body_data.get('mesh_scale', [1.0, 1.0, 1.0])
+                if mjcf_parser.verbose:
+                    print(f"  ✓ Set mesh_scale for node '{body_name}': {node.mesh_scale}")
                 # Visual origin情報を設定
                 node.visual_origin = body_data.get('visual_origin', {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]})
 
@@ -6074,6 +6181,7 @@ def import_mjcf(graph):
                         visual_node.stl_file = visual_data['mesh']
                         visual_node.node_color = visual_data['color']
                         visual_node.mass_value = 0.0  # ビジュアルのみなので質量0
+                        visual_node.mesh_scale = visual_data.get('scale', [1.0, 1.0, 1.0])  # ← mesh scale を設定！
 
                         # visualのクォータニオンをRPYに変換
                         visual_rpy = ConversionUtils.quat_to_rpy(visual_data['quat'])

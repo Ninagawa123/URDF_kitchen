@@ -2101,15 +2101,21 @@ class InspectorWindow(QtWidgets.QWidget):
                         parent_node = connected_ports[0].node()
                         parent_port_name = connected_ports[0].name()
 
-                        # 親のポートインデックスを取得
-                        parent_output_ports = list(parent_node.output_ports())
-                        for port_idx, port in enumerate(parent_output_ports):
-                            if port.name() == parent_port_name:
-                                # 親ノードのpointsからangleを取得
-                                if hasattr(parent_node, 'points') and port_idx < len(parent_node.points):
-                                    point_data = parent_node.points[port_idx]
-                                    parent_angle = point_data.get('angle', [0.0, 0.0, 0.0])
-                                break
+                        # ポート名からポイントインデックスを計算（out_1 -> 0, out_2 -> 1, etc.）
+                        point_index = 0  # デフォルト
+                        if parent_port_name.startswith('out_'):
+                            try:
+                                port_num = int(parent_port_name.split('_')[1])
+                                point_index = port_num - 1
+                            except (ValueError, IndexError):
+                                pass
+                        elif parent_port_name == 'out':
+                            point_index = 0
+
+                        # 親ノードのpointsからangleを取得
+                        if hasattr(parent_node, 'points') and point_index < len(parent_node.points):
+                            point_data = parent_node.points[point_index]
+                            parent_angle = point_data.get('angle', [0.0, 0.0, 0.0])
                         break
 
             # 親ノードのangle値がある場合はそれを使用、なければnode.body_angleを使用
@@ -3592,17 +3598,23 @@ class InspectorWindow(QtWidgets.QWidget):
                         parent_node = connected_ports[0].node()
                         parent_port_name = connected_ports[0].name()
 
-                        # 親のポートインデックスを取得
-                        parent_output_ports = list(parent_node.output_ports())
-                        for port_idx, port in enumerate(parent_output_ports):
-                            if port.name() == parent_port_name:
-                                # 親ノードのpointsのangle値を更新（ラジアンで保存）
-                                if hasattr(parent_node, 'points') and port_idx < len(parent_node.points):
-                                    if 'angle' not in parent_node.points[port_idx]:
-                                        parent_node.points[port_idx]['angle'] = [0.0, 0.0, 0.0]
-                                    parent_node.points[port_idx]['angle'] = [math.radians(angle_x_deg), math.radians(angle_y_deg), math.radians(angle_z_deg)]
-                                    print(f"Updated parent node {parent_node.name()} port {port_idx+1} angle to [{angle_x_deg}, {angle_y_deg}, {angle_z_deg}] degrees")
-                                break
+                        # ポート名からポイントインデックスを計算（out_1 -> 0, out_2 -> 1, etc.）
+                        point_index = 0  # デフォルト
+                        if parent_port_name.startswith('out_'):
+                            try:
+                                port_num = int(parent_port_name.split('_')[1])
+                                point_index = port_num - 1
+                            except (ValueError, IndexError):
+                                pass
+                        elif parent_port_name == 'out':
+                            point_index = 0
+
+                        # 親ノードのpointsのangle値を更新（ラジアンで保存）
+                        if hasattr(parent_node, 'points') and point_index < len(parent_node.points):
+                            if 'angle' not in parent_node.points[point_index]:
+                                parent_node.points[point_index]['angle'] = [0.0, 0.0, 0.0]
+                            parent_node.points[point_index]['angle'] = [math.radians(angle_x_deg), math.radians(angle_y_deg), math.radians(angle_z_deg)]
+                            print(f"Updated parent node {parent_node.name()} port {point_index+1} angle to [{angle_x_deg}, {angle_y_deg}, {angle_z_deg}] degrees")
                         break
 
             # 3Dビューの更新をトリガー
@@ -5299,13 +5311,23 @@ class STLViewerWidget(QtWidgets.QWidget):
                     parent_node = connected_ports[0].node()
                     parent_port_name = connected_ports[0].name()
 
-                    # 親のポートインデックスを取得
+                    # 親のポートインデックスを取得（ポート名からインデックスを計算）
                     parent_output_ports = list(parent_node.output_ports())
                     for port_idx, port in enumerate(parent_output_ports):
                         if port.name() == parent_port_name:
+                            # ポート名からポイントインデックスを計算（out_1 -> 0, out_2 -> 1, etc.）
+                            point_index = port_idx  # デフォルト
+                            if parent_port_name.startswith('out_'):
+                                try:
+                                    port_num = int(parent_port_name.split('_')[1])
+                                    point_index = port_num - 1
+                                except (ValueError, IndexError):
+                                    pass
+                            elif parent_port_name == 'out':
+                                point_index = 0
                             # 親ノードのpointsからXYZ、RPY、point_angleを取得
-                            if hasattr(parent_node, 'points') and port_idx < len(parent_node.points):
-                                point_data = parent_node.points[port_idx]
+                            if hasattr(parent_node, 'points') and point_index < len(parent_node.points):
+                                point_data = parent_node.points[point_index]
                                 joint_origin_xyz = point_data.get('xyz', [0, 0, 0])
                                 joint_origin_rpy = point_data.get('rpy', [0, 0, 0])
                                 parent_point_angle = point_data.get('angle', [0.0, 0.0, 0.0])
@@ -5573,21 +5595,28 @@ class STLViewerWidget(QtWidgets.QWidget):
                             parent_node = connected_ports[0].node()
                             parent_port_name = connected_ports[0].name()
 
-                            # 親のポートインデックスを取得
-                            parent_output_ports = list(parent_node.output_ports())
-                            for port_idx, port in enumerate(parent_output_ports):
-                                if port.name() == parent_port_name:
-                                    # 親ノードのpointsからXYZ、RPY、point_angleを取得
-                                    if hasattr(parent_node, 'points') and port_idx < len(parent_node.points):
-                                        point_data = parent_node.points[port_idx]
-                                        joint_origin_xyz = point_data.get('xyz', [0, 0, 0])
-                                        joint_origin_rpy = point_data.get('rpy', [0, 0, 0])
-                                        parent_point_angle = point_data.get('angle', [0.0, 0.0, 0.0])
+                            # 親のポートインデックスを取得（ポート名からインデックスを計算）
+                            # ポート名からポイントインデックスを計算（out_1 -> 0, out_2 -> 1, etc.）
+                            point_index = 0  # デフォルト
+                            if parent_port_name.startswith('out_'):
+                                try:
+                                    port_num = int(parent_port_name.split('_')[1])
+                                    point_index = port_num - 1
+                                except (ValueError, IndexError):
+                                    pass
+                            elif parent_port_name == 'out':
+                                point_index = 0
 
-                                    # 親の変換を取得
-                                    if parent_node in self.transforms:
-                                        parent_transform = self.transforms[parent_node]
-                                    break
+                            # 親ノードのpointsからXYZ、RPY、point_angleを取得
+                            if hasattr(parent_node, 'points') and point_index < len(parent_node.points):
+                                point_data = parent_node.points[point_index]
+                                joint_origin_xyz = point_data.get('xyz', [0, 0, 0])
+                                joint_origin_rpy = point_data.get('rpy', [0, 0, 0])
+                                parent_point_angle = point_data.get('angle', [0.0, 0.0, 0.0])
+
+                            # 親の変換を取得
+                            if parent_node in self.transforms:
+                                parent_transform = self.transforms[parent_node]
                             break
 
                 # 親の変換を適用
@@ -5661,13 +5690,25 @@ class STLViewerWidget(QtWidgets.QWidget):
                 if child_node not in self.stl_actors or child_node not in self.transforms:
                     continue
 
+                # ポート名からポイントインデックスを計算（out_1 -> 0, out_2 -> 1, etc.）
+                port_name = output_port.name() if hasattr(output_port, 'name') else ''
+                point_index = port_idx  # デフォルト
+                if port_name.startswith('out_'):
+                    try:
+                        port_num = int(port_name.split('_')[1])
+                        point_index = port_num - 1
+                    except (ValueError, IndexError):
+                        pass
+                elif port_name == 'out':
+                    point_index = 0
+
                 # 子ノードのジョイント情報とpoint_angleを取得
                 child_xyz = [0, 0, 0]
                 child_rpy = [0, 0, 0]
                 parent_point_angle = [0.0, 0.0, 0.0]
 
-                if hasattr(parent_node, 'points') and port_idx < len(parent_node.points):
-                    point_data = parent_node.points[port_idx]
+                if hasattr(parent_node, 'points') and point_index < len(parent_node.points):
+                    point_data = parent_node.points[point_index]
                     child_xyz = point_data.get('xyz', [0, 0, 0])
                     child_rpy = point_data.get('rpy', [0, 0, 0])
                     parent_point_angle = point_data.get('angle', [0.0, 0.0, 0.0])
@@ -6858,18 +6899,19 @@ class STLViewerWidget(QtWidgets.QWidget):
                     # vtkTransformを使って回転と平行移動を作成
                     visual_transform = vtk.vtkTransform()
 
-                    # まずRPY回転を適用（ロール、ピッチ、ヨーの順）
-                    # URDFのRPY: Roll(X), Pitch(Y), Yaw(Z)の順で適用
+                    # まず平行移動を適用
+                    visual_transform.Translate(xyz[0], xyz[1], xyz[2])
+
+                    # 次にRPY回転を適用（Yaw, Pitch, Roll の逆順）
+                    # URDFのRPY: 固定軸回転 R = Rz(yaw) * Ry(pitch) * Rx(roll)
+                    # VTKはPostMultiplyなので、最終的な変換 M = T * Rz * Ry * Rx を得るために逆順で書く
                     # VTKの回転は度単位、URDFはラジアン単位なので変換が必要
-                    if rpy[0] != 0.0:  # Roll (X軸周り)
-                        visual_transform.RotateX(math.degrees(rpy[0]))
+                    if rpy[2] != 0.0:  # Yaw (Z軸周り) - 最後に適用される
+                        visual_transform.RotateZ(math.degrees(rpy[2]))
                     if rpy[1] != 0.0:  # Pitch (Y軸周り)
                         visual_transform.RotateY(math.degrees(rpy[1]))
-                    if rpy[2] != 0.0:  # Yaw (Z軸周り)
-                        visual_transform.RotateZ(math.degrees(rpy[2]))
-
-                    # 次に平行移動を適用
-                    visual_transform.Translate(xyz[0], xyz[1], xyz[2])
+                    if rpy[0] != 0.0:  # Roll (X軸周り) - 最初に適用される
+                        visual_transform.RotateX(math.degrees(rpy[0]))
 
                     # vtkTransformPolyDataFilterでポリデータに変換を適用
                     visual_transform_filter = vtk.vtkTransformPolyDataFilter()
@@ -11781,14 +11823,39 @@ class CustomNodeGraph(NodeGraph):
                 print(f"Applied hide_mesh: {node.name()} - mesh hidden in 3D view")
 
         try:
+            # デバッグ: ノードのポートとポイント情報を出力
+            if node.name() == 'base_link_sub':
+                print(f"\n*** DEBUG base_link_sub ***")
+                print(f"  Output ports: {[p.name() for p in node.output_ports()]}")
+                print(f"  Points count: {len(node.points) if hasattr(node, 'points') else 0}")
+                if hasattr(node, 'points'):
+                    for i, pt in enumerate(node.points):
+                        print(f"  points[{i}]: name={pt.get('name')}, xyz={pt.get('xyz')}")
+                print(f"*** END DEBUG ***\n")
+
             # 出力ポートを処理
             for port_idx, output_port in enumerate(node.output_ports()):
                 for connected_port in output_port.connected_ports():
                     child_node = connected_port.node()
 
                     # ポイントデータの確認
-                    if hasattr(node, 'points') and port_idx < len(node.points):
-                        point_data = node.points[port_idx]
+                    # ポート名からインデックスを計算（out_1 -> 0, out_2 -> 1, etc.）
+                    port_name = output_port.name() if hasattr(output_port, 'name') else 'unknown'
+                    point_index = port_idx  # デフォルトはenumインデックス
+                    if port_name.startswith('out_'):
+                        try:
+                            port_num = int(port_name.split('_')[1])
+                            point_index = port_num - 1  # out_1 -> 0, out_2 -> 1, etc.
+                        except (ValueError, IndexError):
+                            pass
+                    elif port_name == 'out':
+                        point_index = 0  # BaseLinkNodeの'out'は0
+
+                    print(f"\n=== Processing connection: {node.name()}[{port_name}] (enum_idx={port_idx}, point_index={point_index}) -> {child_node.name()} ===")
+                    print(f"  has_points: {hasattr(node, 'points')}, points_count: {len(node.points) if hasattr(node, 'points') else 0}")
+                    if hasattr(node, 'points') and point_index < len(node.points):
+                        point_data = node.points[point_index]
+                        print(f"  point_data: {point_data}")
                         point_xyz = point_data.get('xyz', [0, 0, 0])
                         point_rpy = point_data.get('rpy', [0, 0, 0])
                         point_angle = point_data.get('angle', [0.0, 0.0, 0.0])  # radians
@@ -11835,19 +11902,20 @@ class CustomNodeGraph(NodeGraph):
                             joint_transform.RotateX(roll_deg)
                             print(f"  Applied RPY rotation: Roll={roll_deg}, Pitch={pitch_deg}, Yaw={yaw_deg} degrees")
 
+                        # 3. point_angle を joint_transform に追加（親のローカル座標系での body orientation）
+                        # MJCF の場合、point_angle には body の quat から計算された orientation が入ってる
+                        if point_angle and any(a != 0.0 for a in point_angle):
+                            point_angle_deg = [math.degrees(a) for a in point_angle]
+                            joint_transform.RotateZ(point_angle_deg[2])  # Z軸回転
+                            joint_transform.RotateY(point_angle_deg[1])  # Y軸回転
+                            joint_transform.RotateX(point_angle_deg[0])  # X軸回転
+                            print(f"  Applied point_angle to joint_transform: X={point_angle_deg[0]}, Y={point_angle_deg[1]}, Z={point_angle_deg[2]} degrees")
+
                         # 親の変換とジョイント変換を合成
                         child_transform = vtk.vtkTransform()
                         if parent_transform is not None:
                             child_transform.Concatenate(parent_transform)
                         child_transform.Concatenate(joint_transform)
-
-                        # 親のpoint_angleを適用（radianからdegreeに変換してVTKへ渡す、Z-Y-X順）
-                        if point_angle and any(a != 0.0 for a in point_angle):
-                            point_angle_deg = [math.degrees(a) for a in point_angle]
-                            child_transform.RotateZ(point_angle_deg[2])  # Z軸回転
-                            child_transform.RotateY(point_angle_deg[1])  # Y軸回転
-                            child_transform.RotateX(point_angle_deg[0])  # X軸回転
-                            print(f"Applied point_angle: X={point_angle_deg[0]}, Y={point_angle_deg[1]}, Z={point_angle_deg[2]} degrees")
 
                         # 子ノードのbody_angleを取得して累積（radianからdegreeに変換してVTKへ渡す）
                         child_body_angle = getattr(child_node, 'body_angle', [0.0, 0.0, 0.0])
@@ -11871,8 +11939,11 @@ class CustomNodeGraph(NodeGraph):
                         
                         # 再度確認して変換を適用
                         if child_node in self.stl_viewer.stl_actors and child_node in self.stl_viewer.transforms:
-                            self.stl_viewer.transforms[child_node].DeepCopy(child_transform)
-                            self.stl_viewer.stl_actors[child_node].SetUserTransform(self.stl_viewer.transforms[child_node])
+                            # 新しいトランスフォームを作成してコピー（DeepCopyの代わりに新規作成）
+                            new_transform = vtk.vtkTransform()
+                            new_transform.DeepCopy(child_transform)
+                            self.stl_viewer.transforms[child_node] = new_transform
+                            self.stl_viewer.stl_actors[child_node].SetUserTransform(new_transform)
                             print(f"  ✓ Applied transform to 3D actor for {child_node.name()}")
                             # コライダーアクターのtransformも更新
                             self.stl_viewer.update_collider_transform(child_node)
@@ -11881,9 +11952,10 @@ class CustomNodeGraph(NodeGraph):
                             if hasattr(child_node, 'stl_file') and child_node.stl_file:
                                 print(f"  ✗ WARNING: Cannot apply transform to {child_node.name()} even after loading")
                             # BaseLinkNodeやメッシュを持たないノードは変換のみ保存
-                            if child_node not in self.stl_viewer.transforms:
-                                self.stl_viewer.transforms[child_node] = vtk.vtkTransform()
-                            self.stl_viewer.transforms[child_node].DeepCopy(child_transform)
+                            # 新しいトランスフォームを作成してコピー
+                            new_transform = vtk.vtkTransform()
+                            new_transform.DeepCopy(child_transform)
+                            self.stl_viewer.transforms[child_node] = new_transform
 
                         # Hide Meshがオンの場合は3Dビューで非表示にする
                         if hasattr(child_node, 'hide_mesh') and child_node.hide_mesh:
@@ -11909,7 +11981,7 @@ class CustomNodeGraph(NodeGraph):
                         # 再帰的に子ノードを処理（累積変換を渡す）
                         self._recalculate_node_positions(child_node, new_position, visited, child_transform, total_nodes, processed_count)
                     else:
-                        print(f"Warning: No point data found for port {port_idx} in node {node.name()}")
+                        print(f"Warning: No point data found for port {port_name} (point_index={point_index}) in node {node.name()}")
 
         except Exception as e:
             print(f"Error processing node {node.name()}: {str(e)}")
@@ -14933,32 +15005,41 @@ class CustomNodeGraph(NodeGraph):
         # ビジュアルgeom（group="1"でビジュアル用メッシュ）
         file.write(f'{indent_str}  <!-- ビジュアル（表示用） -->\n')
 
-        # Euler属性を取得（visual_origin RPYから変換）
-        euler_attr = ""
+        # visual_origin の pos と quat 属性を取得
+        pos_attr = ""
+        quat_attr = ""
         if hasattr(node, 'visual_origin') and node.visual_origin:
+            xyz = node.visual_origin.get('xyz', [0.0, 0.0, 0.0])
             rpy = node.visual_origin.get('rpy', [0.0, 0.0, 0.0])
-            # RPY（ラジアン）がゼロでない場合、Euler角（度数法）に変換
+            
+            print(f"[MJCF_EXPORT_DEBUG] Node '{node.name()}' visual_origin:")
+            print(f"  xyz: {xyz}")
+            print(f"  rpy (rad): {rpy}")
+            
+            # XYZ（位置）がゼロでない場合、pos属性を追加
+            if xyz != [0.0, 0.0, 0.0]:
+                pos_attr = f' pos="{xyz[0]} {xyz[1]} {xyz[2]}"'
+                print(f"  → pos_attr SET: {pos_attr}")
+            else:
+                print(f"  → pos_attr SKIPPED (xyz is zero)")
+            
+            # RPY（編集された値）をquatに変換して出力
             if rpy != [0.0, 0.0, 0.0]:
-                import math
-                # RPYをEuler角（度数法）に変換
-                # 注：MJCFのeulerはeulerseqに従った順序だが、ここでは単純にRPYを度数に変換
-                # eulerseq="zyx"の場合、euler="roll pitch yaw"の順序
-                eulerseq = getattr(self, 'mjcf_eulerseq', 'xyz')
-                # RPY -> Euler degrees (簡易変換、より正確にはeulerseqを考慮すべき)
-                euler_deg = [math.degrees(r) for r in rpy]
-                # eulerseqに応じて順序を調整
-                if eulerseq == 'zyx':
-                    # RPY [roll, pitch, yaw] -> ZYX euler [yaw, pitch, roll]の順
-                    euler_values = [euler_deg[2], euler_deg[1], euler_deg[0]]  # [yaw, pitch, roll]
-                elif eulerseq == 'xyz':
-                    euler_values = euler_deg  # [roll, pitch, yaw]
-                else:
-                    # その他のシーケンスは後で実装
-                    euler_values = euler_deg
+                # RPY → Quat 変換
+                from urdf_kitchen_utils import ConversionUtils
+                quat = ConversionUtils.rpy_to_quat(rpy)
+                
+                quat_attr = f' quat="{quat[0]} {quat[1]} {quat[2]} {quat[3]}"'
+                print(f"  → quat_attr SET (converted from rpy): {quat_attr}")
+                print(f"  [MJCF Export] Node '{node.name()}': visual_origin rpy={rpy} (rad) -> quat={quat}")
+            else:
+                print(f"  → rotation SKIPPED (identity rotation)")
+        else:
+            print(f"[MJCF_EXPORT_DEBUG] Node '{node.name()}' has NO visual_origin")
 
-                euler_attr = f' euler="{euler_values[0]} {euler_values[1]} {euler_values[2]}"'
-
-        file.write(f'{indent_str}  <geom class="visual" type="mesh" mesh="{mesh_name}"{euler_attr} rgba="{color_str}" group="1"/>\n')
+        geom_line = f'{indent_str}  <geom class="visual" type="mesh" mesh="{mesh_name}"{pos_attr}{quat_attr} rgba="{color_str}" group="1"/>\n'
+        print(f"  → Final geom line: {geom_line.strip()}")
+        file.write(geom_line)
         
         # Massless Decorationの場合はコライダーを出力しない（ビジュアルのみ）
         if hasattr(node, 'massless_decoration') and node.massless_decoration:
@@ -15051,25 +15132,18 @@ class CustomNodeGraph(NodeGraph):
             elif collider.get('type') == 'mesh':
                 # Mesh collider
                 collider_mesh = collider.get('mesh')
-                # メッシュコライダーにもビジュアルと同じeuler属性を適用（visual_originのRPYから生成）
+                # メッシュコライダーにもビジュアルと同じquat属性を適用（visual_originのRPYから生成）
                 # これにより、ビジュアルとコライダーの回転が一致する
-                collider_euler_attr = euler_attr  # ビジュアルと同じeuler属性を使用
+                collider_quat_attr = quat_attr  # ビジュアルと同じquat属性を使用
                 
-                # デバッグ: euler_attrが正しく設定されているか確認
-                if not collider_euler_attr and hasattr(node, 'visual_origin') and node.visual_origin:
+                # デバッグ: quat_attrが正しく設定されているか確認
+                if not collider_quat_attr and hasattr(node, 'visual_origin') and node.visual_origin:
                     rpy = node.visual_origin.get('rpy', [0.0, 0.0, 0.0])
                     if rpy != [0.0, 0.0, 0.0]:
-                        import math
-                        eulerseq = getattr(self, 'mjcf_eulerseq', 'xyz')
-                        euler_deg = [math.degrees(r) for r in rpy]
-                        if eulerseq == 'zyx':
-                            euler_values = [euler_deg[2], euler_deg[1], euler_deg[0]]
-                        elif eulerseq == 'xyz':
-                            euler_values = euler_deg
-                        else:
-                            euler_values = euler_deg
-                        collider_euler_attr = f' euler="{euler_values[0]} {euler_values[1]} {euler_values[2]}"'
-                        print(f"  Debug: Generated collider_euler_attr for node '{node.name()}': {collider_euler_attr}")
+                        from urdf_kitchen_utils import ConversionUtils
+                        quat = ConversionUtils.rpy_to_quat(rpy)
+                        collider_quat_attr = f' quat="{quat[0]} {quat[1]} {quat[2]} {quat[3]}"'
+                        print(f"  Debug: Generated collider_quat_attr for node '{node.name()}': {collider_quat_attr}")
                 
                 if collider_mesh:
                     # export_mjcf で処理済みの _mesh_name を優先使用
@@ -15080,27 +15154,27 @@ class CustomNodeGraph(NodeGraph):
                         # visual mesh名と一致する場合はそのまま使用、一致しない場合はvisual mesh名にフォールバック
                         # （visual meshが複数のmeshに分割されてる場合など、_mesh_nameがassetに存在しない可能性があるため）
                         if collider_mesh_name == mesh_name:
-                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}"{collider_euler_attr} group="3"/>\n')
+                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}"{collider_quat_attr} group="3"/>\n')
                         else:
                             # visual mesh名にフォールバック（安全策）
-                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_euler_attr} group="3"/>\n')
+                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_quat_attr} group="3"/>\n')
                     else:
                         # 旧形式: node._collider_mesh_name を使用（後方互換性）
                         if hasattr(node, '_collider_mesh_name') and node._collider_mesh_name:
                             collider_mesh_name = node._collider_mesh_name
                             # visual mesh名と一致する場合はそのまま使用、一致しない場合はvisual mesh名にフォールバック
                             if collider_mesh_name == mesh_name:
-                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}"{collider_euler_attr} group="3"/>\n')
+                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}"{collider_quat_attr} group="3"/>\n')
                             else:
                                 # visual mesh名にフォールバック（安全策）
-                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_euler_attr} group="3"/>\n')
+                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_quat_attr} group="3"/>\n')
                         else:
                             # collider['_mesh_name'] が設定されてない場合、必ず visual mesh にフォールバック
                             # （ファイル名から生成したmesh名がassetに存在しない可能性があるため）
-                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_euler_attr} group="3"/>\n')
+                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_quat_attr} group="3"/>\n')
                 else:
                     # Default: visual and collision use same mesh
-                    file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_euler_attr} group="3"/>\n')
+                    file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_quat_attr} group="3"/>\n')
 
     def _calculate_model_lowest_point(self, base_node, visited_nodes=None):
         """モデル全体の最低点（最小z座標）を計算
