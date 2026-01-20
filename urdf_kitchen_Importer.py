@@ -2244,11 +2244,6 @@ class MJCFParser:
                 if fromto_str:
                     geom_defaults['fromto'] = fromto_str
                 
-                # Parse mesh attribute (for visual geoms)
-                mesh_str = geom_elem.get('mesh')
-                if mesh_str:
-                    geom_defaults['mesh'] = mesh_str
-                
                 # Store geom defaults
                 if geom_defaults:
                     class_defaults['geom'] = geom_defaults
@@ -2266,13 +2261,11 @@ class MJCFParser:
                     # if self.verbose:
                     #     print(f"  Default class '{class_name}' mesh scale: {class_defaults['mesh_scale']}")
 
-            # Save class (use None for global default if no class name)
-            # グローバルdefault（class名なし）もNoneキーで保存
-            key = class_name if class_name else None
-            if class_defaults:  # Only save if there are actual defaults
-                default_classes[key] = class_defaults
+            # Save class if it has a name
+            if class_name:
+                default_classes[class_name] = class_defaults
                 # if self.verbose:
-                #     print(f"Default class '{key}': {class_defaults}")
+                #     print(f"Default class '{class_name}': {class_defaults}")
 
             # Parse child default classes recursively (pass ancestor classes)
             for child_default in default_elem.findall('default'):
@@ -2452,18 +2445,11 @@ class MJCFParser:
             mesh_scale = [1.0, 1.0, 1.0]
             mesh_class = mesh_elem.get('class')
             
-            # Inherit from class-specific default
             if mesh_class and mesh_class in self.default_classes:
                 if 'mesh_scale' in self.default_classes[mesh_class]:
                     mesh_scale = self.default_classes[mesh_class]['mesh_scale'][:]
                     if self.verbose:
                         print(f"  Mesh '{mesh_name}' inherited scale from class '{mesh_class}': {mesh_scale}")
-            # Inherit from global default (None key) if no class specified
-            elif not mesh_class and None in self.default_classes:
-                if 'mesh_scale' in self.default_classes[None]:
-                    mesh_scale = self.default_classes[None]['mesh_scale'][:]
-                    if self.verbose:
-                        print(f"  Mesh '{mesh_name}' inherited scale from global default: {mesh_scale}")
             
             # Direct scale attribute overrides class default
             scale_str = mesh_elem.get('scale')
@@ -2685,25 +2671,6 @@ class MJCFParser:
             geom_group = geom_elem.get('group', '')
             contype = geom_elem.get('contype')
             conaffinity = geom_elem.get('conaffinity')
-            
-            # Inherit mesh from class default if not specified directly
-            if not mesh_name:
-                # Try class-specific default first
-                if geom_class and geom_class in default_classes:
-                    if 'geom' in default_classes[geom_class]:
-                        geom_defaults = default_classes[geom_class]['geom']
-                        if 'mesh' in geom_defaults:
-                            mesh_name = geom_defaults['mesh']
-                            if self.verbose:
-                                print(f"{'  ' * level}    Geom[{idx}] inherits mesh '{mesh_name}' from class '{geom_class}'")
-                # Try global default if no class or class didn't have mesh
-                if not mesh_name and None in default_classes:
-                    if 'geom' in default_classes[None]:
-                        geom_defaults = default_classes[None]['geom']
-                        if 'mesh' in geom_defaults:
-                            mesh_name = geom_defaults['mesh']
-                            if self.verbose:
-                                print(f"{'  ' * level}    Geom[{idx}] inherits mesh '{mesh_name}' from global default")
 
             # Check if collision geom (class="collision", "collision-left", "collision-right", etc.)
             is_collision_geom = (geom_class.startswith('collision') or 
@@ -2735,7 +2702,7 @@ class MJCFParser:
                 geom_rpy = [0.0, 0.0, 0.0]
                 geom_quat = [1.0, 0.0, 0.0, 0.0]
                 
-                # Inherit orientation from class-specific default first
+                # Check if geom has a class and inherit quat from default
                 if geom_class and geom_class in default_classes:
                     if 'geom' in default_classes[geom_class]:
                         geom_defaults = default_classes[geom_class]['geom']
@@ -2746,21 +2713,6 @@ class MJCFParser:
                                 geom_quat = quat_values
                                 geom_rpy = self.conversion_utils.quat_to_rpy(geom_quat)
                         # Inherit euler from class default (quat takes precedence)
-                        elif 'euler' in geom_defaults:
-                            euler_values = [float(v) for v in geom_defaults['euler'].split()]
-                            geom_rpy = self.conversion_utils.euler_to_rpy(euler_values, eulerseq)
-                            geom_quat = self.conversion_utils.rpy_to_quat(geom_rpy)
-                # Inherit from global default if no class or class didn't have orientation
-                elif None in default_classes:
-                    if 'geom' in default_classes[None]:
-                        geom_defaults = default_classes[None]['geom']
-                        # Inherit quat from global default
-                        if 'quat' in geom_defaults:
-                            quat_values = [float(v) for v in geom_defaults['quat'].split()]
-                            if len(quat_values) == 4:
-                                geom_quat = quat_values
-                                geom_rpy = self.conversion_utils.quat_to_rpy(geom_quat)
-                        # Inherit euler from global default (quat takes precedence)
                         elif 'euler' in geom_defaults:
                             euler_values = [float(v) for v in geom_defaults['euler'].split()]
                             geom_rpy = self.conversion_utils.euler_to_rpy(euler_values, eulerseq)

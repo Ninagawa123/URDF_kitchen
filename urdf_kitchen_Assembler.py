@@ -15132,18 +15132,25 @@ class CustomNodeGraph(NodeGraph):
             elif collider.get('type') == 'mesh':
                 # Mesh collider
                 collider_mesh = collider.get('mesh')
-                # メッシュコライダーにもビジュアルと同じquat属性を適用（visual_originのRPYから生成）
+                # メッシュコライダーにもビジュアルと同じeuler属性を適用（visual_originのRPYから生成）
                 # これにより、ビジュアルとコライダーの回転が一致する
-                collider_quat_attr = quat_attr  # ビジュアルと同じquat属性を使用
+                collider_euler_attr = euler_attr  # ビジュアルと同じeuler属性を使用
                 
-                # デバッグ: quat_attrが正しく設定されているか確認
-                if not collider_quat_attr and hasattr(node, 'visual_origin') and node.visual_origin:
+                # デバッグ: euler_attrが正しく設定されているか確認
+                if not collider_euler_attr and hasattr(node, 'visual_origin') and node.visual_origin:
                     rpy = node.visual_origin.get('rpy', [0.0, 0.0, 0.0])
                     if rpy != [0.0, 0.0, 0.0]:
-                        from urdf_kitchen_utils import ConversionUtils
-                        quat = ConversionUtils.rpy_to_quat(rpy)
-                        collider_quat_attr = f' quat="{quat[0]} {quat[1]} {quat[2]} {quat[3]}"'
-                        print(f"  Debug: Generated collider_quat_attr for node '{node.name()}': {collider_quat_attr}")
+                        import math
+                        eulerseq = getattr(self, 'mjcf_eulerseq', 'xyz')
+                        euler_deg = [math.degrees(r) for r in rpy]
+                        if eulerseq == 'zyx':
+                            euler_values = [euler_deg[2], euler_deg[1], euler_deg[0]]
+                        elif eulerseq == 'xyz':
+                            euler_values = euler_deg
+                        else:
+                            euler_values = euler_deg
+                        collider_euler_attr = f' euler="{euler_values[0]} {euler_values[1]} {euler_values[2]}"'
+                        print(f"  Debug: Generated collider_euler_attr for node '{node.name()}': {collider_euler_attr}")
                 
                 if collider_mesh:
                     # export_mjcf で処理済みの _mesh_name を優先使用
@@ -15154,27 +15161,27 @@ class CustomNodeGraph(NodeGraph):
                         # visual mesh名と一致する場合はそのまま使用、一致しない場合はvisual mesh名にフォールバック
                         # （visual meshが複数のmeshに分割されてる場合など、_mesh_nameがassetに存在しない可能性があるため）
                         if collider_mesh_name == mesh_name:
-                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}"{collider_quat_attr} group="3"/>\n')
+                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}"{collider_euler_attr} group="3"/>\n')
                         else:
                             # visual mesh名にフォールバック（安全策）
-                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_quat_attr} group="3"/>\n')
+                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_euler_attr} group="3"/>\n')
                     else:
                         # 旧形式: node._collider_mesh_name を使用（後方互換性）
                         if hasattr(node, '_collider_mesh_name') and node._collider_mesh_name:
                             collider_mesh_name = node._collider_mesh_name
                             # visual mesh名と一致する場合はそのまま使用、一致しない場合はvisual mesh名にフォールバック
                             if collider_mesh_name == mesh_name:
-                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}"{collider_quat_attr} group="3"/>\n')
+                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}"{collider_euler_attr} group="3"/>\n')
                             else:
                                 # visual mesh名にフォールバック（安全策）
-                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_quat_attr} group="3"/>\n')
+                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_euler_attr} group="3"/>\n')
                         else:
                             # collider['_mesh_name'] が設定されてない場合、必ず visual mesh にフォールバック
                             # （ファイル名から生成したmesh名がassetに存在しない可能性があるため）
-                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_quat_attr} group="3"/>\n')
+                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_euler_attr} group="3"/>\n')
                 else:
                     # Default: visual and collision use same mesh
-                    file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_quat_attr} group="3"/>\n')
+                    file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_euler_attr} group="3"/>\n')
 
     def _calculate_model_lowest_point(self, base_node, visited_nodes=None):
         """モデル全体の最低点（最小z座標）を計算
