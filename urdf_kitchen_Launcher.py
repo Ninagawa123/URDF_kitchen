@@ -5,7 +5,7 @@ Description: Small utility window to launch URDF Kitchen applications.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Jan  4, 2026
+Update.     : Jan 22, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
