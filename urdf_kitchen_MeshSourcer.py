@@ -1,10 +1,10 @@
 """
 File Name: urdf_kitchen_MeshSourcer.py
-Description: A Python script for reconfiguring the center coordinates and axis directions of STL and dae files.
+Description: A Python script for reconfiguring the center coordinates and axis directions of .stl, .dae, .obj files.
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 18, 2026
+Update.     : Jan 22, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -41,7 +41,8 @@ from PySide6.QtWidgets import (
     QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout,
     QComboBox, QGroupBox, QScrollArea, QButtonGroup, QRadioButton, QSizePolicy
 )
-from PySide6.QtCore import QTimer, Qt, QObject
+from PySide6.QtCore import QTimer, Qt, QObject, QRegularExpression
+from PySide6.QtGui import QRegularExpressionValidator
 
 # Import URDF Kitchen utilities
 from urdf_kitchen_utils import (
@@ -251,7 +252,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         right_scroll.setWidgetResizable(True)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         right_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
-        right_scroll.setFixedWidth(400)
+        right_scroll.setFixedWidth(420)
 
         right_widget = QWidget()
         right_layout = QVBoxLayout(right_widget)
@@ -555,7 +556,9 @@ class MainWindow(VTKViewerBase, QMainWindow):
             inputs = []
             for j, axis in enumerate(['X', 'Y', 'Z']):
                 input_field = QLineEdit(str(self.point_coords[i][j]))
-                input_field.setMaximumWidth(80)  # Prevent horizontal expansion
+                input_field.setMaximumWidth(90)  # Prevent horizontal expansion
+                # Only allow numbers and decimal point
+                input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
                 # Only focus when explicitly clicked, don't steal keyboard focus
                 input_field.setFocusPolicy(Qt.ClickFocus)
                 # Return focus to vtk_display when editing is done
@@ -638,11 +641,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
         # Show checkbox and Type selection
         type_layout = QHBoxLayout()
         type_layout.setSpacing(4)  # Reduce horizontal spacing
-        self.collider_show_checkbox = QCheckBox("Show Collider")
+        self.collider_show_checkbox = QCheckBox()
         self.collider_show_checkbox.setChecked(False)  # Default: unchecked
         self.collider_show_checkbox.stateChanged.connect(self.on_collider_show_changed)
         type_layout.addWidget(self.collider_show_checkbox)
+        type_layout.addSpacing(12)
+        type_layout.addWidget(QLabel("Show Collider"))
 
+        type_layout.addSpacing(20)  # 20px spacing between Show Collider and Type:
         type_layout.addWidget(QLabel("Type:"))
         self.collider_type_combo = QComboBox()
         self.collider_type_combo.addItems(["box", "sphere", "cylinder", "capsule"])
@@ -664,46 +670,66 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         # Position inputs with checkbox (moved to be right after Show/Type)
         position_layout = QGridLayout()
+        position_layout.setHorizontalSpacing(4)
         self.collider_position_checkbox = QCheckBox()
         self.collider_position_checkbox.setChecked(False)
         self.collider_position_checkbox.stateChanged.connect(self.on_collider_position_checkbox_changed)
         position_layout.addWidget(self.collider_position_checkbox, 0, 0)
         position_layout.addWidget(QLabel("Position:"), 0, 1)
+        position_layout.setColumnMinimumWidth(1, 90)  # Align with Size: and Rotation:
+        col = 2
         self.collider_position_inputs = []
         for i, axis in enumerate(['X', 'Y', 'Z']):
-            position_layout.addWidget(QLabel(f"{axis}:"), 0, i*2+2)
+            position_layout.addWidget(QLabel(f"{axis}:"), 0, col)
+            col += 1
             input_field = QLineEdit("0.0")
-            input_field.setMaximumWidth(60)  # Prevent horizontal expansion
+            input_field.setMaximumWidth(60)
+            input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
             input_field.setFocusPolicy(Qt.ClickFocus)
             input_field.editingFinished.connect(lambda idx=i: self.on_collider_position_input_changed(idx))
             input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
-            position_layout.addWidget(input_field, 0, i*2+3)
+            position_layout.addWidget(input_field, 0, col)
             self.collider_position_inputs.append(input_field)
+            col += 1
+            if i < 2:  # Add spacing between X-Y and Y-Z
+                position_layout.setColumnMinimumWidth(col, 6)
+                col += 1
         collider_layout.addLayout(position_layout)
 
         # Parameters section (dynamic based on type)
         self.collider_params_layout = QGridLayout()
+        self.collider_params_layout.setHorizontalSpacing(4)  # Reduce spacing between label and input
         self.collider_param_labels = []
         self.collider_param_inputs = []
         collider_layout.addLayout(self.collider_params_layout)
 
         # Rotation inputs with checkbox
         rotation_layout = QGridLayout()
+        rotation_layout.setHorizontalSpacing(4)
         self.collider_rotation_checkbox = QCheckBox()
         self.collider_rotation_checkbox.setChecked(False)
         self.collider_rotation_checkbox.stateChanged.connect(self.on_collider_rotation_checkbox_changed)
         rotation_layout.addWidget(self.collider_rotation_checkbox, 0, 0)
-        rotation_layout.addWidget(QLabel("Rotation (deg):"), 0, 1)
+        rot_label = QLabel("Rotation(deg):")
+        rot_label.setFixedWidth(95) 
+        rotation_layout.addWidget(rot_label, 0, 1)
+        col = 2
         self.collider_rotation_inputs = []
         for i, axis in enumerate(['Roll', 'Pitch', 'Yaw']):
-            rotation_layout.addWidget(QLabel(f"{axis}:"), 0, i*2+2)
+            rotation_layout.addWidget(QLabel(f"{axis}:"), 0, col)
+            col += 1
             input_field = QLineEdit("0.0")
-            input_field.setMaximumWidth(60)  # Prevent horizontal expansion
+            input_field.setMaximumWidth(50)
+            input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
             input_field.setFocusPolicy(Qt.ClickFocus)
             input_field.editingFinished.connect(lambda idx=i: self.on_collider_rotation_input_changed(idx))
             input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
-            rotation_layout.addWidget(input_field, 0, i*2+3)
+            rotation_layout.addWidget(input_field, 0, col)
             self.collider_rotation_inputs.append(input_field)
+            col += 1
+            if i < 2:  # Add spacing between Roll-Pitch and Pitch-Yaw
+                rotation_layout.setColumnMinimumWidth(col, 2)
+                col += 1
         collider_layout.addLayout(rotation_layout)
 
         # Add spacing before buttons
@@ -1174,28 +1200,60 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         # Add parameter labels and inputs
         if collider_type == "box":
-            labels = ["Size:  X:", "Y:", "Z:"]
-        elif collider_type == "sphere":
-            labels = ["Radius:"]
-        elif collider_type in ["cylinder", "capsule"]:
-            labels = ["Radius:", "Length:"]
+            # Size: [space] X:[input] [space] Y:[input] [space] Z:[input]
+            size_label = QLabel("Size:")
+            self.collider_param_labels.append(size_label)
+            self.collider_params_layout.addWidget(size_label, 0, col)
+            self.collider_params_layout.setColumnMinimumWidth(col, 90)  # Align with Position: and Rotation:
+            col += 1
+
+            axis_labels = ["X:", "Y:", "Z:"]
+            for i, (axis_label, param_value) in enumerate(zip(axis_labels, params)):
+                label = QLabel(axis_label)
+                self.collider_param_labels.append(label)
+                self.collider_params_layout.addWidget(label, 0, col)
+                col += 1
+
+                input_field = QLineEdit(str(param_value))
+                input_field.setMaximumWidth(60)
+                input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
+                input_field.setFocusPolicy(Qt.ClickFocus)
+                input_field.editingFinished.connect(lambda idx=i: self.on_collider_param_input_changed(idx))
+                input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
+                self.collider_param_inputs.append(input_field)
+                self.collider_params_layout.addWidget(input_field, 0, col)
+                col += 1
+                # Add spacing between axis groups (except after last one)
+                if i < 2:
+                    self.collider_params_layout.setColumnMinimumWidth(col, 6)
+                    col += 1
         else:
-            labels = []
+            # For sphere, cylinder, capsule
+            if collider_type == "sphere":
+                labels = ["Radius:"]
+            elif collider_type in ["cylinder", "capsule"]:
+                labels = ["Radius:", "Length:"]
+            else:
+                labels = []
 
-        for i, (label_text, param_value) in enumerate(zip(labels, params)):
-            label = QLabel(label_text)
-            self.collider_param_labels.append(label)
-            self.collider_params_layout.addWidget(label, 0, col)
-            col += 1
+            for i, (label_text, param_value) in enumerate(zip(labels, params)):
+                label = QLabel(label_text)
+                self.collider_param_labels.append(label)
+                self.collider_params_layout.addWidget(label, 0, col)
+                if i == 0:
+                    self.collider_params_layout.setColumnMinimumWidth(col, 90)  # Align with Position: and Rotation:
+                col += 1
 
-            input_field = QLineEdit(str(param_value))
-            input_field.setMaximumWidth(60)  # Prevent horizontal expansion
-            input_field.setFocusPolicy(Qt.ClickFocus)
-            input_field.editingFinished.connect(lambda idx=i: self.on_collider_param_input_changed(idx))
-            input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
-            self.collider_param_inputs.append(input_field)
-            self.collider_params_layout.addWidget(input_field, 0, col)
-            col += 1
+                input_field = QLineEdit(str(param_value))
+                input_field.setMaximumWidth(60)  # Prevent horizontal expansion
+                # Only allow numbers and decimal point
+                input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
+                input_field.setFocusPolicy(Qt.ClickFocus)
+                input_field.editingFinished.connect(lambda idx=i: self.on_collider_param_input_changed(idx))
+                input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
+                self.collider_param_inputs.append(input_field)
+                self.collider_params_layout.addWidget(input_field, 0, col)
+                col += 1
 
     def on_collider_type_changed(self, new_type):
         """Handle collider type change"""
@@ -1265,6 +1323,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
         try:
             for j in range(3):
                 value = float(self.point_inputs[index][j].text())
+                # Round to 8 decimal places (9th digit is rounded)
+                value = round(value, 8)
                 self.point_coords[index][j] = value
             self.update_point_display(index)
             self.render_to_image()
@@ -1283,6 +1343,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 if not self.wireframe_mode:
                     self.toggle_wireframe()
                     self.render_to_image()  # Render immediately to apply wireframe
+
+            # Update instruction text for collider editing mode
+            if hasattr(self, 'text_actor_bottom'):
+                self.text_actor_bottom.SetInput(self.collider_instruction_text)
 
             # First time Show is clicked - auto draft
             if self.collider_first_show:
@@ -1303,6 +1367,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 if self.wireframe_mode:
                     self.toggle_wireframe()
                     self.render_to_image()  # Render immediately to apply surface mode
+
+            # Restore default instruction text
+            if hasattr(self, 'text_actor_bottom'):
+                self.text_actor_bottom.SetInput(self.default_instruction_text)
 
             # Hide collider
             if self.collider_actor:
@@ -1562,7 +1630,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             self.point_actors[index].SetPosition(self.point_coords[index])
 
         for i, coord in enumerate(self.point_coords[index]):
-            self.point_inputs[index][i].setText(f"{coord:.4f}")
+            self.point_inputs[index][i].setText(f"{coord:.8f}")
 
     def update_properties(self):
         # 優先順位: Mass > Volume > Inertia > Density
@@ -1667,20 +1735,29 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.text_actors.append(text_actor_top)
 
         # 左下のテキスト
-        text_actor_bottom = vtk.vtkTextActor()
-        text_actor_bottom.SetInput(
+        self.text_actor_bottom = vtk.vtkTextActor()
+        # Default instruction text (for point editing mode)
+        self.default_instruction_text = (
             "[Arrows] : Move Point 10mm\n"
             " +[Shift]: Move Point 1mm\n"
             "  +[Ctrl]: Move Point 0.1mm\n\n"
         )
-        text_actor_bottom.GetTextProperty().SetFontSize(14)
-        text_actor_bottom.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # 水色
-        text_actor_bottom.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
-        text_actor_bottom.SetPosition(0.03, 0.03)  # 左下に配置
-        text_actor_bottom.GetTextProperty().SetJustificationToLeft()
-        text_actor_bottom.GetTextProperty().SetVerticalJustificationToBottom()
-        self.renderer.AddActor(text_actor_bottom)
-        self.text_actors.append(text_actor_bottom)
+        # Collider editing instruction text
+        self.collider_instruction_text = (
+            "[Tab]    : Switch Mode: Position / Size / Rotation\n"
+            "[Arrows] : Edit Collider, 10mm increments\n"
+            " +[Shift]: 1mm increments\n"
+            "  +[Ctrl]: 0.1mm increments\n"
+        )
+        self.text_actor_bottom.SetInput(self.default_instruction_text)
+        self.text_actor_bottom.GetTextProperty().SetFontSize(14)
+        self.text_actor_bottom.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # 水色
+        self.text_actor_bottom.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
+        self.text_actor_bottom.SetPosition(0.03, 0.03)  # 左下に配置
+        self.text_actor_bottom.GetTextProperty().SetJustificationToLeft()
+        self.text_actor_bottom.GetTextProperty().SetVerticalJustificationToBottom()
+        self.renderer.AddActor(self.text_actor_bottom)
+        self.text_actors.append(self.text_actor_bottom)
 
     def update_instruction_text_layout(self):
         """Update instruction text visibility (font size is fixed)"""
@@ -1712,9 +1789,9 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 # Reset all Center Position points to origin
                 for i in range(self.num_points):
                     self.point_coords[i] = [0.0, 0.0, 0.0]
-                    # Update input fields to show 0.0
+                    # Update input fields to show 0.00000000
                     for j in range(3):
-                        self.point_inputs[i][j].setText("0.0")
+                        self.point_inputs[i][j].setText("0.00000000")
                     # Update point display
                     if self.point_actors[i]:
                         self.update_point_display(i)
@@ -2584,8 +2661,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 elif self.collider_rotation_active:
                     current_active = 'rotation'
 
+                # If no checkbox is active, activate Position first
+                if current_active is None:
+                    self.collider_position_checkbox.setChecked(True)
                 # If any checkbox is active, cycle to the next one
-                if current_active and current_active in available_options:
+                elif current_active in available_options:
                     current_index = available_options.index(current_active)
                     next_index = (current_index + 1) % len(available_options)
                     next_option = available_options[next_index]
