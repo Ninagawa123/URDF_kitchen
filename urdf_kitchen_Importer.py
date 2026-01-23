@@ -7,7 +7,7 @@ Description: URDF/MJCF Import functionality for URDF Kitchen.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Jan 18, 2026
+Update.     : Jan 22, 2026
 Version     : 0.2.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -73,26 +73,26 @@ DEFAULT_ORIGIN_ZERO = {
 
 def is_mesh_reversed_check(visual_origin, mesh_scale):
     """
-    メッシュが反転（ミラーリング）されているかを判定する関数
+    Check if mesh is reversed (mirrored)
 
     Args:
-        visual_origin: visual_origin辞書 {'xyz': [...], 'rpy': [...]}
-        mesh_scale: mesh_scaleリスト [x, y, z]
+        visual_origin: visual_origin dict {'xyz': [...], 'rpy': [...]}
+        mesh_scale: mesh_scale list [x, y, z]
 
     Returns:
-        bool: 反転している場合True
+        bool: True if reversed
     """
     PI = math.pi
     PI_TOLERANCE = 0.01
 
-    # RPYのいずれかの軸がπ（PI）に近い場合は反転とみなす
+    # Consider reversed if any RPY axis is close to PI
     if visual_origin:
         rpy = visual_origin.get('rpy', [0.0, 0.0, 0.0])
         for angle in rpy:
             if abs(abs(angle) - PI) < PI_TOLERANCE:
                 return True
 
-    # mesh_scaleのいずれかの軸が負の場合は反転とみなす
+    # Consider reversed if any mesh_scale axis is negative
     if mesh_scale:
         for scale in mesh_scale:
             if scale < 0:
@@ -102,7 +102,7 @@ def is_mesh_reversed_check(visual_origin, mesh_scale):
 
 
 def create_cumulative_coord(index):
-    """累積座標データを作成"""
+    """Create cumulative coordinate data"""
     return {
         'point_index': index,
         'xyz': DEFAULT_COORDS_ZERO.copy()
@@ -165,39 +165,39 @@ class URDFParser:
             if self.verbose:
                 print("Using xacrodoc library")
             
-            # xacroファイルからXacroDocオブジェクトを作成
+            # Create XacroDoc object from xacro file
             xacro_file_abs = os.path.abspath(xacro_file_path)
             doc = XacroDoc.from_file(xacro_file_abs)
-            
-            # URDF文字列に変換
+
+            # Convert to URDF string
             urdf_xml_string = doc.to_urdf_string()
-            
-            # 生成されたXMLが正しくパースできるか確認
+
+            # Verify generated XML can be parsed correctly
             if urdf_xml_string:
                 try:
                     root = ET.fromstring(urdf_xml_string)
-                    # robot要素の存在を確認
+                    # Check for robot element
                     if root.tag != 'robot':
                         if self.verbose:
                             print(f"  Warning: Root element is '{root.tag}', expected 'robot'")
-                        # robot要素が見つからない場合は、子要素を探す
+                        # If robot element not found, search child elements
                         robot_elem = root.find('robot')
                         if robot_elem is None:
-                            # ルート要素がrobotでない場合は警告を出すが、続行
+                            # Warn if root element is not robot, but continue
                             if self.verbose:
                                 print(f"  Warning: No 'robot' element found in expanded xacro")
                     else:
                         if self.verbose:
                             print(f"  Successfully expanded xacro to URDF (robot element found)")
-                    
-                    # デバッグ: 展開されたXMLの構造を確認
+
+                    # Debug: verify expanded XML structure
                     if self.verbose:
                         link_count = len(root.findall('link'))
                         joint_count = len(root.findall('joint'))
                         print(f"  Found {link_count} link elements, {joint_count} joint elements in expanded XML")
                         if link_count == 0:
                             print(f"  WARNING: No links found in expanded xacro!")
-                            # XMLの最初の500文字を出力してデバッグ
+                            # Output first 500 characters of XML for debugging
                             print(f"  First 500 chars of expanded XML:")
                             print(f"  {urdf_xml_string[:500]}")
                     
@@ -262,35 +262,35 @@ class URDFParser:
             # Expand xacro to URDF
             urdf_xml_string = self._expand_xacro(urdf_file_path)
             
-            # 展開されたXML文字列が有効か確認
+            # Verify expanded XML string is valid
             if not urdf_xml_string or not urdf_xml_string.strip():
                 raise RuntimeError("xacro expansion returned empty string")
-            
+
             if self.verbose:
                 print(f"  Expanded xacro XML length: {len(urdf_xml_string)} characters")
-            
+
             # Parse expanded URDF XML string
             try:
                 root = ET.fromstring(urdf_xml_string)
-                
-                # デバッグ: 展開されたXMLの構造を確認
+
+                # Debug: verify expanded XML structure
                 if self.verbose:
                     print(f"  Expanded XML root tag: {root.tag}")
-                    # 最初の数個のリンクとジョイントを確認
+                    # Check first few links and joints
                     link_count = len(root.findall('link'))
                     joint_count = len(root.findall('joint'))
                     print(f"  Found {link_count} link elements, {joint_count} joint elements in expanded XML")
                     if link_count == 0:
                         print(f"  WARNING: No links found in expanded xacro!")
-                        # XMLの最初の500文字を出力してデバッグ
+                        # Output first 500 characters of XML for debugging
                         print(f"  First 500 chars of expanded XML:")
                         print(f"  {urdf_xml_string[:500]}")
-                
-                # robot要素の存在を確認
+
+                # Check for robot element
                 if root.tag != 'robot':
                     if self.verbose:
                         print(f"  Warning: Root element is '{root.tag}', expected 'robot'")
-                    # robot要素が見つからない場合は、子要素を探す
+                    # If robot element not found, search child elements
                     robot_elem = root.find('robot')
                     if robot_elem is not None:
                         root = robot_elem
@@ -316,11 +316,11 @@ class URDFParser:
             tree = ET.parse(urdf_file_path)
             root = tree.getroot()
             
-            # robot要素の存在を確認
+            # Check for robot element
             if root.tag != 'robot':
                 if self.verbose:
                     print(f"  Warning: Root element is '{root.tag}', expected 'robot'")
-                # robot要素が見つからない場合は、子要素を探す
+                # If robot element not found, search child elements
                 robot_elem = root.find('robot')
                 if robot_elem is not None:
                     root = robot_elem
@@ -330,7 +330,7 @@ class URDFParser:
         # Get robot name from robot element or file name
         robot_name = root.get('name')
         if not robot_name:
-            # robot要素にname属性がない場合は、ファイル名から取得
+            # If robot element has no name attribute, get from filename
             robot_name = os.path.splitext(os.path.basename(urdf_file_path))[0]
             if self.verbose:
                 print(f"  Robot name not found in XML, using filename: {robot_name}")
@@ -368,13 +368,13 @@ class URDFParser:
             if color_elem is not None:
                 rgba_str = color_elem.get('rgba', '1.0 1.0 1.0 1.0')
                 rgba = [float(v) for v in rgba_str.split()]
-                # RGBA（4要素）を保存（Alphaがない場合は1.0を追加）
+                # Save RGBA (4 elements), add Alpha=1.0 if missing
                 if len(rgba) >= 4:
                     materials_data[mat_name] = rgba[:4]
                 elif len(rgba) == 3:
-                    materials_data[mat_name] = rgba + [1.0]  # Alpha=1.0を追加
+                    materials_data[mat_name] = rgba + [1.0]  # Add Alpha=1.0
                 else:
-                    # 不正な形式の場合はデフォルト値
+                    # Use default value for invalid format
                     materials_data[mat_name] = [1.0, 1.0, 1.0, 1.0]
 
         if self.verbose:
@@ -396,7 +396,7 @@ class URDFParser:
         links_data = {}
         missing_meshes = []
 
-        # デバッグ: リンク要素の数を確認
+        # Debug: check number of link elements
         link_elems = root.findall('link')
         if self.verbose:
             print(f"\n[URDFParser] Found {len(link_elems)} link elements in URDF")
@@ -417,7 +417,7 @@ class URDFParser:
                 'inertial_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
                 'visual_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
                 'stl_file': None,
-                'color': [1.0, 1.0, 1.0, 1.0],  # RGBA（4要素）に変更
+                'color': [1.0, 1.0, 1.0, 1.0],  # Changed to RGBA (4 elements)
                 'stl_filename_original': None,
                 'mesh_scale': [1.0, 1.0, 1.0],
                 'decorations': [],
@@ -456,7 +456,7 @@ class URDFParser:
                 is_main_visual = (visual_idx == 0)
 
                 current_stl_path = None
-                current_color = [1.0, 1.0, 1.0, 1.0]  # RGBA（4要素）に変更
+                current_color = [1.0, 1.0, 1.0, 1.0]  # Changed to RGBA (4 elements)
                 current_visual_origin = {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]}
 
                 # Parse visual origin
@@ -512,7 +512,7 @@ class URDFParser:
                                     'basename': mesh_basename
                                 })
                             else:
-                                # Decoration visualのメッシュファイルが見つからない場合も記録
+                                # Also record when decoration visual mesh file is not found
                                 missing_meshes.append({
                                     'link_name': link_name,
                                     'filename': mesh_filename,
@@ -525,20 +525,20 @@ class URDFParser:
                 if material_elem is not None:
                     mat_name = material_elem.get('name')
                     if mat_name in materials_data:
-                        # materials_dataからRGBA（4要素）を取得
+                        # Get RGBA (4 elements) from materials_data
                         current_color = materials_data[mat_name]
                     else:
                         color_elem = material_elem.find('color')
                         if color_elem is not None:
                             rgba_str = color_elem.get('rgba', '1.0 1.0 1.0 1.0')
                             rgba = [float(v) for v in rgba_str.split()]
-                            # RGBA（4要素）を保存（Alphaがない場合は1.0を追加）
+                            # Save RGBA (4 elements), add Alpha=1.0 if missing
                             if len(rgba) >= 4:
                                 current_color = rgba[:4]
                             elif len(rgba) == 3:
-                                current_color = rgba + [1.0]  # Alpha=1.0を追加
+                                current_color = rgba + [1.0]  # Add Alpha=1.0
                             else:
-                                current_color = [1.0, 1.0, 1.0, 1.0]  # デフォルト値
+                                current_color = [1.0, 1.0, 1.0, 1.0]  # Default value
                         elif mat_name and mat_name.startswith('#'):
                             # Hex color code
                             hex_color = mat_name[1:]
@@ -546,11 +546,11 @@ class URDFParser:
                                 r = int(hex_color[0:2], 16) / 255.0
                                 g = int(hex_color[2:4], 16) / 255.0
                                 b = int(hex_color[4:6], 16) / 255.0
-                                current_color = [r, g, b, 1.0]  # Alpha=1.0を追加
+                                current_color = [r, g, b, 1.0]  # Add Alpha=1.0
                             else:
-                                current_color = [1.0, 1.0, 1.0, 1.0]  # デフォルト値
+                                current_color = [1.0, 1.0, 1.0, 1.0]  # Default value
                         else:
-                            current_color = [1.0, 1.0, 1.0, 1.0]  # デフォルト値
+                            current_color = [1.0, 1.0, 1.0, 1.0]  # Default value
 
                 # Store data
                 if is_main_visual:
@@ -561,25 +561,25 @@ class URDFParser:
                     link_data['visual_origin'] = current_visual_origin
                 else:
                     # Decoration visual
-                    # メッシュファイルが見つからない場合でもdecoration_dataを作成
-                    # ノード名を一意にするため、リンク名を含める
+                    # Create decoration_data even if mesh file is not found
+                    # Include link name to make node name unique
                     if current_stl_path:
                         stl_name = os.path.splitext(os.path.basename(current_stl_path))[0]
                     else:
-                        # メッシュファイルが見つからない場合、ファイル名から推測
+                        # If mesh file not found, infer from filename
                         mesh_basename = os.path.basename(mesh_filename) if mesh_filename else f"decoration_{visual_idx}"
                         stl_name = os.path.splitext(mesh_basename)[0]
                     
-                    # ノード名を一意にするため、リンク名を含める（同じメッシュが複数のリンクで使用される場合の衝突を回避）
+                    # Include link name to make node name unique (avoid collision when same mesh is used in multiple links)
                     decoration_name = f"{link_name}_{stl_name}"
                     
                     decoration_data = {
                         'name': decoration_name,
-                        'stl_file': current_stl_path,  # Noneの可能性もある
+                        'stl_file': current_stl_path,  # May be None
                         'color': current_color,
                         'mesh_scale': mesh_scale,
                         'visual_origin': current_visual_origin,
-                        'original_name': stl_name  # 元のメッシュ名を保持
+                        'original_name': stl_name  # Keep original mesh name
                     }
                     link_data['decorations'].append(decoration_data)
 
@@ -732,7 +732,7 @@ class URDFParser:
             print(f"\n[URDFParser] Successfully parsed {len(links_data)} links")
             if missing_meshes:
                 print(f"  Warning: {len(missing_meshes)} mesh files could not be found")
-                for missing in missing_meshes[:5]:  # 最初の5つだけ表示
+                for missing in missing_meshes[:5]:  # Display only first 5
                     print(f"    - {missing['link_name']}: {missing['basename']}")
                 if len(missing_meshes) > 5:
                     print(f"    ... and {len(missing_meshes) - 5} more")
@@ -757,7 +757,7 @@ class URDFParser:
         """
         urdf_dir = os.path.dirname(os.path.abspath(urdf_file_path))
         urdf_file_abs = os.path.abspath(urdf_file_path)
-        description_dir = os.path.dirname(urdf_dir)  # メソッドの最初で定義
+        description_dir = os.path.dirname(urdf_dir)  # Define at method start
         mesh_basename = os.path.basename(mesh_filename)
 
         # Handle package:// paths
@@ -767,11 +767,11 @@ class URDFParser:
                 package_name = parts[2]
                 relative_path = '/'.join(parts[3:]) if len(parts) > 3 else ''
                 
-                # パッケージルートを探す（xacroファイルの場所から）
+                # Find package root (from xacro file location)
                 package_root = find_package_root(urdf_file_abs, package_name, max_search_depth=10, verbose=self.verbose)
-                
+
                 if package_root:
-                    # パッケージルートからの相対パス
+                    # Relative path from package root
                     if relative_path:
                         candidate = os.path.join(package_root, relative_path)
                     else:
@@ -782,12 +782,12 @@ class URDFParser:
                             print(f"  Found mesh (package://): {candidate}")
                         return candidate
                 
-                # パッケージルートが見つからない場合、従来の方法を試す
+                # If package root not found, try conventional methods
                 if relative_path:
                     relative_path_full = relative_path
-                    # relative_pathから"robots/"プレフィックスを削除（例: "robots/asr_twodof_description/qb_meshes/dae/qb_base_flange_m.dae" -> "asr_twodof_description/qb_meshes/dae/qb_base_flange_m.dae"）
+                    # Remove "robots/" prefix from relative_path (e.g.: "robots/asr_twodof_description/qb_meshes/dae/qb_base_flange_m.dae" -> "asr_twodof_description/qb_meshes/dae/qb_base_flange_m.dae")
                     if relative_path_full.startswith('robots/'):
-                        relative_path_without_robots = relative_path_full[7:]  # "robots/"を削除
+                        relative_path_without_robots = relative_path_full[7:]  # Remove "robots/"
                     else:
                         relative_path_without_robots = relative_path_full
                 else:
@@ -798,17 +798,17 @@ class URDFParser:
                 candidates = [
                     os.path.join(package_root, relative_path_full) if package_root else None,
                     os.path.join(description_dir, relative_path_full),
-                    os.path.join(description_dir, relative_path_without_robots),  # "robots/"なしのパスも試す
+                    os.path.join(description_dir, relative_path_without_robots),  # Also try path without "robots/"
                     os.path.join(urdf_dir, relative_path_full),
-                    os.path.join(urdf_dir, relative_path_without_robots),  # "robots/"なしのパスも試す
+                    os.path.join(urdf_dir, relative_path_without_robots),  # Also try path without "robots/"
                     os.path.join(description_dir, 'meshes', mesh_basename),
                     os.path.normpath(os.path.join(urdf_dir, '..', 'meshes', mesh_basename)),
                     os.path.join(os.path.dirname(description_dir), relative_path_full),
-                    os.path.join(os.path.dirname(description_dir), relative_path_without_robots),  # "robots/"なしのパスも試す
-                    # xacroファイルと同じディレクトリ構造を試す
+                    os.path.join(os.path.dirname(description_dir), relative_path_without_robots),  # Also try path without "robots/"
+                    # Try same directory structure as xacro file
                     os.path.normpath(os.path.join(urdf_dir, '..', '..', 'meshes', mesh_basename)),
                     os.path.normpath(os.path.join(urdf_dir, '..', '..', package_name, 'meshes', mesh_basename)) if package_name else None,
-                    # 相対パスから直接ファイル名を抽出して検索
+                    # Extract filename directly from relative path and search
                     os.path.join(description_dir, mesh_basename),
                     os.path.join(urdf_dir, mesh_basename),
                 ]
@@ -840,25 +840,25 @@ class URDFParser:
                         print(f"  Found mesh: {candidate}")
                     return candidate
 
-        # メッシュが見つからない場合、一つ階層を上り、そこから下位4階層まで探索
+        # If mesh not found, go up one level and search up to 4 levels deep
         if self.verbose:
             print(f"  Mesh not found in standard locations, searching from parent directory (4 levels deep)...")
-        
-        # URDFファイルのディレクトリの親ディレクトリを取得
+
+        # Get parent directory of URDF file directory
         parent_dir = os.path.dirname(urdf_dir)
-        
+
         if os.path.isdir(parent_dir):
-            # 親ディレクトリから4階層まで探索
+            # Search up to 4 levels from parent directory
             parent_dir_depth = len(parent_dir.split(os.sep))
             for root_dir, dirs, files in os.walk(parent_dir):
-                # 現在のディレクトリの深さを計算
+                # Calculate current directory depth
                 current_depth = len(root_dir.split(os.sep)) - parent_dir_depth
-                # 4階層まで探索
+                # Search up to 4 levels
                 if current_depth > 4:
-                    dirs[:] = []  # これより深い探索を停止
+                    dirs[:] = []  # Stop searching deeper
                     continue
-                
-                # メッシュファイルのbasenameと一致するファイルを探す
+
+                # Find file matching mesh file basename
                 if mesh_basename in files:
                     candidate = os.path.join(root_dir, mesh_basename)
                     if os.path.exists(candidate):
@@ -880,7 +880,7 @@ class URDFParser:
         """
         joints_data = []
 
-        # デバッグ: ジョイント要素の数を確認
+        # Debug: check number of joint elements
         joint_elems = root.findall('joint')
         if self.verbose:
             print(f"\n[URDFParser] Found {len(joint_elems)} joint elements in URDF")
@@ -1132,19 +1132,19 @@ class SDFParser:
         tree = ET.parse(sdf_file_path)
         root = tree.getroot()
         
-        # SDFファイルのルート要素は'sdf'または'gazebo'
+        # Root element of SDF file is 'sdf' or 'gazebo'
         if root.tag not in ['sdf', 'gazebo']:
             raise ValueError(f"Root element must be 'sdf' or 'gazebo' for valid SDF file, got '{root.tag}'")
-        
-        # SDFバージョンを取得
+
+        # Get SDF version
         sdf_version = root.get('version', '1.0')
         if self.verbose:
             print(f"SDF version: {sdf_version}")
         
-        # <model>要素を探す
+        # Find <model> element
         model_elem = root.find('model')
         if model_elem is None:
-            # <world>要素の中に<model>がある場合
+            # Check if <model> is inside <world> element
             world_elem = root.find('world')
             if world_elem is not None:
                 model_elem = world_elem.find('model')
@@ -1156,20 +1156,20 @@ class SDFParser:
         if self.verbose:
             print(f"Model name: {robot_name}")
         
-        # SDFをURDF形式に変換するために、URDFParserを使用
-        # まず、SDFを一時的にURDF形式に変換
-        # 注: これは簡易的な実装で、完全なSDF→URDF変換ではない
-        # より完全な実装には、sdf2urdfツールの使用を推奨
-        
-        # SDFの<link>と<joint>をパース
+        # Use URDFParser to convert SDF to URDF format
+        # First, temporarily convert SDF to URDF format
+        # Note: This is a simplified implementation, not complete SDF->URDF conversion
+        # For more complete implementation, recommend using sdf2urdf tool
+
+        # Parse SDF <link> and <joint>
         links_data = {}
         joints_data = []
-        closed_loop_joints = []  # 閉リンクジョイント（ball, gearbox, screw）を別管理
+        closed_loop_joints = []  # Manage closed-loop joints (ball, gearbox, screw) separately
         materials_data = {}
         missing_meshes = []
         
         # Parse links
-        # まず、リンクのpose情報を保存するための辞書を作成
+        # First, create dictionary to store link pose information
         link_poses = {}  # {link_name: {'xyz': [...], 'rpy': [...]}}
         
         for link_elem in model_elem.findall('link'):
@@ -1177,7 +1177,7 @@ class SDFParser:
             if not link_name:
                 continue
             
-            # Parse link pose (モデル座標系での位置)
+            # Parse link pose (position in model coordinate system)
             link_pose = {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]}
             pose_elem = link_elem.find('pose')
             if pose_elem is not None:
@@ -1196,7 +1196,7 @@ class SDFParser:
                 'inertia': {'ixx': 0.0, 'iyy': 0.0, 'izz': 0.0, 'ixy': 0.0, 'ixz': 0.0, 'iyz': 0.0},
                 'inertial_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
                 'stl_file': None,
-                'stl_filename_original': None,  # 元のメッシュファイル名（見つからない場合に使用）
+                'stl_filename_original': None,  # Original mesh filename (used when not found)
                 'color': [1.0, 1.0, 1.0, 1.0],
                 'mesh_scale': [1.0, 1.0, 1.0],
                 'visual_origin': {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]},
@@ -1285,7 +1285,7 @@ class SDFParser:
                         if uri_elem is not None:
                             mesh_filename = uri_elem.text
                             if mesh_filename:
-                                # package://パスを解決
+                                # Resolve package:// path
                                 resolved_path = self._resolve_mesh_path(mesh_filename, sdf_file_path)
                                 if resolved_path:
                                     if visual_idx == 0:
@@ -1303,7 +1303,7 @@ class SDFParser:
                                             'visual_origin': visual_origin
                                         })
                                 else:
-                                    # メッシュファイルが見つからない場合、stl_filename_originalを設定
+                                    # If mesh file not found, set stl_filename_original
                                     if visual_idx == 0:
                                         link_data['stl_filename_original'] = mesh_filename
                                         link_data['visual_origin'] = visual_origin
@@ -1513,23 +1513,23 @@ class SDFParser:
             
             joint_type = joint_elem.get('type', 'fixed')
 
-            # 閉リンクジョイント（ball, gearbox, screw）かどうかをチェック
+            # Check if this is a closed-loop joint (ball, gearbox, screw)
             is_closed_loop = joint_type in ['ball', 'gearbox', 'screw']
 
-            # SDFのjoint typeをURDFのjoint typeに変換
-            # gearbox, ball, screwなどの特殊なタイプは閉リンクとして別管理
+            # Convert SDF joint type to URDF joint type
+            # Special types like gearbox, ball, screw are managed separately as closed-loop
             type_mapping = {
                 'revolute': 'revolute',
                 'prismatic': 'prismatic',
                 'fixed': 'fixed',
                 'continuous': 'continuous',
-                'ball': 'ball',      # 閉リンクとして保持
-                'gearbox': 'gearbox',  # 閉リンクとして保持
-                'screw': 'screw'     # 閉リンクとして保持
+                'ball': 'ball',      # Keep as closed-loop
+                'gearbox': 'gearbox',  # Keep as closed-loop
+                'screw': 'screw'     # Keep as closed-loop
             }
             urdf_joint_type = type_mapping.get(joint_type, 'fixed')
 
-            # gearboxタイプのジョイントの場合、gearbox_reference_bodyとgearbox_ratioを保存
+            # For gearbox type joints, save gearbox_reference_body and gearbox_ratio
             gearbox_reference_body = None
             gearbox_ratio = 1.0
             if joint_type == 'gearbox':
@@ -1539,7 +1539,7 @@ class SDFParser:
                     if self.verbose:
                         print(f"  Joint '{joint_name}' (gearbox): reference_body = {gearbox_reference_body}")
 
-                # gearbox_ratioを取得
+                # Get gearbox_ratio
                 gearbox_ratio_elem = joint_elem.find('gearbox_ratio')
                 if gearbox_ratio_elem is not None and gearbox_ratio_elem.text:
                     gearbox_ratio = float(gearbox_ratio_elem.text)
@@ -1555,8 +1555,8 @@ class SDFParser:
             origin_rpy = [0.0, 0.0, 0.0]
             pose_elem = joint_elem.find('pose')
             if pose_elem is not None:
-                # SDF の joint <pose> は child link の座標系で表現される
-                # URDF の joint <origin> は parent link の座標系で表現されるため、変換が必要
+                # SDF joint <pose> is expressed in child link coordinate system
+                # URDF joint <origin> is expressed in parent link coordinate system, so conversion is needed
                 pose_str = pose_elem.text
                 if pose_str:
                     pose_values = [float(v) for v in pose_str.split()]
@@ -1567,7 +1567,7 @@ class SDFParser:
                     if len(pose_values) >= 6:
                         joint_rpy_in_child = pose_values[3:6]
 
-                    # Child frame -> Parent frame への変換
+                    # Transform from Child frame to Parent frame
                     parent_in_poses = parent_link in link_poses
                     child_in_poses = child_link in link_poses
                     if self.verbose:
@@ -1578,9 +1578,9 @@ class SDFParser:
                     if parent_link and child_link and parent_in_poses and child_in_poses:
                         import numpy as np
 
-                        # 回転行列変換関数（既存のものを再利用）
+                        # Rotation matrix transformation functions (reuse existing)
                         def rpy_to_matrix(rpy):
-                            """RPY（Roll-Pitch-Yaw）から回転行列を作成"""
+                            """Create rotation matrix from RPY (Roll-Pitch-Yaw)"""
                             r, p, y = rpy
                             cx, sx = np.cos(r), np.sin(r)
                             cy, sy = np.cos(p), np.sin(p)
@@ -1591,7 +1591,7 @@ class SDFParser:
                             return Rz @ Ry @ Rx
 
                         def matrix_to_rpy(R):
-                            """回転行列からRPY（Roll-Pitch-Yaw）を抽出"""
+                            """Extract RPY (Roll-Pitch-Yaw) from rotation matrix"""
                             sy = R[2, 0]
                             cy = np.sqrt(R[0, 0]**2 + R[1, 0]**2)
                             if cy > 1e-6:
@@ -1607,14 +1607,14 @@ class SDFParser:
                         parent_pose = link_poses[parent_link]
                         child_pose = link_poses[child_link]
 
-                        # 1. Joint の child frame での pose を child link のワールド pose に合成
+                        # 1. Combine joint pose in child frame with child link world pose
                         R_child = rpy_to_matrix(child_pose['rpy'])
                         R_joint_in_child = rpy_to_matrix(joint_rpy_in_child)
                         R_joint_world = R_child @ R_joint_in_child
 
                         joint_xyz_world = np.array(child_pose['xyz']) + R_child @ np.array(joint_xyz_in_child)
 
-                        # 2. Joint のワールド pose を parent link のローカル座標に変換
+                        # 2. Convert joint world pose to parent link local coordinates
                         R_parent = rpy_to_matrix(parent_pose['rpy'])
                         R_joint_in_parent = R_parent.T @ R_joint_world
                         origin_rpy = matrix_to_rpy(R_joint_in_parent)
@@ -1623,7 +1623,7 @@ class SDFParser:
                         local_diff = R_parent.T @ world_diff
                         origin_xyz = local_diff.tolist()
 
-                        # デバッグ出力
+                        # Debug output
                         print(f"\n=== SDF Joint Origin Calculation: '{joint_name}' (from joint pose) ===")
                         print(f"  Parent link: '{parent_link}'")
                         print(f"    World pose XYZ: {parent_pose['xyz']}")
@@ -1639,20 +1639,20 @@ class SDFParser:
                         print(f"    RPY (rad): {origin_rpy}")
                         print("=== End SDF Joint Origin Calculation ===\n")
                     else:
-                        # Link poses がない場合は、そのまま使用（フォールバック）
+                        # If link poses not available, use as-is (fallback)
                         origin_xyz = joint_xyz_in_child
                         origin_rpy = joint_rpy_in_child
             else:
-                # <joint>に<pose>がない場合、親リンクと子リンクの<pose>の差から計算
+                # If <joint> has no <pose>, calculate from difference of parent and child link <pose>
                 if parent_link and child_link and parent_link in link_poses and child_link in link_poses:
                     parent_pose = link_poses[parent_link]
                     child_pose = link_poses[child_link]
-                    # 親の回転行列を計算してワールド座標からローカル座標に変換
+                    # Calculate parent rotation matrix and convert from world to local coordinates
                     import numpy as np
 
-                    # 親のRPYから回転行列を作成
+                    # Create rotation matrix from parent's RPY
                     def rpy_to_matrix(rpy):
-                        """RPY（Roll-Pitch-Yaw）から回転行列を作成"""
+                        """Create rotation matrix from RPY (Roll-Pitch-Yaw)"""
                         r, p, y = rpy
                         # Rz(yaw) * Ry(pitch) * Rx(roll)
                         cx, sx = np.cos(r), np.sin(r)
@@ -1665,46 +1665,46 @@ class SDFParser:
 
                         return Rz @ Ry @ Rx
 
-                    # 回転行列からRPYを抽出
+                    # Extract RPY from rotation matrix
                     def matrix_to_rpy(R):
-                        """回転行列からRPY（Roll-Pitch-Yaw）を抽出"""
-                        # R = Rz * Ry * Rx の形式からRPYを逆算
+                        """Extract RPY (Roll-Pitch-Yaw) from rotation matrix"""
+                        # Calculate RPY from R = Rz * Ry * Rx form
                         sy = R[2, 0]
                         cy = np.sqrt(R[0, 0]**2 + R[1, 0]**2)
 
-                        if cy > 1e-6:  # 特異点でない場合
+                        if cy > 1e-6:  # Non-singular case
                             roll = np.arctan2(R[2, 1], R[2, 2])
                             pitch = np.arctan2(-R[2, 0], cy)
                             yaw = np.arctan2(R[1, 0], R[0, 0])
-                        else:  # ジンバルロック
+                        else:  # Gimbal lock
                             roll = np.arctan2(-R[1, 2], R[1, 1])
                             pitch = np.arctan2(-R[2, 0], cy)
                             yaw = 0
 
                         return [roll, pitch, yaw]
 
-                    # 親と子のワールド座標での回転行列
+                    # Rotation matrices in world coordinates for parent and child
                     R_parent = rpy_to_matrix(parent_pose['rpy'])
                     R_child = rpy_to_matrix(child_pose['rpy'])
 
-                    # 親のローカル座標系での子の回転: R_relative = R_parent^T * R_child
+                    # Child rotation in parent's local coordinate system: R_relative = R_parent^T * R_child
                     R_relative = R_parent.T @ R_child
 
-                    # 相対回転行列からRPYを抽出
+                    # Extract RPY from relative rotation matrix
                     origin_rpy = matrix_to_rpy(R_relative)
 
-                    # 親のローカル座標系での位置の差を計算
-                    # ワールド座標での位置の差
+                    # Calculate position difference in parent's local coordinate system
+                    # Position difference in world coordinates
                     world_diff = np.array([
                         child_pose['xyz'][0] - parent_pose['xyz'][0],
                         child_pose['xyz'][1] - parent_pose['xyz'][1],
                         child_pose['xyz'][2] - parent_pose['xyz'][2]
                     ])
-                    # 親のローカル座標系に変換
+                    # Convert to parent's local coordinate system
                     local_diff = R_parent.T @ world_diff
                     origin_xyz = local_diff.tolist()
 
-                    # デバッグ出力（常に表示）
+                    # Debug output (always displayed)
                     print(f"\n=== SDF Joint Origin Calculation: '{joint_name}' ===")
                     print(f"  Parent link: '{parent_link}'")
                     print(f"    World pose XYZ: {parent_pose['xyz']}")
@@ -1756,13 +1756,13 @@ class SDFParser:
                 'axis': axis,
                 'limit': limit,
                 'dynamics': {'damping': 0.0, 'friction': 0.0},
-                'gearbox_reference_body': gearbox_reference_body,  # gearboxタイプの場合のみ設定
-                'gearbox_ratio': gearbox_ratio  # gearboxタイプの場合のみ意味を持つ
+                'gearbox_reference_body': gearbox_reference_body,  # Only set for gearbox type
+                'gearbox_ratio': gearbox_ratio  # Only meaningful for gearbox type
             }
 
-            # 閉リンクジョイントは別リストに保存、通常ジョイントはjoints_dataに追加
+            # Save closed-loop joints to separate list, add normal joints to joints_data
             if is_closed_loop:
-                # original_typeフィールドを追加して元のタイプを保存
+                # Add original_type field to preserve original type
                 joint_data['original_type'] = joint_type
                 closed_loop_joints.append(joint_data)
                 if self.verbose:
@@ -1777,7 +1777,7 @@ class SDFParser:
             'robot_name': robot_name,
             'links_data': links_data,
             'joints_data': joints_data,
-            'closed_loop_joints': closed_loop_joints,  # 閉リンクジョイント情報を追加
+            'closed_loop_joints': closed_loop_joints,  # Add closed-loop joint information
             'materials_data': materials_data,
             'missing_meshes': missing_meshes
         }
@@ -1792,20 +1792,20 @@ class SDFParser:
         Returns:
             Absolute path to mesh file, or None if not found
         """
-        # URDFParserの_resolve_mesh_pathと同様の処理
-        # 簡易実装のため、URDFParserを再利用することも可能
+        # Same processing as URDFParser's _resolve_mesh_path
+        # For simplified implementation, can reuse URDFParser
         urdf_dir = os.path.dirname(os.path.abspath(sdf_file_path))
         mesh_basename = os.path.basename(mesh_filename)
-        
-        # package://パスの処理
+
+        # Handle package:// path
         if mesh_filename.startswith('package://'):
-            # package://パスを処理（簡易実装）
+            # Process package:// path (simplified implementation)
             parts = mesh_filename.split('/')
             if len(parts) > 2:
                 package_name = parts[2]
                 relative_path = '/'.join(parts[3:]) if len(parts) > 3 else ''
-                
-                # パッケージルートを探す（循環参照を避けるため、直接関数を呼び出す）
+
+                # Find package root (call function directly to avoid circular reference)
                 package_root = find_package_root(sdf_file_path, package_name, max_search_depth=10, verbose=self.verbose)
                 
                 if package_root:
@@ -1817,7 +1817,7 @@ class SDFParser:
                     if os.path.exists(candidate):
                         return candidate
         
-        # 相対パスの処理
+        # Handle relative path
         candidates = [
             os.path.join(urdf_dir, mesh_filename),
             os.path.join(urdf_dir, 'meshes', mesh_basename),
@@ -2117,7 +2117,7 @@ class MJCFParser:
             'meshes': meshes_data,
             'eulerseq': eulerseq,
             'default_classes': default_classes,
-            'closed_loop_joints': closed_loop_joints,  # 閉リンクジョイント情報を追加
+            'closed_loop_joints': closed_loop_joints,  # Add closed-loop joint information
             'ir': ir  # New IR structure
         }
 
@@ -2267,7 +2267,7 @@ class MJCFParser:
                     #     print(f"  Default class '{class_name}' mesh scale: {class_defaults['mesh_scale']}")
 
             # Save class (use None for global default if no class name)
-            # グローバルdefault（class名なし）もNoneキーで保存
+            # Global default (no class name) is also saved with None key
             key = class_name if class_name else None
             if class_defaults:  # Only save if there are actual defaults
                 default_classes[key] = class_defaults
@@ -2397,11 +2397,11 @@ class MJCFParser:
             return meshes_data
 
         mjcf_dir = os.path.dirname(mjcf_file_path)
-        parent_dir = os.path.dirname(mjcf_dir)  # 上位1階層
+        parent_dir = os.path.dirname(mjcf_dir)  # One level up
 
-        # Mesh search directories（上位1階層、そこから下位2階層まで）
+        # Mesh search directories (one level up, then up to 2 levels down)
         def collect_search_dirs(base_dir, max_depth=2):
-            """指定されたディレクトリから、下位2階層までのディレクトリを収集"""
+            """Collect directories from specified directory, up to 2 levels down"""
             dirs = []
             if not os.path.exists(base_dir):
                 return dirs
@@ -2423,19 +2423,19 @@ class MJCFParser:
             walk_dirs(base_dir, 0)
             return dirs
 
-        # 上位1階層から下位2階層までのディレクトリを収集
+        # Collect directories from one level up to 2 levels down
         search_dirs = []
-        # MJCFディレクトリとその下位2階層
+        # MJCF directory and its 2 levels down
         search_dirs.extend(collect_search_dirs(mjcf_dir, max_depth=2))
-        # 上位1階層とその下位2階層
+        # One level up and its 2 levels down
         if os.path.exists(parent_dir):
             search_dirs.extend(collect_search_dirs(parent_dir, max_depth=2))
-        # working_dirとその下位2階層
+        # working_dir and its 2 levels down
         if working_dir and os.path.exists(working_dir):
             search_dirs.extend(collect_search_dirs(working_dir, max_depth=2))
-        
-        # 重複を除去
-        search_dirs = list(dict.fromkeys(search_dirs))  # 順序を保持しながら重複除去
+
+        # Remove duplicates
+        search_dirs = list(dict.fromkeys(search_dirs))  # Remove duplicates while preserving order
 
         for mesh_elem in asset_elem.findall('mesh'):
             mesh_name = mesh_elem.get('name')
@@ -2505,7 +2505,7 @@ class MJCFParser:
                     for search_dir in search_dirs:
                         if not search_dir or not os.path.exists(search_dir):
                             continue
-                        # 直接のパスを試す
+                        # Try direct path
                         candidate = os.path.join(search_dir, mesh_basename)
                         if os.path.exists(candidate):
                             mesh_path = candidate
@@ -2513,14 +2513,14 @@ class MJCFParser:
                             #     print(f"Found mesh: {mesh_name} -> {mesh_path}")
                             break
                         
-                        # 下位2階層まで探索
+                        # Search up to 2 levels deep
                         search_dir_depth = len(search_dir.split(os.sep))
                         for root_dir, dirs, files in os.walk(search_dir):
-                            # 現在のディレクトリの深さを計算
+                            # Calculate current directory depth
                             current_depth = len(root_dir.split(os.sep)) - search_dir_depth
-                            # 2階層まで探索
+                            # Search up to 2 levels
                             if current_depth > 2:
-                                dirs[:] = []  # これより深い探索を停止
+                                dirs[:] = []  # Stop searching deeper
                                 continue
                             
                             if mesh_basename in files:
@@ -2818,7 +2818,7 @@ class MJCFParser:
                         'pos': geom_pos,
                         'quat': geom_quat,
                         'color': geom_color,
-                        'scale': combined_scale  # ← mesh scale を追加！
+                        'scale': combined_scale  # Add mesh scale
                     }
                     body_data['visuals'].append(visual_data)
 
@@ -2927,7 +2927,7 @@ class MJCFParser:
                         to_point = fromto_values[3:6]
                         
                         # Calculate capsule parameters from fromto
-                        # MuJoCo fromto: 2点間の距離 = 中心軸の長さ（端点間）
+                        # MuJoCo fromto: distance between 2 points = central axis length (between endpoints)
                         direction = [to_point[i] - from_point[i] for i in range(3)]
                         fromto_distance = math.sqrt(sum(d*d for d in direction))
                         
@@ -2940,24 +2940,24 @@ class MJCFParser:
                         # Center position
                         center_pos = [(from_point[i] + to_point[i]) / 2.0 for i in range(3)]
                         
-                        # MJCFのfromtoは中心軸の長さを指定するため、cylinder部分の長さはそのままdistance
+                        # MJCF fromto specifies central axis length, so cylinder length is directly the distance
                         cylinder_length = fromto_distance
-                        
-                        # fromto方向から回転を計算（明示回転がない場合のみ）
+
+                        # Calculate rotation from fromto direction (only if no explicit rotation)
                         if fromto_distance > 0 and not has_explicit_geom_rot:
-                            # 方向ベクトルを正規化
+                            # Normalize direction vector
                             dx, dy, dz = (direction[0] / fromto_distance,
                                           direction[1] / fromto_distance,
                                           direction[2] / fromto_distance)
-                            # z軸(0,0,1)からdirectionへの回転を求める
+                            # Find rotation from z-axis (0,0,1) to direction
                             dot = max(min(dz, 1.0), -1.0)
                             if dot > 0.999999:
                                 fromto_quat = [1.0, 0.0, 0.0, 0.0]
                             elif dot < -0.999999:
-                                # 180度回転（x軸回りで反転）
+                                # 180 degree rotation (flip around x-axis)
                                 fromto_quat = [0.0, 1.0, 0.0, 0.0]
                             else:
-                                # 回転軸 = z × direction
+                                # Rotation axis = z × direction
                                 ax = -dy
                                 ay = dx
                                 az = 0.0
@@ -2974,14 +2974,14 @@ class MJCFParser:
                             # Update degrees after overriding geom_rpy
                             geom_rpy_deg = [math.degrees(r) for r in geom_rpy]
                         
-                        # capsule の length は cylinder 部分の長さとして保存
-                        # (両端の半球は別途描画されるため、lengthには含めない)
+                        # Capsule length is saved as cylinder portion length
+                        # (hemispheres at both ends are drawn separately, not included in length)
                         fromto_geom_type = geom_type if geom_type in ['capsule', 'cylinder'] else 'capsule'
                         collider_data = {
                             'type': fromto_geom_type,
                             'geometry': {
                                 'radius': radius,
-                                'length': cylinder_length  # cylinder部分のみの長さ
+                                'length': cylinder_length  # Cylinder portion length only
                             },
                             'position': center_pos,
                             'rotation': geom_rpy_deg
@@ -3251,27 +3251,27 @@ class MJCFParser:
                         joint_data['limit']['lower'] = range_vals[0]
                         joint_data['limit']['upper'] = range_vals[1]
 
-            # Parse damping (個別ジョイント属性が優先)
+            # Parse damping (individual joint attribute takes precedence)
             damping_str = joint_elem.get('damping')
             if damping_str:
                 joint_data['dynamics']['damping'] = float(damping_str)
 
-            # Parse frictionloss (個別ジョイント属性が優先)
+            # Parse frictionloss (individual joint attribute takes precedence)
             frictionloss_str = joint_elem.get('frictionloss')
             if frictionloss_str:
                 joint_data['dynamics']['friction'] = float(frictionloss_str)
 
-            # Parse armature (個別ジョイント属性が優先)
+            # Parse armature (individual joint attribute takes precedence)
             armature_str = joint_elem.get('armature')
             if armature_str:
                 joint_data['dynamics']['armature'] = float(armature_str)
-            
-            # Parse stiffness (個別ジョイント属性が優先)
+
+            # Parse stiffness (individual joint attribute takes precedence)
             stiffness_str = joint_elem.get('stiffness')
             if stiffness_str:
                 joint_data['dynamics']['stiffness'] = float(stiffness_str)
-            
-            # Parse margin (個別ジョイント属性が優先)
+
+            # Parse margin (individual joint attribute takes precedence)
             margin_str = joint_elem.get('margin')
             if margin_str:
                 joint_data['dynamics']['margin'] = float(margin_str)
@@ -3286,7 +3286,7 @@ class MJCFParser:
                     ref_angle_deg = ref_value
                 else:
                     ref_angle_deg = math.degrees(ref_value)
-                joint_data['ref'] = ref_angle_deg  # 度単位で保存
+                joint_data['ref'] = ref_angle_deg  # Store in degrees
                 # if self.verbose:
                 #     print(f"{'  ' * level}    Joint '{joint_name}' ref angle: {ref_value} {angle_unit} = {ref_angle_deg} degrees")
 
@@ -3385,9 +3385,9 @@ class MJCFParser:
                     print(f"{'  ' * level}      Box: x={size_values[0]*2}, y={size_values[1]*2}, z={size_values[2]*2}")
 
         elif geom_type == 'ellipsoid':
-            # MJCF: [half_x, half_y, half_z] → Assembler: {size_x, size_y, size_z} (boxとして扱う)
+            # MJCF: [half_x, half_y, half_z] -> Assembler: {size_x, size_y, size_z} (treated as box)
             if len(size_values) >= 3:
-                collider_data['type'] = 'box'  # ellipsoidはboxとして扱う
+                collider_data['type'] = 'box'  # Treat ellipsoid as box
                 collider_data['geometry']['size_x'] = size_values[0] * 2.0
                 collider_data['geometry']['size_y'] = size_values[1] * 2.0
                 collider_data['geometry']['size_z'] = size_values[2] * 2.0
@@ -3859,44 +3859,44 @@ class MJCFParser:
 # ============================================================================
 
 def auto_detect_mesh_directories(urdf_file):
-    """URDFファイルの親ディレクトリから潜在的なmeshディレクトリを自動検出
-    
-    検索範囲：
-    - 上位ディレクトリは1階層（URDFファイルの親ディレクトリの親）
-    - そこから下位ディレクトリまでは2階層探索
+    """Auto-detect potential mesh directories from URDF file's parent directory
+
+    Search range:
+    - Parent directories: 1 level up (parent of URDF file's directory)
+    - From there: search up to 2 levels down
     """
     potential_dirs = []
 
     urdf_dir = os.path.dirname(urdf_file)
-    parent_dir = os.path.dirname(urdf_dir)  # 上位1階層
+    parent_dir = os.path.dirname(urdf_dir)  # One level up
 
     print(f"\n=== Auto-detecting mesh directories ===")
     print(f"URDF directory: {urdf_dir}")
     print(f"Parent directory (upper 1 level): {parent_dir}")
 
-    # 上位ディレクトリから下位2階層まで探索
+    # Search from parent directory up to 2 levels down
     def search_directories(base_dir, current_depth, max_depth):
-        """再帰的にディレクトリを探索（最大深さ制限付き）"""
+        """Recursively search directories (with max depth limit)"""
         if current_depth > max_depth:
             return
-        
+
         try:
             for item in os.listdir(base_dir):
                 item_path = os.path.join(base_dir, item)
                 if os.path.isdir(item_path):
-                    # 'mesh' を含むディレクトリ名を検索（大文字小文字を区別しない）
+                    # Search for directory names containing 'mesh' (case insensitive)
                     if 'mesh' in item.lower():
                         if item_path not in potential_dirs:
                             potential_dirs.append(item_path)
                             print(f"  Found potential mesh directory (depth {current_depth}): {item_path}")
-                    
-                    # 下位ディレクトリを探索（2階層まで）
+
+                    # Search subdirectories (up to 2 levels)
                     if current_depth < max_depth:
                         search_directories(item_path, current_depth + 1, max_depth)
         except Exception as e:
             print(f"Error scanning directory {base_dir}: {str(e)}")
 
-    # 上位ディレクトリから探索開始（深さ0から開始、最大2階層まで）
+    # Start search from parent directory (from depth 0, max 2 levels)
     try:
         search_directories(parent_dir, 0, 2)
     except Exception as e:
@@ -3909,9 +3909,9 @@ def auto_detect_mesh_directories(urdf_file):
 
 
 def search_stl_files_in_directory(meshes_dir, missing_stl_files, links_data):
-    """指定されたディレクトリ内でSTLファイルを検索
-    
-    検索範囲：下位ディレクトリまで2階層探索
+    """Search for STL files in specified directory
+
+    Search range: up to 2 levels in subdirectories
     """
     found_count = 0
 
@@ -3921,28 +3921,28 @@ def search_stl_files_in_directory(meshes_dir, missing_stl_files, links_data):
         link_name = missing_item['link_name']
         basename = missing_item['basename']
 
-        # すでに見つかっている場合はスキップ
+        # Skip if already found
         if links_data[link_name]['stl_file']:
             continue
 
-        # 指定されたディレクトリ内で検索
+        # Search in specified directory
         candidate_path = os.path.join(meshes_dir, basename)
         if os.path.exists(candidate_path):
             links_data[link_name]['stl_file'] = candidate_path
-            print(f"  ✓ Found STL for {link_name}: {candidate_path}")
+            print(f"  Found STL for {link_name}: {candidate_path}")
             found_count += 1
         else:
-            # サブディレクトリも検索（最大2階層まで）
+            # Also search subdirectories (up to 2 levels)
             meshes_dir_depth = len(meshes_dir.split(os.sep))
             for root_dir, dirs, files in os.walk(meshes_dir):
-                # 現在のディレクトリの深さを計算
+                # Calculate current directory depth
                 current_depth = len(root_dir.split(os.sep)) - meshes_dir_depth
-                # 2階層まで探索
+                # Search up to 2 levels
                 if current_depth > 2:
-                    # これより深いディレクトリは探索しない
-                    dirs[:] = []  # os.walkのdirsを空にすることで、それより深い探索を停止
+                    # Don't search directories deeper than this
+                    dirs[:] = []  # Clear dirs to stop os.walk from going deeper
                     continue
-                
+
                 if basename in files:
                     candidate_path = os.path.join(root_dir, basename)
                     links_data[link_name]['stl_file'] = candidate_path
@@ -3958,10 +3958,10 @@ def search_stl_files_in_directory(meshes_dir, missing_stl_files, links_data):
 # ============================================================================
 
 def import_urdf(graph):
-        """URDFファイルをインポート"""
+        """Import URDF file"""
         try:
-            # URDFファイル、xacroファイル、SDFファイル、またはSRDFファイルを選択するダイアログ
-            # デフォルトで.urdf、.xacro、.sdf、.srdfのすべてを表示
+            # Dialog to select URDF, xacro, SDF, or SRDF file
+            # Default shows all .urdf, .xacro, .sdf, .srdf files
             urdf_file, _ = QtWidgets.QFileDialog.getOpenFileName(
                 graph.widget,
                 "Select URDF, xacro, SDF, or SRDF file to import",
@@ -3974,25 +3974,25 @@ def import_urdf(graph):
                 return False
 
             print(f"Importing URDF from: {urdf_file}")
-            
-            # ファイルの種類を確認
+
+            # Check file type
             file_ext = os.path.splitext(urdf_file)[1].lower()
             is_xacro = file_ext in ['.xacro', '.xacro.urdf']
             is_srdf = file_ext == '.srdf'
             is_sdf = file_ext == '.sdf'
-            
+
             if is_srdf:
                 print(f"  Detected SRDF file, will search for corresponding URDF/SDF file")
-                # SRDFファイルの場合、対応するURDF/SDFファイルを探す（上1階層、下4階層）
+                # For SRDF file, find corresponding URDF/SDF file (1 level up, 4 levels down)
                 srdf_dir = os.path.dirname(urdf_file)
                 srdf_basename = os.path.splitext(os.path.basename(urdf_file))[0]
-                
-                # 上1階層、下4階層まで探索する関数
+
+                # Function to search 1 level up, 4 levels down
                 def search_urdf_sdf_files(base_dir, basename, max_depth=4):
-                    """上1階層、下4階層までURDF/SDFファイルを探索"""
+                    """Search for URDF/SDF files 1 level up, 4 levels down"""
                     candidates = []
                     
-                    # 上1階層
+                    # Search 1 level up
                     parent_dir = os.path.dirname(base_dir)
                     if os.path.isdir(parent_dir):
                         candidates.extend([
@@ -4001,12 +4001,12 @@ def import_urdf(graph):
                             os.path.join(parent_dir, f"{basename}.sdf"),
                         ])
                     
-                    # 下4階層まで探索
+                    # Search up to 4 levels down
                     base_depth = len(base_dir.split(os.sep))
                     for root_dir, dirs, files in os.walk(base_dir):
                         current_depth = len(root_dir.split(os.sep)) - base_depth
                         if current_depth > max_depth:
-                            dirs[:] = []  # これより深い探索を停止
+                            dirs[:] = []  # Stop searching deeper
                             continue
                         
                         candidates.extend([
@@ -4034,7 +4034,7 @@ def import_urdf(graph):
                         f"Please select the URDF/SDF file manually.\n\n"
                         f"SRDF file: {urdf_file}"
                     )
-                    # URDF/SDFファイルを手動で選択させる
+                    # Let user manually select URDF/SDF file
                     urdf_file_found, _ = QtWidgets.QFileDialog.getOpenFileName(
                         graph.widget,
                         "Select corresponding URDF, xacro, or SDF file",
@@ -4047,7 +4047,7 @@ def import_urdf(graph):
                 
                 srdf_file = urdf_file
                 urdf_file = urdf_file_found
-                # ファイル拡張子を再確認
+                # Re-check file extension
                 file_ext = os.path.splitext(urdf_file)[1].lower()
                 is_xacro = file_ext in ['.xacro', '.xacro.urdf']
                 is_sdf = file_ext == '.sdf'
@@ -4059,7 +4059,7 @@ def import_urdf(graph):
                 srdf_file = None
             else:
                 print(f"  Detected URDF file, will be parsed directly")
-                # URDFファイルの場合、同じディレクトリにあるSRDFファイルを自動検索
+                # For URDF file, auto-search for SRDF file in same directory
                 urdf_dir = os.path.dirname(urdf_file)
                 urdf_basename = os.path.splitext(os.path.basename(urdf_file))[0]
                 srdf_candidate = os.path.join(urdf_dir, f"{urdf_basename}.srdf")
@@ -4069,23 +4069,23 @@ def import_urdf(graph):
                 else:
                     srdf_file = None
 
-            # URDFParserまたはSDFParserを使用してパース
+            # Parse using URDFParser or SDFParser
             try:
                 if is_sdf:
                     sdf_parser = SDFParser(verbose=True)
                     sdf_data = sdf_parser.parse_sdf(urdf_file)
-                    # SDFデータをURDF形式に変換
+                    # Convert SDF data to URDF format
                     robot_name = sdf_data['robot_name']
                     links_data = sdf_data['links_data']
                     joints_data = sdf_data['joints_data']
-                    closed_loop_joints_data = sdf_data.get('closed_loop_joints', [])  # 閉リンクジョイント情報を取得
+                    closed_loop_joints_data = sdf_data.get('closed_loop_joints', [])  # Get closed-loop joint info
                     materials_data = sdf_data['materials_data']
                     missing_stl_files = sdf_data['missing_meshes']
                     urdf_data = {
                         'robot_name': robot_name,
                         'links': links_data,
                         'joints': joints_data,
-                        'closed_loop_joints': closed_loop_joints_data,  # 閉リンクジョイント情報を追加
+                        'closed_loop_joints': closed_loop_joints_data,  # Add closed-loop joint info
                         'materials': materials_data,
                         'missing_meshes': missing_stl_files
                     }
@@ -4132,15 +4132,15 @@ def import_urdf(graph):
                 traceback.print_exc()
                 return False
 
-            # パースされたデータを取得
+            # Get parsed data
             robot_name = urdf_data['robot_name']
             links_data = urdf_data['links']
             joints_data = urdf_data['joints']
-            closed_loop_joints = urdf_data.get('closed_loop_joints', [])  # 閉リンクジョイント情報を取得
-            materials_data = urdf_data.get('materials', {})  # SDFの場合は空の可能性がある
-            missing_stl_files = urdf_data.get('missing_meshes', [])  # SDFの場合は空の可能性がある
+            closed_loop_joints = urdf_data.get('closed_loop_joints', [])  # Get closed-loop joint info
+            materials_data = urdf_data.get('materials', {})  # May be empty for SDF
+            missing_stl_files = urdf_data.get('missing_meshes', [])  # May be empty for SDF
 
-            # SRDFファイルを読み込む（存在する場合）
+            # Load SRDF file (if exists)
             srdf_data = None
             if 'srdf_file' in locals() and srdf_file:
                 try:
@@ -4159,7 +4159,7 @@ def import_urdf(graph):
                     traceback.print_exc()
                     srdf_data = None
 
-            # デバッグ: パースされたデータの概要を出力
+            # Debug: Output summary of parsed data
             print(f"\n=== URDF Parse Summary ===")
             print(f"Robot name: {robot_name}")
             print(f"Total links: {len(links_data)}")
@@ -4172,7 +4172,7 @@ def import_urdf(graph):
             else:
                 print(f"SRDF data loaded: No")
             
-            # リンクとジョイントが空でないか確認
+            # Check if links and joints are not empty
             if len(links_data) == 0:
                 QtWidgets.QMessageBox.warning(
                     graph.widget,
@@ -4189,18 +4189,18 @@ def import_urdf(graph):
             if len(joints_data) == 0:
                 print(f"  Warning: No joints found in URDF (this might be normal for a single-link robot)")
             
-            # リンク名のリストを出力
+            # Output list of link names
             print(f"\nLinks found:")
             for link_name in sorted(links_data.keys()):
                 print(f"  - {link_name}")
-            
-            # ジョイント名のリストを出力
+
+            # Output list of joint names
             if joints_data:
                 print(f"\nJoints found:")
                 for joint_data in joints_data:
                     print(f"  - {joint_data['name']}: {joint_data['parent']} -> {joint_data['child']}")
 
-            # 閉リンクジョイント名のリストを出力
+            # Output list of closed-loop joint names
             if closed_loop_joints:
                 print(f"\nClosed-loop joints found:")
                 for joint_data in closed_loop_joints:
@@ -4209,14 +4209,14 @@ def import_urdf(graph):
             print("=" * 30 + "\n")
 
             graph.robot_name = robot_name
-            graph.closed_loop_joints = closed_loop_joints  # 閉リンクジョイント情報を保存
+            graph.closed_loop_joints = closed_loop_joints  # Save closed-loop joint info
             print(f"Robot name set to: {robot_name}")
 
-            # UIのName:フィールドを更新
+            # Update UI Name: field
             if hasattr(graph, 'name_input') and graph.name_input:
                 graph.name_input.setText(robot_name)
 
-            # 追加のinertialログを出力（Assembler固有）
+            # Output additional inertial log (Assembler specific)
             for link_name, link_data in links_data.items():
                 if link_data['mass'] > 0.0 or any(link_data['inertia'].values()):
                     print(f"\n[URDF_INERTIAL_SOURCE] link_name={link_name}, source_urdf_path={urdf_file}")
@@ -4232,7 +4232,7 @@ def import_urdf(graph):
                     print(f"\n[URDF_INERTIAL_SOURCE] link_name={link_name}, source_urdf_path={urdf_file}")
                     print(f"  WARNING: <inertial> element not found - will use fallback/estimation")
 
-            # デバッグ: リンクとSTLファイルの状況を出力
+            # Debug: Output link and STL file status
             print(f"\n=== STL File Summary ===")
             print(f"Total links: {len(links_data)}")
             for link_name, link_data in links_data.items():
@@ -4245,11 +4245,11 @@ def import_urdf(graph):
             print(f"Missing STL files count: {len(missing_stl_files)}")
             print("=" * 30 + "\n")
 
-            # STLファイルが見つからなかった場合、自動検索してから手動指定
+            # If STL files not found, auto-search then allow manual specification
             if missing_stl_files:
                 initial_missing_count = len(missing_stl_files)
 
-                # 1. 親ディレクトリ内のmeshフォルダを自動検索
+                # 1. Auto-search mesh folders in parent directory
                 potential_dirs = graph.auto_detect_mesh_directories(urdf_file)
 
                 if potential_dirs:
@@ -4263,13 +4263,13 @@ def import_urdf(graph):
                     if total_auto_found > 0:
                         print(f"Auto-detection found {total_auto_found} STL file(s)")
 
-                    # missing_stl_filesリストを更新（見つかったものを除去）
+                    # Update missing_stl_files list (remove found items)
                     missing_stl_files = [
                         item for item in missing_stl_files
                         if not links_data[item['link_name']]['stl_file']
                     ]
 
-                # 2. まだ見つからないファイルがあれば、ユーザーに手動指定を促す
+                # 2. If files still not found, prompt user for manual specification
                 if missing_stl_files:
                     missing_count = len(missing_stl_files)
                     missing_list = '\n'.join([f"  - {item['link_name']}: {item['basename']}" for item in missing_stl_files[:5]])
@@ -4289,7 +4289,7 @@ def import_urdf(graph):
                     )
 
                     if response == QtWidgets.QMessageBox.Yes:
-                        # meshesディレクトリを手動で選択
+                        # Manually select meshes directory
                         meshes_dir = QtWidgets.QFileDialog.getExistingDirectory(
                             graph.widget,
                             "Select meshes directory",
@@ -4312,13 +4312,13 @@ def import_urdf(graph):
                                     f"Could not find any of the missing mesh files in the specified directory."
                                 )
 
-                            # missing_stl_filesリストを更新（見つかったものを除去）
+                            # Update missing_stl_files list (remove found items)
                             missing_stl_files = [
                                 item for item in missing_stl_files
                                 if not links_data[item['link_name']]['stl_file']
                             ]
                 else:
-                    # すべてのメッシュファイルが自動検出された
+                    # All mesh files were auto-detected
                     if initial_missing_count > 0:
                         QtWidgets.QMessageBox.information(
                             graph.widget,
@@ -4326,77 +4326,77 @@ def import_urdf(graph):
                             f"Automatically found all {initial_missing_count} missing mesh file(s)!"
                         )
 
-            # 各リンクに接続する子ジョイントの数を数える（decorationsも含む）
+            # Count child joints connected to each link (including decorations)
             link_child_counts = {}
             for link_name in links_data.keys():
                 link_child_counts[link_name] = 0
 
-            # 子ジョイントの数をカウント
+            # Count child joints
             for joint_data in joints_data:
                 parent_link = joint_data['parent']
-                # 親リンクがlink_child_countsにない場合は初期化（base_link用）
+                # Initialize if parent link not in link_child_counts (for base_link)
                 if parent_link not in link_child_counts:
                     link_child_counts[parent_link] = 0
                 link_child_counts[parent_link] += 1
 
-            # 閉リンクジョイントの親リンクもカウント（出力ポートが必要）
+            # Count closed-loop joint parent links too (output ports needed)
             for joint_data in closed_loop_joints:
                 parent_link = joint_data['parent']
                 if parent_link not in link_child_counts:
                     link_child_counts[parent_link] = 0
                 link_child_counts[parent_link] += 1
 
-            # decorationsの数を追加（各decorationも出力ポートが必要）
-            # 子ジョイントがないリンクでもdecorationがある場合はカウントする必要がある
+            # Add decoration count (each decoration also needs output port)
+            # Links without child joints but with decorations also need to be counted
             for link_name, link_data in links_data.items():
                 decoration_count = len(link_data.get('decorations', []))
                 if decoration_count > 0:
-                    # link_child_countsに存在しない場合は初期化
+                    # Initialize if not exists in link_child_counts
                     if link_name not in link_child_counts:
                         link_child_counts[link_name] = 0
                     link_child_counts[link_name] += decoration_count
                     print(f"Link '{link_name}' has {decoration_count} decoration(s) (total children: {link_child_counts[link_name]})")
 
-            # ノードを作成
+            # Create nodes
             nodes = {}
 
-            # 既存のbase_linkノードを探す（URDFにbase_linkがあるかどうかに関わらず）
+            # Find existing base_link node (regardless of whether URDF has base_link)
             base_node = graph.get_node_by_name('base_link')
-            base_link_sub_node = None  # base_link_subノード（必要に応じて作成）
+            base_link_sub_node = None  # base_link_sub node (created if needed)
 
-            # base_linkノードは常に作成する（URDFにbase_linkがあるかどうかに関わらず）
+            # base_link node is always created (regardless of whether URDF has base_link)
             if base_node:
                 print("Using existing base_link node")
             else:
-                # 既存のbase_linkがない場合は新規作成
+                # Create new if no existing base_link
                 print("Creating new base_link node")
                 base_node = graph.create_node(
                     'insilico.nodes.BaseLinkNode',
                     name='base_link',
-                    pos=QtCore.QPointF(50, 50)  # 中心近くに配置（MJCFと統一）
+                    pos=QtCore.QPointF(50, 50)  # Position near center (unified with MJCF)
                 )
 
             nodes['base_link'] = base_node
 
-            # URDFにbase_linkがある場合の処理
+            # Handle case when URDF has base_link
             if 'base_link' in links_data or 'base_link' in link_child_counts:
 
-                # URDFのbase_linkが空でないかチェック
-                # 既存のbase_linkがある場合、データの上書きを禁止
-                # URDFのbase_linkにデータがある場合、または子ノードがある場合はbase_link_subを作成
+                # Check if URDF's base_link is non-empty
+                # Prevent overwriting data if existing base_link exists
+                # Create base_link_sub if URDF's base_link has data or child nodes
                 base_link_has_children = link_child_counts.get('base_link', 0) > 0
                 
                 if 'base_link' in links_data:
                     base_link_data = links_data['base_link']
-                    # base_linkが空でないかチェック
-                    # 以下のいずれかがあれば空でないと判定：
+                    # Check if base_link is non-empty
+                    # Judged as non-empty if any of the following:
                     # - mass > 0
-                    # - inertiaが0でない
-                    # - stl_fileがある
-                    # - decorationsリストが空でない（複数のvisual要素がある）
-                    # - collider_typeが設定されている（collision要素がある）
-                    # - collider_enabledがTrue
-                    # - 子ノードがある（pointsデータが設定される）
+                    # - inertia is non-zero
+                    # - stl_file exists
+                    # - decorations list is not empty (multiple visual elements)
+                    # - collider_type is set (collision element exists)
+                    # - collider_enabled is True
+                    # - has child nodes (points data will be set)
                     is_base_link_non_empty = (
                         base_link_data.get('mass', 0.0) > 0.0 or
                         any(base_link_data.get('inertia', {}).values()) or
@@ -4407,7 +4407,7 @@ def import_urdf(graph):
                         base_link_has_children
                     )
                     
-                    # デバッグ: base_linkが空でないかチェック
+                    # Debug: Check if base_link is non-empty
                     print(f"  Checking if base_link is non-empty:")
                     print(f"    mass > 0: {base_link_data.get('mass', 0.0) > 0.0}")
                     print(f"    inertia non-zero: {any(base_link_data.get('inertia', {}).values())}")
@@ -4418,20 +4418,20 @@ def import_urdf(graph):
                     print(f"    has_children (points will be set): {base_link_has_children}")
                     print(f"    Result: is_base_link_non_empty = {is_base_link_non_empty}")
 
-                    # 既存のbase_linkがある場合、データの上書きを禁止
-                    # URDFのbase_linkにデータがある場合、または子ノードがある場合はbase_link_subを作成
+                    # Prevent overwriting data if existing base_link exists
+                    # Create base_link_sub if URDF's base_link has data or child nodes
                     if is_base_link_non_empty and base_node:
-                        # base_link_subノードを作成
+                        # Create base_link_sub node
                         print("URDF base_link is not empty, creating base_link_sub node")
                         base_link_pos = base_node.pos()
-                        # pos()がリストかQPointFか判定
+                        # Check if pos() returns list or QPointF
                         if isinstance(base_link_pos, (list, tuple)):
                             base_link_x = base_link_pos[0]
                             base_link_y = base_link_pos[1]
                         else:
                             base_link_x = base_link_pos.x()
                             base_link_y = base_link_pos.y()
-                        grid_spacing_value = 150  # パネル間の距離
+                        grid_spacing_value = 150  # Distance between panels
                         base_link_sub_pos = QtCore.QPointF(base_link_x + grid_spacing_value, base_link_y)
                         
                         base_link_sub_node = graph.create_node(
@@ -4441,48 +4441,48 @@ def import_urdf(graph):
                         )
                         nodes['base_link_sub'] = base_link_sub_node
 
-                        # 初期化時に追加されたポートとポイントをクリア（必ず実行）
+                        # Clear ports and points added during initialization (always execute)
                         current_ports = len(base_link_sub_node.output_ports())
-                        # すべての出力ポートの接続をクリアしてから削除
+                        # Clear connections of all output ports before removing
                         for i in range(1, current_ports + 1):
                             port_name = f'out_{i}'
                             port = base_link_sub_node.get_output(port_name)
                             if port:
                                 port.clear_connections()
-                        
-                        # すべての出力ポートを削除
+
+                        # Remove all output ports
                         while current_ports > 0:
                             base_link_sub_node.remove_output()
                             current_ports -= 1
-                        
-                        # ポイントデータと累積座標をクリア
+
+                        # Clear points data and cumulative coordinates
                         base_link_sub_node.points = []
                         base_link_sub_node.cumulative_coords = []
                         base_link_sub_node.output_count = 0
 
-                        # URDFのbase_linkデータをbase_link_subに設定
+                        # Set URDF base_link data to base_link_sub
                         base_link_sub_node.mass_value = base_link_data['mass']
                         base_link_sub_node.inertia = base_link_data['inertia'].copy()
                         base_link_sub_node.inertial_origin = base_link_data['inertial_origin'].copy()
-                        # カラー情報を設定（RGBA形式に統一）
+                        # Set color info (unified to RGBA format)
                         color_data = base_link_data['color']
                         if len(color_data) == 3:
-                            base_link_sub_node.node_color = color_data + [1.0]  # Alpha=1.0を追加
+                            base_link_sub_node.node_color = color_data + [1.0]  # Add Alpha=1.0
                         elif len(color_data) >= 4:
                             base_link_sub_node.node_color = color_data[:4]
                         else:
                             base_link_sub_node.node_color = DEFAULT_COLOR_WHITE.copy()
 
-                        # STLファイルが設定されている場合
+                        # If STL file is set
                         if base_link_data['stl_file']:
                             base_link_sub_node.stl_file = base_link_data['stl_file']
                             print(f"Set base_link_sub STL: {base_link_data['stl_file']}")
 
-                        # メッシュのスケール情報を設定
+                        # Set mesh scale info
                         base_link_sub_node.mesh_scale = base_link_data.get('mesh_scale', [1.0, 1.0, 1.0])
-                        # Visual origin情報を設定
+                        # Set visual origin info
                         base_link_sub_node.visual_origin = base_link_data.get('visual_origin', {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]})
-                        # Collision情報を設定
+                        # Set collision info
                         if base_link_data.get('collider_type') == 'mesh' and base_link_data.get('collision_mesh'):
                             base_link_sub_node.collider_type = 'mesh'
                             base_link_sub_node.collider_mesh = base_link_data['collision_mesh']
@@ -4496,7 +4496,7 @@ def import_urdf(graph):
                             collider_type = base_link_data['collider_data'].get('type', 'unknown')
                             print(f"Set base_link_sub primitive collider: {collider_type}")
                         
-                        # メッシュ反転判定
+                        # Mesh reversal check
                         base_link_sub_node.is_mesh_reversed = is_mesh_reversed_check(
                             base_link_sub_node.visual_origin,
                             base_link_sub_node.mesh_scale
@@ -4504,11 +4504,11 @@ def import_urdf(graph):
                         if base_link_sub_node.is_mesh_reversed:
                             print(f"Base_link_sub mesh is reversed/mirrored (for MJCF export)")
 
-                        # base_link_subのrotation_axisをFixed（3）に設定
+                        # Set base_link_sub rotation_axis to Fixed (3)
                         base_link_sub_node.rotation_axis = 3  # Fixed
                         print("Set base_link_sub rotation_axis to Fixed")
-                        
-                        # base_link_subのpointsデータを初期化（子ノードがある場合）
+
+                        # Initialize base_link_sub points data (if has child nodes)
                         if base_link_has_children:
                             child_count = link_child_counts.get('base_link', 0)
                             base_link_sub_node.points = []
@@ -4522,20 +4522,20 @@ def import_urdf(graph):
                                 })
                             print(f"Initialized base_link_sub.points with {child_count} points")
                             
-                            # 必要な数のポートを追加（_add_output()を使わず、直接ポートを追加）
+                            # Add required number of ports (directly add ports without _add_output())
                             for i in range(child_count):
                                 base_link_sub_node.output_count += 1
                                 port_name = f'out_{base_link_sub_node.output_count}'
-                                # 出力ポートを追加（ポイントは既に設定されているため追加しない）
+                                # Add output port (points are already set, so don't add)
                                 base_link_sub_node.add_output(port_name, color=(180, 80, 0))
-                                # 累積座標を追加
+                                # Add cumulative coordinate
                                 cumulative_coord = create_cumulative_coord(i)
                                 base_link_sub_node.cumulative_coords.append(cumulative_coord)
-                            
-                            # output_countを更新
+
+                            # Update output_count
                             base_link_sub_node.output_count = child_count
 
-                        # 既存のbase_linkをデフォルト値にリセット
+                        # Reset existing base_link to default values
                         base_node.mass_value = 0.0
                         base_node.inertia = DEFAULT_INERTIA_ZERO.copy()
                         base_node.inertial_origin = {
@@ -4558,7 +4558,7 @@ def import_urdf(graph):
                             base_node.blank_link = True
                         print("Reset existing base_link to default values")
 
-                        # base_linkの出力ポート数を1に設定（デフォルト）
+                        # Set base_link output port count to 1 (default)
                         if hasattr(base_node, 'output_count'):
                             while base_node.output_count > 1:
                                 if hasattr(base_node, 'remove_output'):
@@ -4573,25 +4573,25 @@ def import_urdf(graph):
                                     port_name = f'out_{base_node.output_count}'
                                     base_node.add_output(port_name, color=(180, 80, 0))
                     elif is_base_link_non_empty and not base_node:
-                        # base_linkが空でないが、既存のbase_linkがない場合は新規作成
-                        # この場合はbase_link_subを作成する必要はない（base_link自体が新規作成される）
-                        pass  # 通常の処理に任せる（後でbase_linkが作成される）
+                        # base_link is non-empty but no existing base_link, create new
+                        # No need to create base_link_sub (base_link itself is newly created)
+                        pass  # Leave to normal processing (base_link will be created later)
                     else:
-                        # base_linkが空で、既存のbase_linkがある場合は何もしない（既存のbase_linkを保持）
+                        # base_link is empty and existing base_link exists, do nothing (keep existing base_link)
                         if base_node:
                             print("URDF base_link is empty, keeping existing base_link unchanged")
-                        # base_linkが空で、既存のbase_linkがない場合は通常通りbase_linkに設定（空のデータ）
+                        # base_link is empty and no existing base_link, set to base_link normally (empty data)
                         elif not base_node:
-                            # この場合は後でbase_linkが作成されるので、ここでは何もしない
+                            # base_link will be created later, do nothing here
                             pass
 
-                # base_linkの子ジョイント数に応じて出力ポートを追加
-                # base_link_subがある場合は、base_link_subの出力ポート数を設定
+                # Add output ports according to base_link child joint count
+                # If base_link_sub exists, set base_link_sub output port count
                 target_node = base_link_sub_node if base_link_sub_node else base_node
                 child_count = link_child_counts.get('base_link', 0)
                 current_output_count = target_node.output_count if hasattr(target_node, 'output_count') else 1
 
-                # 必要な出力ポート数を計算
+                # Calculate required output port count
                 needed_ports = child_count - current_output_count
                 if needed_ports > 0:
                     for i in range(needed_ports):
@@ -4602,9 +4602,9 @@ def import_urdf(graph):
                             port_name = f'out_{target_node.output_count}'
                             target_node.add_output(port_name, color=(180, 80, 0))
 
-            # 他のリンクのノードを作成（グリッドレイアウトで配置）
-            grid_spacing = 150  # パネル間の距離（200から50px狭めた）
-            # base_linkノードの位置を基準に子ノードを配置
+            # Create nodes for other links (arranged in grid layout)
+            grid_spacing = 150  # Distance between panels (narrowed by 50px from 200)
+            # Position child nodes relative to base_link node position
             if hasattr(base_node, 'pos') and callable(base_node.pos):
                 pos = base_node.pos()
                 if hasattr(pos, 'x') and callable(pos.x):
@@ -4619,7 +4619,7 @@ def import_urdf(graph):
             else:
                 base_x = 50
                 base_y = 50
-            current_x = base_x + grid_spacing  # base_linkから右にオフセット
+            current_x = base_x + grid_spacing  # Offset right from base_link
             current_y = base_y
             nodes_per_row = 4
             node_count = 0
@@ -4628,7 +4628,7 @@ def import_urdf(graph):
                 if link_name == 'base_link':
                     continue
 
-                # グリッドレイアウトで位置を計算
+                # Calculate position in grid layout
                 row = node_count // nodes_per_row
                 col = node_count % nodes_per_row
                 pos_x = current_x + col * grid_spacing
@@ -4641,37 +4641,37 @@ def import_urdf(graph):
                 )
                 nodes[link_name] = node
 
-                # ノードのパラメータを設定
+                # Set node parameters
                 node.mass_value = link_data['mass']
-                node.inertia = link_data['inertia'].copy()  # コピーを作成して参照を切る
-                # inertial_originが存在する場合のみ設定
+                node.inertia = link_data['inertia'].copy()  # Create copy to break reference
+                # Only set if inertial_origin exists
                 if 'inertial_origin' in link_data:
                     node.inertial_origin = link_data['inertial_origin'].copy() if isinstance(link_data['inertial_origin'], dict) else link_data['inertial_origin']
                 else:
-                    # デフォルト値を設定
+                    # Set default value
                     node.inertial_origin = {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]}
                 
-                # === 必須ログ: ノードに設定された慣性値を確認 ===
+                # === Required log: Verify inertia values set on node ===
                 print(f"\n[URDF_NODE_SET] link_name={link_name}, source_urdf_path={urdf_file}")
                 print(f"  node.mass_value={node.mass_value:.9e}")
                 print(f"  node.inertial_origin={node.inertial_origin}")
                 print(f"  node.inertia: ixx={node.inertia['ixx']:.9e}, ixy={node.inertia['ixy']:.9e}, ixz={node.inertia['ixz']:.9e}")
                 print(f"                iyy={node.inertia['iyy']:.9e}, iyz={node.inertia['iyz']:.9e}, izz={node.inertia['izz']:.9e}")
-                # カラー情報を設定（RGBA形式に統一）
+                # Set color info (unified to RGBA format)
                 color_data = link_data['color']
                 if len(color_data) == 3:
-                    node.node_color = color_data + [1.0]  # Alpha=1.0を追加
+                    node.node_color = color_data + [1.0]  # Add Alpha=1.0
                 elif len(color_data) >= 4:
                     node.node_color = color_data[:4]
                 else:
                     node.node_color = DEFAULT_COLOR_WHITE.copy()
                 if link_data['stl_file']:
                     node.stl_file = link_data['stl_file']
-                # メッシュのスケール情報を設定（URDF左右対称対応）
+                # Set mesh scale info (URDF left-right symmetry support)
                 node.mesh_scale = link_data.get('mesh_scale', [1.0, 1.0, 1.0])
-                # Visual origin情報を設定（メッシュの位置・回転）
+                # Set visual origin info (mesh position/rotation)
                 node.visual_origin = link_data.get('visual_origin', {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]})
-                # Collision情報を設定（メッシュまたはプリミティブ）
+                # Set collision info (mesh or primitive)
                 if link_data.get('collider_type') == 'mesh' and link_data.get('collision_mesh'):
                     node.collider_type = 'mesh'
                     node.collider_mesh = link_data['collision_mesh']
@@ -4684,7 +4684,7 @@ def import_urdf(graph):
                     node.collider_enabled = True
                     collider_type = link_data['collider_data'].get('type', 'unknown')
                     print(f"Set {link_name} primitive collider: {collider_type}")
-                # メッシュ反転判定
+                # Mesh reversal check
                 node.is_mesh_reversed = is_mesh_reversed_check(
                     node.visual_origin,
                     node.mesh_scale
@@ -4692,7 +4692,7 @@ def import_urdf(graph):
                 if node.is_mesh_reversed:
                     print(f"Node '{link_name}' mesh is reversed/mirrored (for MJCF export)")
 
-                # 子ジョイントの数に応じて出力ポートを追加
+                # Add output ports according to child joint count
                 child_count = link_child_counts.get(link_name, 0)
                 current_output_count = node.output_count if hasattr(node, 'output_count') else 1
                 needed_ports = child_count - current_output_count
@@ -4701,24 +4701,24 @@ def import_urdf(graph):
                         if hasattr(node, '_add_output'):
                             node._add_output()
                         elif hasattr(node, 'add_output'):
-                            # FooNodeのadd_outputメソッドを使用
+                            # Use FooNode's add_output method
                             node.output_count = getattr(node, 'output_count', 0) + 1
                             port_name = f'out_{node.output_count}'
                             node.add_output(port_name, color=(180, 80, 0))
 
-                # decorationノードを作成（このlinkに複数のvisualがある場合）
+                # Create decoration nodes (when this link has multiple visuals)
                 decorations = link_data.get('decorations', [])
                 for deco_idx, decoration in enumerate(decorations):
-                    # decorationノードの位置を親ノードの近くに配置
-                    deco_offset_x = 150  # 親の右側に配置
-                    deco_offset_y = 100 * (deco_idx + 1)  # 複数ある場合は縦にずらす
+                    # Position decoration node near parent node
+                    deco_offset_x = 150  # Place to the right of parent
+                    deco_offset_y = 100 * (deco_idx + 1)  # Offset vertically for multiple decorations
                     deco_pos_x = pos_x + deco_offset_x
                     deco_pos_y = pos_y + deco_offset_y
 
-                    # decorationノード名を取得（一意な名前が既に設定されている）
+                    # Get decoration node name (unique name already set)
                     decoration_name = decoration['name']
                     
-                    # ノード名の衝突をチェック
+                    # Check for node name collision
                     if decoration_name in nodes:
                         print(f"  ⚠ Warning: Decoration node name '{decoration_name}' already exists, appending index")
                         decoration_name = f"{decoration_name}_{deco_idx}"
@@ -4729,32 +4729,32 @@ def import_urdf(graph):
                         pos=QtCore.QPointF(deco_pos_x, deco_pos_y)
                     )
 
-                    # decorationノードのパラメータを設定
-                    # カラー情報を設定（RGBA形式に統一）
+                    # Set decoration node parameters
+                    # Set color information (unified to RGBA format)
                     deco_color_data = decoration['color']
                     if len(deco_color_data) == 3:
-                        deco_node.node_color = deco_color_data + [1.0]  # Alpha=1.0を追加
+                        deco_node.node_color = deco_color_data + [1.0]  # Add Alpha=1.0
                     elif len(deco_color_data) >= 4:
                         deco_node.node_color = deco_color_data[:4]
                     else:
                         deco_node.node_color = DEFAULT_COLOR_WHITE.copy()
                     
-                    # メッシュファイルが存在する場合のみ設定
+                    # Set only if mesh file exists
                     if decoration.get('stl_file'):
                         deco_node.stl_file = decoration['stl_file']
                     else:
                         print(f"  ⚠ Warning: Decoration '{decoration_name}' has no mesh file (stl_file is None)")
                     
-                    deco_node.massless_decoration = True  # Massless Decorationフラグを設定
-                    # メッシュのスケール情報を設定（URDF左右対称対応）
+                    deco_node.massless_decoration = True  # Set massless decoration flag
+                    # Set mesh scale information (for URDF left-right symmetry)
                     deco_node.mesh_scale = decoration.get('mesh_scale', [1.0, 1.0, 1.0])
-                    # Visual origin情報を設定（メッシュの位置・回転）
+                    # Set visual origin information (mesh position and rotation)
                     deco_node.visual_origin = decoration.get('visual_origin', {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]})
 
-                    # 親リンクの参照を保存（接続時に使用）
+                    # Save parent link reference (used for connection)
                     deco_node._parent_link_name = link_name
 
-                    # decorationノードをnodesディクショナリに追加
+                    # Add decoration node to nodes dictionary
                     nodes[decoration_name] = deco_node
 
                     print(f"  → Created decoration node '{decoration_name}' for link '{link_name}'")
@@ -4765,14 +4765,14 @@ def import_urdf(graph):
 
                 node_count += 1
 
-            # ジョイント情報を親ノードのpointsと子ノードのパラメータに反映
+            # Apply joint information to parent node's points and child node's parameters
             parent_port_indices = {}  # {parent_link: current_port_index}
 
             for joint_data in joints_data:
                 parent_link = joint_data['parent']
                 child_link = joint_data['child']
 
-                # base_link_subがある場合、base_linkに接続予定の子ノードをbase_link_subに接続するように変更
+                # If base_link_sub exists, redirect child nodes intended for base_link to base_link_sub
                 actual_parent_link = parent_link
                 if base_link_sub_node and parent_link == 'base_link':
                     actual_parent_link = 'base_link_sub'
@@ -4787,13 +4787,13 @@ def import_urdf(graph):
 
                 child_node = nodes[child_link]
 
-                # 親ノードの現在のポートインデックスを取得
+                # Get parent node's current port index
                 if actual_parent_link not in parent_port_indices:
                     parent_port_indices[actual_parent_link] = 0
                 port_index = parent_port_indices[actual_parent_link]
                 parent_port_indices[actual_parent_link] += 1
 
-                # 親ノードのpointsにジョイントのorigin情報を設定
+                # Set joint origin information in parent node's points
                 if port_index < len(parent_node.points):
                     origin_rpy = joint_data['origin_rpy']
                     parent_node.points[port_index]['xyz'] = joint_data['origin_xyz']
@@ -4803,22 +4803,22 @@ def import_urdf(graph):
                     # Set angle for 3D view display and UI editing (radians)
                     parent_node.points[port_index]['angle'] = list(origin_rpy)
 
-                # 子ノードにジョイント情報を設定
-                # 回転軸の設定
+                # Set joint information on child node
+                # Set rotation axis
                 axis = joint_data.get('axis', [1.0, 0.0, 0.0])
                 if joint_data['type'] == 'fixed':
                     child_node.rotation_axis = 3  # Fixed
                 elif len(axis) >= 3 and abs(axis[0]) > 0.9:
-                    child_node.rotation_axis = 0  # X軸
+                    child_node.rotation_axis = 0  # X axis
                 elif len(axis) >= 3 and abs(axis[1]) > 0.9:
-                    child_node.rotation_axis = 1  # Y軸
+                    child_node.rotation_axis = 1  # Y axis
                 elif len(axis) >= 3:
-                    child_node.rotation_axis = 2  # Z軸
+                    child_node.rotation_axis = 2  # Z axis
                 else:
-                    child_node.rotation_axis = 3  # Fixed (デフォルト)
+                    child_node.rotation_axis = 3  # Fixed (default)
 
-                # ジョイント制限パラメータの設定
-                # ファイルに定義されている場合は上書き、未定義の場合はSettingsのデフォルト値を使用
+                # Set joint limit parameters
+                # Override if defined in file, use Settings default values if undefined
                 if 'limit' in joint_data:
                     if 'lower' in joint_data['limit']:
                         child_node.joint_lower = joint_data['limit']['lower']
@@ -4828,10 +4828,10 @@ def import_urdf(graph):
                         child_node.joint_effort = joint_data['limit']['effort']
                     if 'velocity' in joint_data['limit']:
                         child_node.joint_velocity = joint_data['limit']['velocity']
-                # joint_frictionは削除（margin, armature, frictionlossに置き換え）
+                # joint_friction removed (replaced with margin, armature, frictionloss)
 
-                # ジョイントdynamicsパラメータの設定（damping, stiffness, margin, armature, frictionloss）
-                # ファイルに定義されている場合は上書き、未定義の場合はSettingsのデフォルト値を使用
+                # Set joint dynamics parameters (damping, stiffness, margin, armature, frictionloss)
+                # Override if defined in file, use Settings default values if undefined
                 if 'dynamics' in joint_data:
                     if 'damping' in joint_data['dynamics']:
                         child_node.joint_damping = joint_data['dynamics']['damping']
@@ -4844,11 +4844,11 @@ def import_urdf(graph):
                     if 'frictionloss' in joint_data['dynamics']:
                         child_node.joint_frictionloss = joint_data['dynamics']['frictionloss']
 
-            # ノードを接続（ジョイントの親子関係に基づく）
+            # Connect nodes (based on joint parent-child relationships)
             print("\n=== Connecting Nodes ===")
-            parent_port_indices = {}  # リセット
+            parent_port_indices = {}  # Reset
 
-            # base_link_subがある場合、base_linkとbase_link_subを接続
+            # If base_link_sub exists, connect base_link to base_link_sub
             if base_link_sub_node:
                 print("\n=== Connecting base_link to base_link_sub ===")
                 try:
@@ -4867,7 +4867,7 @@ def import_urdf(graph):
                 parent_link = joint_data['parent']
                 child_link = joint_data['child']
 
-                # base_link_subがある場合、base_linkに接続予定の子ノードをbase_link_subに接続するように変更
+                # If base_link_sub exists, redirect child nodes intended for base_link to base_link_sub
                 actual_parent_link = parent_link
                 if base_link_sub_node and parent_link == 'base_link':
                     actual_parent_link = 'base_link_sub'
@@ -4884,30 +4884,30 @@ def import_urdf(graph):
 
                 child_node = nodes[child_link]
 
-                # 親ノードの出力ポートインデックスを取得
+                # Get parent node's output port index
                 if actual_parent_link not in parent_port_indices:
                     parent_port_indices[actual_parent_link] = 0
                 port_index = parent_port_indices[actual_parent_link]
                 parent_port_indices[actual_parent_link] += 1
 
-                # ポート名を取得
-                # isinstance()を使用してノードのクラスを判定
+                # Get port name
+                # Use isinstance() to determine node class
                 is_base_link_node = parent_node.__class__.__name__ == 'BaseLinkNode'
 
                 if is_base_link_node:
-                    # BaseLinkNodeの場合、最初のポートは'out'、それ以降は'out_2', 'out_3', ...
+                    # For BaseLinkNode, first port is 'out', subsequent are 'out_2', 'out_3', ...
                     if port_index == 0:
                         output_port_name = 'out'
                     else:
                         output_port_name = f'out_{port_index + 1}'
                 else:
-                    # FooNodeの場合、'out_1', 'out_2', ... を使用
+                    # For FooNode, use 'out_1', 'out_2', ...
                     output_port_name = f'out_{port_index + 1}'
 
-                # 子ノードの入力ポート（'in'）を取得
+                # Get child node's input port ('in')
                 input_port_name = 'in'
 
-                # デバッグ: 利用可能なポートを表示
+                # Debug: show available ports
                 print(f"\nConnecting: {parent_link} -> {child_link}")
                 print(f"  Parent node class: {parent_node.__class__.__name__}")
                 print(f"  Is BaseLinkNode: {is_base_link_node}")
@@ -4915,7 +4915,7 @@ def import_urdf(graph):
                 print(f"  Available output ports on {parent_link}: {[p.name() for p in parent_node.output_ports()]}")
                 print(f"  Available input ports on {child_link}: {[p.name() for p in child_node.input_ports()]}")
 
-                # ポートを接続
+                # Connect ports
                 try:
                     output_port = parent_node.get_output(output_port_name)
                     input_port = child_node.get_input(input_port_name)
@@ -4924,9 +4924,9 @@ def import_urdf(graph):
                         output_port.connect_to(input_port)
                         print(f"  ✓ Successfully connected {parent_link}.{output_port_name} to {child_link}.{input_port_name}")
                         
-                        # NOTE: body_angleは同期しない（MJCFのref専用）
-                        # point['angle']（origin_rpy）とbody_angle（ref）は別々の回転として3Dビューで適用される
-                        # 同期すると二重回転が発生する
+                        # NOTE: body_angle is not synchronized (MJCF ref only)
+                        # point['angle'] (origin_rpy) and body_angle (ref) are applied as separate rotations in 3D view
+                        # Synchronizing would cause double rotation
                     else:
                         if not output_port:
                             print(f"  ✗ ERROR: Output port '{output_port_name}' not found on {parent_link}")
@@ -4936,14 +4936,14 @@ def import_urdf(graph):
                     print(f"  ✗ ERROR: Exception connecting {parent_link} to {child_link}: {str(e)}")
                     traceback.print_exc()
 
-            # decorationノードを親リンクに接続
+            # Connect decoration nodes to parent links
             print("\n=== Connecting Decoration Nodes ===")
             for node_name, node in nodes.items():
-                # _parent_link_name属性があればdecorationノード
+                # Check if node has _parent_link_name attribute (decoration node)
                 if hasattr(node, '_parent_link_name'):
                     parent_link = node._parent_link_name
                     
-                    # base_link_subがある場合、base_linkに接続予定のdecorationをbase_link_subに接続するように変更
+                    # If base_link_sub exists, redirect decorations intended for base_link to base_link_sub
                     actual_parent_link = parent_link
                     if base_link_sub_node and parent_link == 'base_link':
                         actual_parent_link = 'base_link_sub'
@@ -4954,24 +4954,24 @@ def import_urdf(graph):
                     else:
                         parent_node = nodes[parent_link]
 
-                    # 親ノードの現在のポートインデックスを取得（joint接続の続きから）
-                    # actual_parent_linkを使用してポートインデックスを管理
+                    # Get parent node's current port index (continuing from joint connections)
+                    # Use actual_parent_link to manage port indices
                     if actual_parent_link not in parent_port_indices:
                         parent_port_indices[actual_parent_link] = 0
                     port_index = parent_port_indices[actual_parent_link]
                     parent_port_indices[actual_parent_link] += 1
 
-                    # ポート名を取得
+                    # Get port name
                     is_base_link_node = parent_node.__class__.__name__ == 'BaseLinkNode'
 
                     if is_base_link_node:
-                        # BaseLinkNodeの場合、最初のポートは'out'、それ以降は'out_2', 'out_3', ...
+                        # For BaseLinkNode, first port is 'out', subsequent are 'out_2', 'out_3', ...
                         if port_index == 0:
                             output_port_name = 'out'
                         else:
                             output_port_name = f'out_{port_index + 1}'
                     else:
-                        # FooNodeの場合、'out_1', 'out_2', ... を使用
+                        # For FooNode, use 'out_1', 'out_2', ...
                         output_port_name = f'out_{port_index + 1}'
 
                     input_port_name = 'in'
@@ -4981,19 +4981,19 @@ def import_urdf(graph):
                     print(f"  Port index: {port_index}, Expected output port: {output_port_name}")
                     print(f"  Available output ports on {actual_parent_link}: {[p.name() for p in parent_node.output_ports()]}")
 
-                    # ポートを接続
+                    # Connect ports
                     try:
                         output_port = parent_node.get_output(output_port_name)
                         
-                        # 出力ポートが存在しない場合、動的に追加を試みる
+                        # If output port doesn't exist, try to add it dynamically
                         if not output_port:
                             print(f"  ⚠ Warning: Output port '{output_port_name}' not found, attempting to add...")
-                            # 必要なポート数を計算
+                            # Calculate required number of ports
                             current_port_count = len(parent_node.output_ports())
                             needed_ports = port_index + 1 - current_port_count
-                            
+
                             if needed_ports > 0:
-                                # 不足しているポートを追加
+                                # Add missing ports
                                 for i in range(needed_ports):
                                     if hasattr(parent_node, '_add_output'):
                                         parent_node._add_output()
@@ -5001,8 +5001,8 @@ def import_urdf(graph):
                                         parent_node.output_count = getattr(parent_node, 'output_count', 0) + 1
                                         new_port_name = f'out_{parent_node.output_count}'
                                         parent_node.add_output(new_port_name, color=(180, 80, 0))
-                                print(f"  ✓ Added {needed_ports} output port(s) to {actual_parent_link}")
-                                # 再度ポートを取得
+                                print(f"  Added {needed_ports} output port(s) to {actual_parent_link}")
+                                # Get port again
                                 output_port = parent_node.get_output(output_port_name)
                         
                         input_port = node.get_input(input_port_name)
@@ -5021,7 +5021,7 @@ def import_urdf(graph):
                         print(f"  ✗ ERROR: Exception connecting {actual_parent_link} to {node_name}: {str(e)}")
                         traceback.print_exc()
 
-            # 閉リンクジョイントノードの作成と接続
+            # Create and connect closed-loop joint nodes
             print("\n=== Creating Closed-Loop Joint Nodes ===")
             closed_loop_nodes = {}
             for joint_data in closed_loop_joints:
@@ -5029,10 +5029,10 @@ def import_urdf(graph):
                 parent_link = joint_data['parent']
                 child_link = joint_data['child']
 
-                # 閉リンクノードの名前を決定
+                # Determine closed-loop node name
                 cl_node_name = f"{joint_name}_CL"
 
-                # 親リンクと子リンクがノードとして存在するか確認
+                # Check if parent and child links exist as nodes
                 if parent_link not in nodes:
                     print(f"Skipping closed-loop joint '{joint_name}': parent link '{parent_link}' not found")
                     continue
@@ -5043,7 +5043,7 @@ def import_urdf(graph):
                 parent_node = nodes[parent_link]
                 child_node = nodes[child_link]
 
-                # 閉リンクノードを作成（親と子の中間位置に配置）
+                # Create closed-loop node (positioned between parent and child)
                 parent_pos = parent_node.pos()
                 child_pos = child_node.pos()
 
@@ -5057,12 +5057,12 @@ def import_urdf(graph):
                 else:
                     child_x, child_y = child_pos.x(), child_pos.y()
 
-                # 中間位置を計算
+                # Calculate middle position
                 cl_node_x = (parent_x + child_x) / 2
                 cl_node_y = (parent_y + child_y) / 2
                 cl_node_pos = QtCore.QPointF(cl_node_x, cl_node_y)
 
-                # 閉リンクノードを作成
+                # Create closed-loop node
                 print(f"Creating closed-loop node: {cl_node_name} ({parent_link} <-> {child_link})")
                 cl_node = graph.create_node(
                     'insilico.nodes.ClosedLoopJointNode',
@@ -5070,7 +5070,7 @@ def import_urdf(graph):
                     pos=cl_node_pos
                 )
 
-                # メタデータを設定
+                # Set metadata
                 cl_node.joint_name = joint_name
                 cl_node.joint_type = joint_data.get('original_type', 'ball')
                 cl_node.parent_link = parent_link
@@ -5080,24 +5080,24 @@ def import_urdf(graph):
                 cl_node.gearbox_ratio = joint_data.get('gearbox_ratio', 1.0)
                 cl_node.gearbox_reference_body = joint_data.get('gearbox_reference_body')
 
-                # 閉リンクノードのpointsデータを初期化（位置再計算で使用される可能性があるため）
-                # 閉リンクノードは出力ポートから子に接続されないため、空のpointsでOK
+                # Initialize closed-loop node points data (may be used for position recalculation)
+                # Empty points is OK since closed-loop node doesn't connect to child via output port
                 if not hasattr(cl_node, 'points'):
                     cl_node.points = []
 
                 closed_loop_nodes[cl_node_name] = cl_node
 
-                # 親リンクの出力ポートインデックスを取得
+                # Get parent link output port index
                 if parent_link not in parent_port_indices:
                     parent_port_indices[parent_link] = 0
                 parent_port_index = parent_port_indices[parent_link]
                 parent_port_indices[parent_link] += 1
 
-                # 親ノードのpointsデータが不足している場合は初期化
+                # Initialize parent node points data if insufficient
                 if not hasattr(parent_node, 'points'):
                     parent_node.points = []
 
-                # 必要なpointsデータを追加
+                # Add required points data
                 while len(parent_node.points) <= parent_port_index:
                     parent_node.points.append({
                         'name': f'point_{len(parent_node.points) + 1}',
@@ -5107,7 +5107,7 @@ def import_urdf(graph):
                         'angle': [0.0, 0.0, 0.0]
                     })
 
-                # 親ノードのpointsに閉リンクジョイントのorigin情報を設定
+                # Set closed-loop joint origin info to parent node points
                 origin_rpy = joint_data.get('origin_rpy', [0.0, 0.0, 0.0])
                 parent_node.points[parent_port_index]['xyz'] = joint_data.get('origin_xyz', [0.0, 0.0, 0.0])
                 parent_node.points[parent_port_index]['rpy'] = [0.0, 0.0, 0.0]  # Keep rpy as zero (3D view uses angle)
@@ -5116,7 +5116,7 @@ def import_urdf(graph):
                 # Set angle for 3D view display and UI editing (radians)
                 parent_node.points[parent_port_index]['angle'] = list(origin_rpy)
 
-                # 親リンクのポート名を取得
+                # Get parent link port name
                 is_base_link_node = parent_node.__class__.__name__ == 'BaseLinkNode'
                 if is_base_link_node:
                     if parent_port_index == 0:
@@ -5126,9 +5126,9 @@ def import_urdf(graph):
                 else:
                     parent_output_port_name = f'out_{parent_port_index + 1}'
 
-                # 親リンク → 閉リンクノードの接続
+                # Connect parent link -> closed-loop node
                 try:
-                    # デバッグ：親ノードの全出力ポートを確認
+                    # Debug: Check all parent node output ports
                     print(f"  DEBUG: Parent node '{parent_link}' has {len(parent_node.points)} points")
                     print(f"  DEBUG: Using port index {parent_port_index} for closed-loop joint")
                     print(f"  DEBUG: Available output ports on {parent_link}: {[p.name() for p in parent_node.output_ports()]}")
@@ -5137,14 +5137,14 @@ def import_urdf(graph):
                     cl_input_port = cl_node.get_input('in')
 
                     if parent_output_port and cl_input_port:
-                        # 閉リンク接続では位置再計算をスキップ（ツリー構造に影響しないため）
-                        # 一時的に recalculate_all_positions を無効化
+                        # Skip position recalculation for closed-loop connections (doesn't affect tree structure)
+                        # Temporarily disable recalculate_all_positions
                         old_recalc = graph.recalculate_all_positions
                         graph.recalculate_all_positions = lambda: None
 
                         parent_output_port.connect_to(cl_input_port)
 
-                        # 元に戻す
+                        # Restore
                         graph.recalculate_all_positions = old_recalc
 
                         print(f"  ✓ Connected {parent_link}.{parent_output_port_name} -> {cl_node_name}.in")
@@ -5157,13 +5157,13 @@ def import_urdf(graph):
                     print(f"  ✗ ERROR: Exception connecting {parent_link} -> {cl_node_name}: {str(e)}")
                     traceback.print_exc()
 
-                # 閉リンクノード → 子リンクの接続
-                # 閉リンクノードはツリー構造に含まれないため、出力ポートから子への接続は行わない
-                # 閉リンク制約は親→閉リンクノードの接続と、メタデータで表現される
+                # Closed-loop node -> child link connection
+                # Closed-loop node is not part of tree structure, so no connection from output port to child
+                # Closed-loop constraint is expressed by parent->closed-loop node connection and metadata
                 print(f"  ℹ Closed-loop constraint: {parent_link} <-> {child_link} (via {cl_node_name})")
                 print(f"            No direct connection from {cl_node_name} to {child_link} (tree structure preserved)")
 
-                # デバッグ：閉リンクノードの接続状態を確認
+                # Debug: Verify closed-loop node connection state
                 print(f"  DEBUG: Verifying closed-loop node connections for {cl_node_name}:")
                 for port in cl_node.output_ports():
                     connected = port.connected_ports()
@@ -5174,28 +5174,28 @@ def import_urdf(graph):
 
             print(f"Created {len(closed_loop_nodes)} closed-loop joint node(s)")
 
-            # 閉リンク接続に水色を適用（少し遅延させてからパイプにアクセス）
+            # Apply cyan color to closed-loop connections (delay before accessing pipes)
             if closed_loop_nodes:
                 print("\n=== Applying Cyan Color to Closed-Loop Connections ===")
                 QtCore.QTimer.singleShot(200, graph.apply_cyan_to_closed_loop_connections)
 
             print("=" * 40 + "\n")
 
-            # STLファイルの読み込み状況を確認
+            # Check STL file loading status
             stl_loaded_count = 0
             stl_missing_count = 0
             for link_name, link_data in links_data.items():
                 if link_data['stl_file']:
                     stl_loaded_count += 1
-                elif link_name != 'base_link':  # base_linkはSTLなしでも問題ない
+                elif link_name != 'base_link':  # base_link is OK without STL
                     stl_missing_count += 1
 
-            # 全てのノードのメッシュファイルを3Dビューに自動読み込み
+            # Auto-load mesh files of all nodes to 3D view
             print("\n=== Loading mesh files to 3D viewer ===")
             stl_viewer_loaded_count = 0
             if graph.stl_viewer:
                 for link_name, node in nodes.items():
-                    # base_linkでblank_linkがTrueの場合はスキップ
+                    # Skip if base_link has blank_link=True
                     if link_name == 'base_link':
                         if not hasattr(node, 'blank_link') or node.blank_link:
                             print(f"Skipping base_link (blank_link=True)")
@@ -5215,12 +5215,12 @@ def import_urdf(graph):
             else:
                 print("Warning: Mesh viewer not available")
 
-            # URDFにbase_linkがない場合、ルートリンクとbase_linkの接続を再確認
-            # （Recalc Positionsの直前に実行）
+            # If URDF doesn't have base_link, re-verify root link and base_link connections
+            # (Execute right before Recalc Positions)
             if 'base_link' not in links_data and 'BaseLink' not in links_data:
                 print("\n=== Verifying root link connections to base_link ===")
 
-                # ルートリンクを再検出（親リンクがないリンクを検出）
+                # Re-detect root links (detect links without parent)
                 child_links_check = set()
                 for joint_data in joints_data:
                     if joint_data['child']:
@@ -5233,7 +5233,7 @@ def import_urdf(graph):
 
                 print(f"  Found {len(root_links_check)} root link(s): {root_links_check}")
 
-                # base_linkノードを取得（必ず存在するはず）
+                # Get base_link node (should always exist)
                 if 'base_link' in nodes:
                     base_link_node = nodes['base_link']
 
@@ -5241,7 +5241,7 @@ def import_urdf(graph):
                         if root_link_name in nodes:
                             root_node = nodes[root_link_name]
 
-                            # 既に接続されているか確認
+                            # Check if already connected
                             already_connected = False
                             for output_port in base_link_node.output_ports():
                                 if output_port.connected_ports():
@@ -5256,7 +5256,7 @@ def import_urdf(graph):
                             if not already_connected:
                                 print(f"  Connecting base_link to root link: {root_link_name}")
 
-                                # 最初の利用可能な出力ポートを見つける
+                                # Find first available output port
                                 output_port = None
                                 for port in base_link_node.output_ports():
                                     if not port.connected_ports():
@@ -5288,7 +5288,7 @@ def import_urdf(graph):
 
                 print("=" * 40 + "\n")
 
-            # 全ノードの位置を再計算（Recalc Positionsと同じ処理）
+            # Recalculate all node positions (same as Recalc Positions)
             print("\n=== Recalculating all node positions ===")
             try:
                 graph.recalculate_all_positions()
@@ -5298,14 +5298,14 @@ def import_urdf(graph):
                 traceback.print_exc()
             print("=" * 40 + "\n")
 
-            # 3DビューをFrontビューに設定
+            # Set 3D view to Front view
 
             try:
                 if graph.stl_viewer:
                     graph.stl_viewer.reset_camera_front()
                     print("Camera set to Front view successfully")
                     
-                    # STL読み込み完了後、すべてのノードのカラーを3Dビューに適用
+                    # Apply colors to 3D view for all nodes after STL loading completes
                     print("\nApplying colors to 3D view after URDF import...")
                     graph._apply_colors_to_all_nodes()
                 else:
@@ -5315,7 +5315,7 @@ def import_urdf(graph):
                 traceback.print_exc()
             print("=" * 40 + "\n")
 
-            # 完了メッセージ
+            # Completion message
             import_summary = f"URDF file has been imported:\n{urdf_file}\n\n"
             import_summary += f"Robot name: {robot_name}\n"
             import_summary += f"Links imported: {len(links_data)}\n"
@@ -5326,7 +5326,7 @@ def import_urdf(graph):
             if stl_missing_count > 0:
                 import_summary += f"⚠ Warning: {stl_missing_count} mesh file(s) could not be found\n"
 
-            # すべてのノードの色を接続状態に応じて更新
+            # Update all node colors according to connection state
             graph.update_all_node_colors()
 
             QtWidgets.QMessageBox.information(
@@ -5353,9 +5353,9 @@ def import_urdf(graph):
 
 
 def import_mjcf(graph):
-        """MJCFファイルをインポート"""
+        """Import MJCF file"""
         try:
-            # MJCFファイルまたはZIPファイルを選択するダイアログ
+            # Dialog to select MJCF file or ZIP file
             mjcf_file, _ = QtWidgets.QFileDialog.getOpenFileName(
                 graph.widget,
                 "Select MJCF file or ZIP archive to import",
@@ -5369,7 +5369,7 @@ def import_mjcf(graph):
 
             print(f"Importing MJCF from: {mjcf_file}")
 
-            # ZIPファイルの場合、展開する
+            # If ZIP file, extract
             working_dir = None
             xml_file_to_load = None
 
@@ -5379,7 +5379,7 @@ def import_mjcf(graph):
 
                 print("Detected ZIP file, extracting...")
 
-                # 一時ディレクトリに展開
+                # Extract to temporary directory
                 temp_dir = tempfile.mkdtemp(prefix='mjcf_import_')
                 working_dir = temp_dir
 
@@ -5388,7 +5388,7 @@ def import_mjcf(graph):
                         zip_ref.extractall(temp_dir)
                     print(f"Extracted to: {temp_dir}")
 
-                    # 展開されたディレクトリ内のXMLファイルを検索
+                    # Search for XML files in extracted directory
                     xml_files = []
                     for root, dirs, files in os.walk(temp_dir):
                         for file in files:
@@ -5403,12 +5403,12 @@ def import_mjcf(graph):
                         )
                         return False
 
-                    # XMLファイルが複数ある場合、選択させる
+                    # If multiple XML files, let user select
                     if len(xml_files) > 1:
-                        # ファイル名のリストを作成
+                        # Create list of file names
                         file_names = [os.path.relpath(f, temp_dir) for f in xml_files]
 
-                        # 選択ダイアログを表示
+                        # Show selection dialog
                         selected_file, ok = QtWidgets.QInputDialog.getItem(
                             graph.widget,
                             "Select XML File",
@@ -5441,7 +5441,7 @@ def import_mjcf(graph):
             else:
                 working_dir = os.path.dirname(mjcf_file)
 
-            # MJCFParserを使用してパース
+            # Parse using MJCFParser
             try:
                 mjcf_parser = MJCFParser(verbose=True)
                 mjcf_data = mjcf_parser.parse_mjcf(mjcf_file, working_dir=working_dir)
@@ -5460,36 +5460,36 @@ def import_mjcf(graph):
                 )
                 return False
 
-            # パースされたデータを取得
+            # Get parsed data
             robot_name = mjcf_data['robot_name']
-            bodies_data_list = mjcf_data['bodies']  # リストとして取得
+            bodies_data_list = mjcf_data['bodies']  # Get as list
             joints_data = mjcf_data['joints']
             meshes_data = mjcf_data['meshes']
             eulerseq = mjcf_data['eulerseq']
             default_classes = mjcf_data['default_classes']
-            closed_loop_joints = mjcf_data.get('closed_loop_joints', [])  # 閉リンクジョイント情報を取得
+            closed_loop_joints = mjcf_data.get('closed_loop_joints', [])  # Get closed-loop joint info
 
-            # bodies_dataをリストから辞書に変換（nameをキーとして）
+            # Convert bodies_data from list to dictionary (using name as key)
             bodies_data = {}
             for body_data in bodies_data_list:
                 body_name = body_data.get('name')
                 if body_name:
                     bodies_data[body_name] = body_data
                 else:
-                    # nameがない場合はスキップまたは警告
+                    # Skip or warn if name is missing
                     print(f"Warning: Body data without name found: {body_data}")
 
             graph.robot_name = robot_name
             print(f"Robot name set to: {robot_name}")
 
-            # Graphにeulerseqを保存（Export時に使用）
+            # Save eulerseq to Graph (used during Export)
             graph.mjcf_eulerseq = eulerseq
 
-            # ノードを作成
-            # ノードを作成
+            # Create nodes
+            # Create nodes
             nodes = {}
 
-            # 既存のbase_linkノードを取得
+            # Get existing base_link node
             base_node = None
             for node in graph.all_nodes():
                 if node.__class__.__name__ == 'BaseLinkNode':
@@ -5497,17 +5497,17 @@ def import_mjcf(graph):
                     nodes['base_link'] = base_node
                     break
 
-            # base_linkが見つからない場合は作成
+            # Create if base_link not found
             if not base_node:
                 print("No base_link found, creating new one")
                 base_node = graph.create_node(
                     'insilico.nodes.BaseLinkNode',
                     name='base_link',
-                    pos=QtCore.QPointF(50, 50)  # 中心近くに配置
+                    pos=QtCore.QPointF(50, 50)  # Position near center
                 )
                 nodes['base_link'] = base_node
 
-            # MJCF用のbase_link_subノードを作成（URDFと同様の中間ノード）
+            # Create base_link_sub node for MJCF (intermediate node similar to URDF)
             base_link_sub_node = None
             try:
                 base_link_sub_node = graph.get_node_by_name('base_link_sub')
@@ -5519,12 +5519,12 @@ def import_mjcf(graph):
                     name='base_link_sub',
                     pos=QtCore.QPointF(200, 50)
                 )
-                # base_link_subは固定ノード
+                # base_link_sub is fixed node
                 base_link_sub_node.rotation_axis = 3
                 base_link_sub_node.body_angle = [0.0, 0.0, 0.0]
             nodes['base_link_sub'] = base_link_sub_node
 
-            # base_link -> base_link_sub を固定で接続
+            # Connect base_link -> base_link_sub with fixed connection
             try:
                 base_output_port = base_node.output_ports()[0]
                 base_link_sub_input_port = base_link_sub_node.input_ports()[0]
@@ -5533,7 +5533,7 @@ def import_mjcf(graph):
             except Exception:
                 pass
 
-            # MJCFのルートbody（freejoint）をbase_link_subに吸収
+            # Absorb MJCF root body (freejoint) into base_link_sub
             base_link_sub_additional_visuals = []
             mjcf_root_body_name = None
             root_bodies = [b for b in bodies_data_list if not b.get('parent')]
@@ -5551,11 +5551,11 @@ def import_mjcf(graph):
                     # Count children of root body BEFORE absorption
                     root_children = [b for b in bodies_data_list if b.get('parent') == mjcf_root_body_name]
                     print(f"  [DEBUG] Root body '{mjcf_root_body_name}' has {len(root_children)} direct children: {[b.get('name') for b in root_children]}")
-                    # base bodyのz座標を保存（MJCF/URDFエクスポート時に使用）
+                    # Save base body z-coordinate (used during MJCF/URDF export)
                     if 'pos' in root_body_data and len(root_body_data['pos']) >= 3:
                         graph.base_link_height = root_body_data['pos'][2]
                         print(f"    ✓ Saved base_link_height: {graph.base_link_height} (from MJCF root body pos)")
-                    # base_link_subにパラメータを設定
+                    # Set parameters to base_link_sub
                     base_link_sub_node.mass_value = root_body_data['mass']
                     base_link_sub_node.inertia = root_body_data['inertia']
                     base_link_sub_node.inertial_origin = root_body_data['inertial_origin']
@@ -5572,10 +5572,10 @@ def import_mjcf(graph):
                         base_link_sub_node.collider_data = root_body_data['collider_data']
                         base_link_sub_node.collider_type = 'primitive'
                         base_link_sub_node.collider_enabled = True
-                    # 追加visual
+                    # Additional visual
                     base_link_sub_additional_visuals = root_body_data.get('visuals', [])[1:]
 
-                    # root bodyを削除（子をbase_link_subへ付け替え）
+                    # Delete root body (reparent children to base_link_sub)
                     bodies_data.pop(mjcf_root_body_name, None)
                     bodies_data_list = [b for b in bodies_data_list if b.get('name') != mjcf_root_body_name]
                     updated_children_count = 0
@@ -5586,7 +5586,7 @@ def import_mjcf(graph):
                             print(f"    ✓ Updated body '{body_data.get('name')}' parent: {mjcf_root_body_name} -> base_link_sub")
                     print(f"  [DEBUG] Updated {updated_children_count} children to point to base_link_sub")
                     
-                    # jointの親参照を更新、rootボディへのジョイントは削除
+                    # Update joint parent references, delete joints to root body
                     new_joints = []
                     updated_joints_count = 0
                     for joint_data in joints_data:
@@ -5602,7 +5602,7 @@ def import_mjcf(graph):
                     print(f"  [DEBUG] Updated {updated_joints_count} joints to point to base_link_sub")
                     print(f"  [DEBUG] After absorption: bodies_data has {len(bodies_data)} bodies, bodies_data_list has {len(bodies_data_list)} bodies")
 
-            # MJCFのbase_linkデータがある場合、base_link_mjcfノードを作成
+            # If MJCF has base_link data, create base_link_mjcf node
             base_link_mjcf_node = None
             base_link_mjcf_additional_visuals = []
             if 'base_link' in bodies_data:
@@ -5612,16 +5612,16 @@ def import_mjcf(graph):
                 print(f"    inertia: {base_data['inertia']}")
                 print(f"    mesh: {base_data.get('stl_file')}")
                 
-                # base bodyのz座標を保存（MJCF/URDFエクスポート時に使用）
+                # Save base body z-coordinate (used during MJCF/URDF export)
                 if 'pos' in base_data and len(base_data['pos']) >= 3:
-                    graph.base_link_height = base_data['pos'][2]  # z座標
-                    print(f"    ✓ Saved base_link_height: {graph.base_link_height} (from MJCF base body pos)")
+                    graph.base_link_height = base_data['pos'][2]  # z-coordinate
+                    print(f"    Saved base_link_height: {graph.base_link_height} (from MJCF base body pos)")
                 else:
-                    # デフォルト値を設定
+                    # Set default value
                     graph.base_link_height = 0.5
                     print(f"    ✓ Using default base_link_height: {graph.base_link_height}")
 
-                # base_link_mjcfノードを作成（base_linkの近くに配置）
+                # Create base_link_mjcf node (positioned near base_link)
                 if hasattr(base_node, 'pos') and callable(base_node.pos):
                     pos = base_node.pos()
                     if hasattr(pos, 'x') and callable(pos.x):
@@ -5639,34 +5639,34 @@ def import_mjcf(graph):
                 base_link_mjcf_node = graph.create_node(
                     'insilico.nodes.FooNode',
                     name='base_link_mjcf',
-                    pos=QtCore.QPointF(base_x + 150, base_y)  # base_linkから右にオフセット
+                    pos=QtCore.QPointF(base_x + 150, base_y)  # Offset right from base_link
                 )
                 nodes['base_link_mjcf'] = base_link_mjcf_node
 
-                # パラメータを設定
+                # Set parameters
                 base_link_mjcf_node.mass_value = base_data['mass']
                 base_link_mjcf_node.inertia = base_data['inertia']
                 base_link_mjcf_node.inertial_origin = base_data['inertial_origin']
                 base_link_mjcf_node.node_color = base_data['color']
 
-                # Body Angle（初期回転角度）の設定（ラジアンで保持）
-                # MJCFインポートの場合、base bodyの姿勢は通常[0,0,0]なので、body_angleは初期化のみ
-                # （bodyの姿勢の二重適用を防ぐため）
+                # Body Angle (initial rotation angle) setting (stored in radians)
+                # For MJCF import, base body pose is usually [0,0,0], so body_angle is just initialized
+                # (to prevent double application of body pose)
                 base_link_mjcf_node.body_angle = [0.0, 0.0, 0.0]
                 if 'rpy' in base_data and any(a != 0.0 for a in base_data['rpy']):
                     print(f"    ℹ Base body orientation from MJCF: {[math.degrees(a) for a in base_data['rpy']]} degrees (not applied to body_angle)")
 
-                # base_link_mjcfはbase_linkに固定されているので、rotation_axisを3（Fixed）に設定
-                # これにより、MJCF出力時にジョイントが出力されなくなる
+                # base_link_mjcf is fixed to base_link, so set rotation_axis to 3 (Fixed)
+                # This prevents joint from being output during MJCF export
                 base_link_mjcf_node.rotation_axis = 3
                 print(f"    ✓ Set base_link_mjcf rotation_axis to 3 (Fixed) - no joint will be exported")
 
-                # メッシュファイル
+                # Mesh file
                 if base_data.get('stl_file'):
                     base_link_mjcf_node.stl_file = base_data['stl_file']
                     print(f"    ✓ Assigned mesh to base_link_mjcf: {base_data['stl_file']}")
 
-                # メッシュスケールとvisual origin
+                # Mesh scale and visual origin
                 base_link_mjcf_node.mesh_scale = base_data.get('mesh_scale', [1.0, 1.0, 1.0])
                 base_link_mjcf_node.visual_origin = base_data.get('visual_origin', {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]})
 
@@ -5675,7 +5675,7 @@ def import_mjcf(graph):
                     base_link_mjcf_node.collider_mesh = base_data['collision_mesh']
                     print(f"    ✓ Assigned collision mesh to base_link_mjcf: {base_data['collision_mesh']}")
 
-                    # コライダーが明示的に指定されている場合、有効化
+                    # Enable if collider is explicitly specified
                     if base_data.get('collider_enabled'):
                         base_link_mjcf_node.collider_type = base_data.get('collider_type', 'mesh')
                         base_link_mjcf_node.collider_enabled = True
@@ -5688,7 +5688,7 @@ def import_mjcf(graph):
                     base_link_mjcf_node.collider_enabled = True
                     print(f"    ✓ Assigned primitive collider to base_link_mjcf: {base_data['collider_data']['type']}")
 
-                # base_link_subからbase_link_mjcfへ接続
+                # Connect base_link_sub to base_link_mjcf
                 try:
                     base_link_sub_output_port = base_link_sub_node.output_ports()[0]
                     base_link_mjcf_input_port = base_link_mjcf_node.input_ports()[0]
@@ -5697,28 +5697,28 @@ def import_mjcf(graph):
                 except Exception:
                     pass
 
-                # base_link_mjcfの追加visual情報を保存（後で処理するため）
-                base_link_mjcf_additional_visuals = base_data.get('visuals', [])[1:]  # 2つ目以降のvisual
+                # Save base_link_mjcf additional visual info (for later processing)
+                base_link_mjcf_additional_visuals = base_data.get('visuals', [])[1:]  # 2nd and subsequent visuals
 
-                # bodies_dataから'base_link'を削除（後続の処理で重複作成されないように）
+                # Delete 'base_link' from bodies_data (to prevent duplicate creation in subsequent processing)
                 del bodies_data['base_link']
 
-                # joints_dataの親参照を'base_link'から'base_link_mjcf'に更新
+                # Update parent reference in joints_data from 'base_link' to 'base_link_mjcf'
                 for joint_data in joints_data:
                     if joint_data['parent'] == 'base_link':
                         joint_data['parent'] = 'base_link_mjcf'
                         print(f"    ✓ Updated joint '{joint_data['name']}' parent: base_link -> base_link_mjcf")
-                # bodies_data_listの親参照も更新（接続順の安定化）
+                # Also update parent reference in bodies_data_list (for connection order stability)
                 for body_data in bodies_data_list:
                     if body_data.get('parent') == 'base_link':
                         body_data['parent'] = 'base_link_mjcf'
             else:
-                # base bodyがない場合、デフォルトの高さを設定
+                # If no base body, set default height
                 if not hasattr(graph, 'base_link_height'):
                     graph.base_link_height = 0.5
                     print(f"  ✓ Using default base_link_height: {graph.base_link_height} (no base body in MJCF)")
 
-            # base_link_mjcfがない場合、base_link_subに親参照を寄せる
+            # If no base_link_mjcf, redirect parent references to base_link_sub
             if base_link_mjcf_node is None:
                 for joint_data in joints_data:
                     if joint_data['parent'] == 'base_link':
@@ -5728,15 +5728,15 @@ def import_mjcf(graph):
                     if body_data.get('parent') == 'base_link':
                         body_data['parent'] = 'base_link_sub'
 
-            # 各ボディの子ジョイント数をカウント
+            # Count child joints for each body
             body_child_counts = {}
             for body_name in bodies_data.keys():
                 body_child_counts[body_name] = 0
 
-            # base_link_mjcfが作成されている場合は追加
+            # Add if base_link_mjcf was created
             if base_link_mjcf_node is not None:
                 body_child_counts['base_link_mjcf'] = 0
-            # base_link_subは常にカウント対象
+            # base_link_sub is always counted
             body_child_counts['base_link_sub'] = 0
 
             for joint_data in joints_data:
@@ -5744,7 +5744,7 @@ def import_mjcf(graph):
                 if parent in body_child_counts:
                     body_child_counts[parent] += 1
 
-            # 親→子の順序マップ（XML順に基づく）
+            # Parent->child order map (based on XML order)
             child_order_by_parent = {}
             default_root_parent = 'base_link_sub' if base_link_sub_node is not None else 'base_link'
             print(f"\n[DEBUG] Creating child_order_by_parent map")
@@ -5767,7 +5767,7 @@ def import_mjcf(graph):
             for parent, children in child_order_by_parent.items():
                 print(f"  {parent}: {children}")
 
-            # base_link_mjcfに子ジョイント数に応じた出力ポートを追加
+            # Add output ports to base_link_mjcf according to child joint count
             if base_link_mjcf_node is not None:
                 child_count = body_child_counts.get('base_link_mjcf', 0)
                 print(f"    base_link_mjcf has {child_count} children")
@@ -5776,15 +5776,15 @@ def import_mjcf(graph):
                         base_link_mjcf_node._add_output()
                         print(f"    ✓ Added output port {i+1} to base_link_mjcf")
 
-                # base_link_mjcfの追加visual処理（base_1.obj以降のメッシュ用）
+                # Process base_link_mjcf additional visuals (for meshes like base_1.obj and beyond)
                 if base_link_mjcf_additional_visuals:
                     print(f"  base_link_mjcf has {len(base_link_mjcf_additional_visuals)} additional visual(s)")
 
-                    # 追加のvisualの数だけ出力ポートを追加
+                    # Add output ports for the number of additional visuals
                     for i in range(len(base_link_mjcf_additional_visuals)):
                         base_link_mjcf_node._add_output()
 
-                    # 追加のvisual用の子ノードを作成して接続
+                    # Create and connect child nodes for additional visuals
                     if hasattr(base_link_mjcf_node, 'pos') and callable(base_link_mjcf_node.pos):
                         mjcf_pos = base_link_mjcf_node.pos()
                         if hasattr(mjcf_pos, 'x') and callable(mjcf_pos.x):
@@ -5803,7 +5803,7 @@ def import_mjcf(graph):
                     for visual_idx, visual_data in enumerate(base_link_mjcf_additional_visuals, start=1):
                         visual_node_name = f"base_link_mjcf_visual_{visual_idx}"
 
-                        # 子ノードの位置を計算（親ノードの近くに配置）
+                        # Calculate child node position (place near parent node)
                         visual_pos_x = base_mjcf_pos_x + 50 + visual_idx * 30
                         visual_pos_y = base_mjcf_pos_y + 100
 
@@ -5814,25 +5814,25 @@ def import_mjcf(graph):
                         )
                         nodes[visual_node_name] = visual_node
 
-                        # ビジュアルノードにメッシュを設定
+                        # Set mesh on visual node
                         visual_node.stl_file = visual_data['mesh']
                         visual_node.node_color = visual_data['color']
-                        visual_node.mass_value = 0.0  # ビジュアルのみなので質量0
-                        visual_node.mesh_scale = visual_data.get('scale', [1.0, 1.0, 1.0])  # ← mesh scale を設定！
+                        visual_node.mass_value = 0.0  # Visual only, so mass is 0
+                        visual_node.mesh_scale = visual_data.get('scale', [1.0, 1.0, 1.0])  # Set mesh scale
 
                         if mjcf_parser.verbose:
                             print(f"      ✓ Created visual node '{visual_node_name}' with mesh: {os.path.basename(visual_data['mesh'])} (scale: {visual_node.mesh_scale})")
                         else:
                             print(f"      ✓ Created visual node '{visual_node_name}' with mesh: {os.path.basename(visual_data['mesh'])}")
 
-                        # visualのクォータニオンをRPYに変換
+                        # Convert visual quaternion to RPY
                         visual_rpy = ConversionUtils.quat_to_rpy(visual_data['quat'])
 
-                        # base_link_mjcfのポイント情報を設定
+                        # Set point information for base_link_mjcf
                         if not hasattr(base_link_mjcf_node, 'points'):
                             base_link_mjcf_node.points = []
 
-                        # visual用のポイントを追加（child_count + visual_idxの位置）
+                        # Add point for visual (at position child_count + visual_idx)
                         point_index = child_count + visual_idx - 1
                         while len(base_link_mjcf_node.points) <= point_index:
                             base_link_mjcf_node.points.append({
@@ -5845,14 +5845,14 @@ def import_mjcf(graph):
                         base_link_mjcf_node.points[point_index] = {
                             'name': f'visual_{visual_idx}_attachment',
                             'type': 'fixed',
-                            'xyz': visual_data['pos'],  # geomのローカル位置
+                            'xyz': visual_data['pos'],  # Local position of geom
                             'rpy': [0.0, 0.0, 0.0],  # Keep rpy as zero (3D view uses angle)
                             'angle': list(visual_rpy)  # Set angle for 3D view display (radians)
                         }
                         print(f"      Visual pos: {visual_data['pos']}, quat: {visual_data['quat']} -> rpy: {visual_rpy}")
 
-                        # ポートを接続
-                        # 出力ポート番号は、子ジョイント数 + visual_idx
+                        # Connect ports
+                        # Output port number is child joint count + visual_idx
                         output_port_index = child_count + visual_idx - 1
                         output_port_name = f'out_{output_port_index + 1}'
                         input_port_name = 'in'
@@ -5860,7 +5860,7 @@ def import_mjcf(graph):
                         print(f"    Connecting visual node: base_link_mjcf -> {visual_node_name}")
                         print(f"      Port: {output_port_name} -> {input_port_name} (port index: {output_port_index})")
 
-                        # ポート接続を実行
+                        # Execute port connection
                         output_ports = base_link_mjcf_node.output_ports()
                         if output_port_index < len(output_ports):
                             output_port = output_ports[output_port_index]
@@ -5870,13 +5870,13 @@ def import_mjcf(graph):
                         else:
                             print(f"      ✗ Output port not found: {output_port_name} (have {len(output_ports)} ports)")
 
-            # base_link_subに必要な出力ポートを追加（子ボディ + 追加visual用）
+            # Add required output ports to base_link_sub (for child bodies + additional visuals)
             base_link_sub_child_count = body_child_counts.get('base_link_sub', 0)
             print(f"\n[DEBUG] base_link_sub port configuration:")
             print(f"  Child count from body_child_counts: {base_link_sub_child_count}")
             print(f"  base_link_sub needs {base_link_sub_child_count} output ports for child bodies")
             
-            # 現在の出力ポート数を取得
+            # Get current output port count
             current_base_link_sub_ports = len(base_link_sub_node.output_ports())
             print(f"  Current output ports: {current_base_link_sub_ports}")
             needed_ports_for_children = base_link_sub_child_count - current_base_link_sub_ports
@@ -5887,7 +5887,7 @@ def import_mjcf(graph):
                 print(f"  ✓ Added {needed_ports_for_children} output port(s) to base_link_sub for children")
             print(f"  Total output ports after addition: {len(base_link_sub_node.output_ports())}")
 
-            # base_link_subの追加visual処理（freejointルートを吸収した場合）
+            # Process base_link_sub additional visuals (when freejoint root is absorbed)
             if base_link_sub_additional_visuals:
                 child_count = body_child_counts.get('base_link_sub', 0)
                 print(f"  base_link_sub has {len(base_link_sub_additional_visuals)} additional visual(s)")
@@ -5923,7 +5923,7 @@ def import_mjcf(graph):
                     visual_node.stl_file = visual_data['mesh']
                     visual_node.node_color = visual_data['color']
                     visual_node.mass_value = 0.0
-                    visual_node.mesh_scale = visual_data.get('scale', [1.0, 1.0, 1.0])  # ← mesh scale を設定！
+                    visual_node.mesh_scale = visual_data.get('scale', [1.0, 1.0, 1.0])  # Set mesh scale
 
                     visual_rpy = ConversionUtils.quat_to_rpy(visual_data['quat'])
                     if not hasattr(base_link_sub_node, 'points'):
@@ -5958,7 +5958,7 @@ def import_mjcf(graph):
                     else:
                         print(f"      ✗ Output port not found on base_link_sub: {output_port_name} (have {len(output_ports)} ports)")
 
-            # 他のボディのノードを作成
+            # Create nodes for other bodies
             if mjcf_parser.verbose:
                 print(f"\n=== Creating Body Nodes ===")
                 print(f"bodies_data contains {len(bodies_data)} bodies:")
@@ -5966,7 +5966,7 @@ def import_mjcf(graph):
                     print(f"  - {body_name}")
             
             grid_spacing = 200
-            # base_linkノードの位置を基準に子ノードを配置
+            # Position child nodes relative to base_link node
             if hasattr(base_node, 'pos') and callable(base_node.pos):
                 pos = base_node.pos()
                 if hasattr(pos, 'x') and callable(pos.x):
@@ -5981,7 +5981,7 @@ def import_mjcf(graph):
             else:
                 base_x = 50
                 base_y = 50
-            current_x = base_x + grid_spacing  # base_linkから右にオフセット
+            current_x = base_x + grid_spacing  # Offset right from base_link
             current_y = base_y
             nodes_per_row = 4
             node_count = 0
@@ -5992,16 +5992,16 @@ def import_mjcf(graph):
             for body_name, body_data in bodies_data.items():
                 if mjcf_parser.verbose:
                     print(f"[LOOP] Processing body: {body_name}")
-                # base_linkはスキップ（既に処理済み）
+                # Skip base_link (already processed)
                 if body_name == 'base_link':
                     continue
                 
-                # freejoint rootbodyはbase_link_subに吸収されたのでスキップ
+                # Skip freejoint root body (absorbed into base_link_sub)
                 if mjcf_root_body_name and body_name == mjcf_root_body_name:
                     print(f"  ℹ Skipping node creation for '{body_name}' (freejoint root, absorbed into base_link_sub)")
                     continue
 
-                # グリッドレイアウトで位置を計算
+                # Calculate position in grid layout
                 row = node_count // nodes_per_row
                 col = node_count % nodes_per_row
                 pos_x = current_x + col * grid_spacing
@@ -6014,21 +6014,21 @@ def import_mjcf(graph):
                 )
                 nodes[body_name] = node
 
-                # ノードのパラメータを設定
+                # Set node parameters
                 node.mass_value = body_data['mass']
                 node.inertia = body_data['inertia']
                 node.inertial_origin = body_data['inertial_origin']
                 node.node_color = body_data['color']
 
-                # Body Angle（初期回転角度）の設定（ラジアンで保持）
-                # MJCFインポートの場合、bodyの姿勢（xyaxes/euler/quatから）はparent_node.points[port_index]['rpy']に設定されるので、
-                # ここではbody_angleを初期化のみ行う（後でrefがある場合のみ設定される）
-                # これにより、bodyの姿勢が二重適用されるのを防ぐ
+                # Set Body Angle (initial rotation angle, stored in radians)
+                # For MJCF import, body orientation (from xyaxes/euler/quat) is set in parent_node.points[port_index]['rpy'],
+                # so here we only initialize body_angle (will be set later only if ref exists)
+                # This prevents double application of body orientation
                 node.body_angle = [0.0, 0.0, 0.0]
                 if 'rpy' in body_data and any(a != 0.0 for a in body_data['rpy']):
                     print(f"  ℹ Body orientation from MJCF (will be set in parent's point['rpy']): {[math.degrees(a) for a in body_data['rpy']]} degrees")
 
-                # Rotation axisの設定（joint要素のaxis属性から取得）
+                # Set rotation axis (from joint element's axis attribute)
                 if 'rotation_axis' in body_data and body_data['rotation_axis'] is not None:
                     node.rotation_axis = body_data['rotation_axis']
                     axis_names = ['X (Roll)', 'Y (Pitch)', 'Z (Yaw)', 'Fixed']
@@ -6037,21 +6037,21 @@ def import_mjcf(graph):
                     else:
                         print(f"  ✓ Set rotation_axis for node '{body_name}': {node.rotation_axis}")
                 else:
-                    # デフォルトはX軸（後方互換性のため）
+                    # Default to X axis (for backward compatibility)
                     node.rotation_axis = 0
 
-                # メッシュファイルの割り当て（デバッグ出力付き）
+                # Assign mesh file (with debug output)
                 if body_data['stl_file']:
                     node.stl_file = body_data['stl_file']
                     print(f"  ✓ Assigned mesh to node '{body_name}': {body_data['stl_file']}")
                 else:
                     print(f"  ✗ No mesh file for node '{body_name}'")
 
-                # メッシュのスケール情報を設定
+                # Set mesh scale information
                 node.mesh_scale = body_data.get('mesh_scale', [1.0, 1.0, 1.0])
                 if mjcf_parser.verbose:
                     print(f"  ✓ Set mesh_scale for node '{body_name}': {node.mesh_scale}")
-                # Visual origin情報を設定
+                # Set visual origin information
                 node.visual_origin = body_data.get('visual_origin', {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]})
 
                 # Multiple colliders support
@@ -6074,12 +6074,12 @@ def import_mjcf(graph):
                 # Backward compatibility: migrate old format to colliders list
                 # Only migrate if colliders list is empty
                 if len(node.colliders) == 0:
-                    # Collision mesh情報を設定（旧形式）
+                    # Set collision mesh information (old format)
                     if body_data.get('collision_mesh'):
                         node.collider_mesh = body_data['collision_mesh']
                         print(f"  ✓ Assigned collision mesh to node '{body_name}': {os.path.basename(body_data['collision_mesh'])}")
 
-                        # コライダーが明示的に指定されている場合、有効化
+                        # Enable if collider is explicitly specified
                         collider_enabled = body_data.get('collider_enabled', False)
                         if body_data.get('collider_type') == 'mesh' or body_data.get('collider_enabled'):
                             node.collider_type = body_data.get('collider_type', 'mesh')
@@ -6094,7 +6094,7 @@ def import_mjcf(graph):
                             })
                             print(f"  ✓ Enabled mesh collider for node '{body_name}' (migrated from old format)")
 
-                    # Primitive collider（旧形式）
+                    # Primitive collider (old format)
                     if body_data.get('collider_data'):
                         node.collider_data = body_data['collider_data']
                         node.collider_type = 'primitive'
@@ -6134,12 +6134,12 @@ def import_mjcf(graph):
                     print(f"    body_data['collider_data']: {body_data.get('collider_data', 'NOT FOUND')}")
                     print(f"    body_data['collision_mesh']: {body_data.get('collision_mesh', 'NOT FOUND')}")
 
-                # メッシュ反転判定
-                # body_dataからis_mesh_reversedフラグを取得（scaleの負の値から検出済み）
+                # Mesh reversal check
+                # Get is_mesh_reversed flag from body_data (already detected from negative scale values)
                 if 'is_mesh_reversed' in body_data:
                     node.is_mesh_reversed = body_data['is_mesh_reversed']
                 else:
-                    # フォールバック: visual_originとmesh_scaleから判定
+                    # Fallback: determine from visual_origin and mesh_scale
                     node.is_mesh_reversed = is_mesh_reversed_check(
                         node.visual_origin,
                         node.mesh_scale
@@ -6147,26 +6147,26 @@ def import_mjcf(graph):
                 if node.is_mesh_reversed:
                     print(f"  MJCF node '{body_name}' mesh is reversed/mirrored (for MJCF export)")
 
-                # 子ジョイントの数に応じて出力ポートを追加
+                # Add output ports according to child joint count
                 child_count = body_child_counts.get(body_name, 0)
                 if child_count > 1:
                     for i in range(1, child_count):
                         node._add_output()
 
-                # 複数のvisualがある場合、追加のノードを作成
-                additional_visuals = body_data.get('visuals', [])[1:]  # 2つ目以降のvisual
+                # Create additional nodes if there are multiple visuals
+                additional_visuals = body_data.get('visuals', [])[1:]  # Visuals after the first one
                 if additional_visuals:
                     print(f"  Body '{body_name}' has {len(additional_visuals)} additional visual(s)")
 
-                    # 追加のvisualの数だけ出力ポートを追加
+                    # Add output ports for the number of additional visuals
                     for i in range(len(additional_visuals)):
                         node._add_output()
 
-                    # 追加のvisual用の子ノードを作成して接続
+                    # Create and connect child nodes for additional visuals
                     for visual_idx, visual_data in enumerate(additional_visuals, start=1):
                         visual_node_name = f"{body_name}_visual_{visual_idx}"
 
-                        # 子ノードの位置を計算（親ノードの近くに配置）
+                        # Calculate child node position (place near parent node)
                         visual_pos_x = pos_x + 50 + visual_idx * 30
                         visual_pos_y = pos_y + 100
 
@@ -6177,20 +6177,20 @@ def import_mjcf(graph):
                         )
                         nodes[visual_node_name] = visual_node
 
-                        # ビジュアルノードにメッシュを設定
+                        # Set mesh on visual node
                         visual_node.stl_file = visual_data['mesh']
                         visual_node.node_color = visual_data['color']
-                        visual_node.mass_value = 0.0  # ビジュアルのみなので質量0
-                        visual_node.mesh_scale = visual_data.get('scale', [1.0, 1.0, 1.0])  # ← mesh scale を設定！
+                        visual_node.mass_value = 0.0  # Visual only, so mass is 0
+                        visual_node.mesh_scale = visual_data.get('scale', [1.0, 1.0, 1.0])  # Set mesh scale
 
-                        # visualのクォータニオンをRPYに変換
+                        # Convert visual quaternion to RPY
                         visual_rpy = ConversionUtils.quat_to_rpy(visual_data['quat'])
 
-                        # 親ノードのポイント情報を設定
+                        # Set parent node point information
                         if not hasattr(node, 'points'):
                             node.points = []
 
-                        # 子ジョイントの数 + visual_idxの位置にポイントを追加
+                        # Add point at position: child joint count + visual_idx
                         point_index = child_count + visual_idx - 1
                         while len(node.points) <= point_index:
                             node.points.append({
@@ -6200,17 +6200,17 @@ def import_mjcf(graph):
                                 'rpy': [0.0, 0.0, 0.0]
                             })
 
-                        # visualの位置と姿勢を設定
+                        # Set visual position and orientation
                         node.points[point_index] = {
                             'name': f'visual_{visual_idx}_attachment',
                             'type': 'fixed',
-                            'xyz': visual_data['pos'],  # geomのローカル位置
+                            'xyz': visual_data['pos'],  # Local position of geom
                             'rpy': [0.0, 0.0, 0.0],  # Keep rpy as zero (3D view uses angle)
                             'angle': list(visual_rpy)  # Set angle for 3D view display (radians)
                         }
                         print(f"      Visual pos: {visual_data['pos']}, quat: {visual_data['quat']} -> rpy: {visual_rpy}")
 
-                        # ポートを接続
+                        # Connect ports
                         is_base_link = node.__class__.__name__ == 'BaseLinkNode'
                         if is_base_link:
                             output_port_name = 'out' if point_index == 0 else f'out_{point_index + 1}'
@@ -6234,14 +6234,14 @@ def import_mjcf(graph):
                         except Exception as e:
                             print(f"      ✗ Error: {str(e)}")
 
-                        # ビジュアルノードをfixedジョイントに設定
-                        visual_node.rotation_axis = 3  # fixedジョイント
+                        # Set visual node to fixed joint
+                        visual_node.rotation_axis = 3  # Fixed joint
 
                 node_count += 1
 
-            # 子ボディ数に合わせて出力ポートを追加（MJCF用）
-            # NOTE: ベースボディ（例: "base"）が複数の脚を持つ場合、
-            # 出力ポートが不足すると脚が接続されない
+            # Add output ports according to child body count (for MJCF)
+            # NOTE: If base body (e.g., "base") has multiple legs,
+            # insufficient output ports will prevent legs from being connected
             for body_name, child_count in body_child_counts.items():
                 if body_name not in nodes:
                     continue
@@ -6256,7 +6256,7 @@ def import_mjcf(graph):
                         node._add_output()
                     print(f"  ✓ Added {needed_ports} output port(s) to '{body_name}' (children: {child_count})")
 
-            # ジョイント情報を反映して接続
+            # Apply joint information and connect
             parent_port_indices = {}
             connected_pairs = set()
 
@@ -6278,13 +6278,13 @@ def import_mjcf(graph):
                 parent_node = nodes[parent_name]
                 child_node = nodes[child_name]
 
-                # 既に同じ親子が接続されている場合はスキップ（多自由度ジョイント対策）
+                # Skip if same parent-child pair already connected (for multi-DOF joints)
                 pair_key = (parent_name, child_name)
                 if pair_key in connected_pairs:
                     print(f"  ℹ Skip duplicate joint connection: {parent_name} -> {child_name}")
                     continue
 
-                # 親ノードの現在のポートインデックスを取得
+                # Get parent node's current port index
                 port_index = None
                 if parent_name in child_order_by_parent and child_name in child_order_by_parent[parent_name]:
                     port_index = child_order_by_parent[parent_name].index(child_name)
@@ -6296,7 +6296,7 @@ def import_mjcf(graph):
                     parent_port_indices[parent_name] += 1
                     print(f"  [DEBUG] port_index from parent_port_indices: {port_index}")
 
-                # ポイント情報を親ノードに追加
+                # Add point information to parent node
                 if not hasattr(parent_node, 'points'):
                     parent_node.points = []
 
@@ -6308,7 +6308,7 @@ def import_mjcf(graph):
                         'rpy': [0.0, 0.0, 0.0]
                     })
 
-                # ジョイントタイプを文字列に変換
+                # Convert joint type to string
                 joint_type_str = joint_data['type']
 
                 # Set angle for 3D view and UI display, keep rpy as zero to avoid double rotation
@@ -6321,8 +6321,8 @@ def import_mjcf(graph):
                     'angle': list(joint_data['origin_rpy'])  # Set angle for 3D view display (radians)
                 }
 
-                # 子ノードにジョイント情報を設定
-                # ファイルに定義されている場合は上書き、未定義の場合はSettingsのデフォルト値を使用
+                # Set joint information on child node
+                # Override if defined in file, use Settings default values if undefined
                 if 'limit' in joint_data:
                     if 'lower' in joint_data['limit']:
                         child_node.joint_lower = joint_data['limit']['lower']
@@ -6333,8 +6333,8 @@ def import_mjcf(graph):
                     if 'velocity' in joint_data['limit']:
                         child_node.joint_velocity = joint_data['limit']['velocity']
 
-                # dynamics情報を設定（damping, frictionloss, armature）
-                # ファイルに定義されている場合は上書き、未定義の場合はSettingsのデフォルト値を使用
+                # Set dynamics information (damping, frictionloss, armature)
+                # Override if defined in file, use Settings default values if undefined
                 if 'dynamics' in joint_data:
                     if 'damping' in joint_data['dynamics']:
                         child_node.joint_damping = joint_data['dynamics']['damping']
@@ -6356,17 +6356,17 @@ def import_mjcf(graph):
                         child_node.joint_margin = joint_data['dynamics']['margin']
                         print(f"  Set joint_margin: {child_node.joint_margin}")
 
-                # stiffnessを設定
+                # Set stiffness
                 if 'stiffness' in joint_data:
                     child_node.joint_stiffness = joint_data['stiffness']
                     print(f"  Set joint_stiffness: {child_node.joint_stiffness}")
 
-                # actuation_lagを設定（存在する場合）
+                # Set actuation_lag (if exists)
                 if 'actuation_lag' in joint_data and hasattr(child_node, 'actuation_lag'):
                     child_node.actuation_lag = joint_data['actuation_lag']
                     print(f"  Set actuation_lag: {child_node.actuation_lag}")
 
-                # 回転軸を設定
+                # Set rotation axis
                 # NOTE: rotation_axis is already set in body_data from MJCF/URDF parser
                 # Do NOT override it here with joint_data['axis'] because:
                 # - joint_data['axis'] is in parent coordinate frame (axis_parent)
@@ -6381,39 +6381,39 @@ def import_mjcf(graph):
                 else:
                     print(f"  Joint axis (parent frame): {axis} | rotation_axis: not set")
 
-                # ジョイントタイプがfixedの場合
+                # If joint type is fixed
                 if joint_data['type'] == 'fixed':
                     child_node.rotation_axis = 3
                     print(f"  Fixed joint -> rotation_axis: 3")
 
-                # MJCFのjointのref属性（参照角度）をbody_angleとして設定
-                # NOTE: ref = ジョイントのデフォルト姿勢/参照点
-                # body_angleのみに設定し、point['angle']には設定しない
-                # （point['angle']とbody_angleは連動するが、インポート時は片方のみに設定）
+                # Set MJCF joint's ref attribute (reference angle) as body_angle
+                # NOTE: ref = joint's default pose/reference point
+                # Set only body_angle, not point['angle']
+                # (point['angle'] and body_angle are linked, but only set one during import)
                 if 'ref' in joint_data and joint_data['type'] != 'fixed':
-                    ref_angle_deg = joint_data['ref']  # 度単位
+                    ref_angle_deg = joint_data['ref']  # In degrees
                     rotation_axis = child_node.rotation_axis
 
-                    # 回転軸に応じて適切な軸のangleを設定
-                    # NOTE: body_angleは"ラジアン"で保持される
-                    # （3Dビジュアライゼーションでmath.degrees()で度に変換されるため）
+                    # Set angle for appropriate axis based on rotation axis
+                    # NOTE: body_angle is stored in "radians"
+                    # (converted to degrees by math.degrees() in 3D visualization)
                     angle_offset_rad = [0.0, 0.0, 0.0]
                     ref_angle_rad = math.radians(ref_angle_deg)
-                    if rotation_axis == 0:  # X軸
+                    if rotation_axis == 0:  # X axis
                         angle_offset_rad[0] = ref_angle_rad
-                    elif rotation_axis == 1:  # Y軸
+                    elif rotation_axis == 1:  # Y axis
                         angle_offset_rad[1] = ref_angle_rad
-                    elif rotation_axis == 2:  # Z軸
+                    elif rotation_axis == 2:  # Z axis
                         angle_offset_rad[2] = ref_angle_rad
 
-                    # 子ノードのbody_angleに設定（ラジアンで保存）
+                    # Set child node's body_angle (stored in radians)
                     child_node.body_angle = angle_offset_rad
                     print(f"  ✓ Set body_angle from ref: {ref_angle_deg} degrees ({ref_angle_rad:.4f} radians)")
                     print(f"  ℹ Note: point['angle'] not set (will be synced from body_angle when needed)")
 
-                # ポートを接続
+                # Connect ports
                 is_base_link = parent_node.__class__.__name__ == 'BaseLinkNode'
-                # 親ノードの出力ポート数が足りない場合は追加（MJCF用の保険）
+                # Add output ports to parent node if insufficient (safety for MJCF)
                 if hasattr(parent_node, '_add_output'):
                     try:
                         current_output_count = len(parent_node.output_ports())
@@ -6443,36 +6443,36 @@ def import_mjcf(graph):
                         connected_pairs.add(pair_key)
                         print(f"  ✓ Connected")
                         
-                        # NOTE: body_angleは同期しない（MJCFのref専用）
-                        # point['angle']（origin_rpy）とbody_angle（ref）は別々の回転として3Dビューで適用される
-                        # 同期すると二重回転が発生する
+                        # NOTE: body_angle is not synchronized (MJCF ref only)
+                        # point['angle'] (origin_rpy) and body_angle (ref) are applied as separate rotations in 3D view
+                        # Synchronizing would cause double rotation
                     else:
                         print(f"  ✗ Port not found")
                 except Exception as e:
                     print(f"  ✗ Error: {str(e)}")
 
-            # baseノードをbase_linkに自動接続
+            # Auto-connect base node to base_link
             print("\n=== Connecting base node to base_link ===")
             base_candidate_node = None
             base_candidate_name = None
 
-            # 1. まず'base'という名前のノードを探す
+            # 1. First, search for a node named 'base'
             if 'base' in nodes:
                 base_candidate_node = nodes['base']
                 base_candidate_name = 'base'
                 print(f"  Found 'base' node: {base_candidate_name}")
             else:
-                # 2. baseがない場合は、INが接続されていないノードの中で子ノード数が最大のものを探す
+                # 2. If 'base' not found, search for node with most children among unconnected nodes
                 print("  'base' node not found, searching for node with most children and no input connection...")
                 
-                # INが接続されていないノードを探す
+                # Search for nodes with unconnected input
                 unconnected_nodes = []
                 for body_name, node in nodes.items():
-                    # base_link系は除外
+                    # Exclude base_link variants
                     if body_name in ['base_link', 'base_link_mjcf', 'base_link_sub']:
                         continue
                     
-                    # 入力ポートが接続されているかチェック
+                    # Check if input port is connected
                     input_ports = node.input_ports()
                     is_connected = False
                     for input_port in input_ports:
@@ -6485,17 +6485,17 @@ def import_mjcf(graph):
                         unconnected_nodes.append((body_name, node, child_count))
                         print(f"    Found unconnected node: {body_name} (children: {child_count})")
                 
-                # 子ノード数が最大のノードを選択
+                # Select node with most children
                 if unconnected_nodes:
-                    unconnected_nodes.sort(key=lambda x: x[2], reverse=True)  # 子ノード数でソート
+                    unconnected_nodes.sort(key=lambda x: x[2], reverse=True)  # Sort by child count
                     base_candidate_name, base_candidate_node, max_child_count = unconnected_nodes[0]
                     print(f"  Selected node with most children: {base_candidate_name} (children: {max_child_count})")
                 else:
                     print("  No unconnected nodes found")
 
-            # base候補ノードが見つかった場合、base_link_subを優先して接続
+            # If base candidate node found, connect to base_link_sub preferentially
             if base_candidate_node and base_candidate_name:
-                # 既に接続されている場合はスキップ
+                # Skip if already connected
                 input_ports = base_candidate_node.input_ports()
                 is_already_connected = False
                 for input_port in input_ports:
@@ -6509,7 +6509,7 @@ def import_mjcf(graph):
                         if target_parent_node is None:
                             print("  ✗ No parent node available for base connection")
                         else:
-                            # 接続されていない出力ポートを探す
+                            # Search for unconnected output port
                             output_ports = target_parent_node.output_ports()
                             available_output_port = None
                             for output_port in output_ports:
@@ -6534,10 +6534,10 @@ def import_mjcf(graph):
             else:
                 print("  No base candidate node found")
 
-            # 接続されていないノードをMJCFファイルから調べて接続
+            # Find and connect unconnected nodes from MJCF file
             print("\n=== Connecting unconnected nodes from MJCF hierarchy ===")
             
-            # bodies_data_listから親情報を取得（元のリスト形式を使用）
+            # Get parent information from bodies_data_list (using original list format)
             body_parent_map = {}
             for body_data in bodies_data_list:
                 body_name = body_data.get('name')
@@ -6546,33 +6546,33 @@ def import_mjcf(graph):
                     body_parent_map[body_name] = parent_name
                     print(f"  Body hierarchy: {parent_name} -> {body_name}")
             
-            # 接続されていないノードを探す
+            # Search for unconnected nodes
             unconnected_nodes = []
             for body_name, node in nodes.items():
-                # base_linkとbase_link_mjcfは除外
+                # Exclude base_link and base_link_mjcf
                 if body_name == 'base_link' or body_name == 'base_link_mjcf':
                     continue
                 
-                # 入力ポートが接続されているかチェック
+                # Check if input port is connected
                 input_ports = node.input_ports()
                 is_connected = False
                 for input_port in input_ports:
                     if input_port.connected_ports():
                         is_connected = True
                         break
-                
+
                 if not is_connected:
                     unconnected_nodes.append((body_name, node))
                     print(f"  Found unconnected node: {body_name}")
-            
-            # 接続されていないノードについて、親ノードを探して接続
+
+            # For unconnected nodes, find parent node and connect
             for body_name, node in unconnected_nodes:
                 parent_name = body_parent_map.get(body_name)
                 
                 if parent_name:
                     print(f"\n  Attempting to connect {body_name} to parent {parent_name}...")
                     
-                    # 親ノードを探す
+                    # Search for parent node
                     parent_node = None
                     if parent_name in nodes:
                         parent_node = nodes[parent_name]
@@ -6583,17 +6583,17 @@ def import_mjcf(graph):
                     
                     if parent_node:
                         try:
-                            # 親ノードの出力ポートを探す（接続されていないポートを優先）
+                            # Search for parent node's output port (prefer unconnected ports)
                             parent_output_ports = parent_node.output_ports()
                             available_output_port = None
                             
-                            # まず接続されていないポートを探す
+                            # First, search for unconnected port
                             for output_port in parent_output_ports:
                                 if not output_port.connected_ports():
                                     available_output_port = output_port
                                     break
                             
-                            # 接続されていないポートがない場合は、新しいポートを追加
+                            # If no unconnected port found, add a new port
                             if not available_output_port:
                                 if not parent_node.__class__.__name__ == 'BaseLinkNode':
                                     parent_node._add_output()
@@ -6603,18 +6603,18 @@ def import_mjcf(graph):
                                     print(f"    Warning: {parent_name} is BaseLinkNode and all ports are used, skipping")
                                     continue
                             
-                            # 子ノードの入力ポートを取得
+                            # Get child node's input port
                             child_input_port = node.input_ports()[0]
                             
-                            # 接続
+                            # Connect
                             if available_output_port and child_input_port:
                                 available_output_port.connect_to(child_input_port)
-                                
-                                # ポート名を取得（デバッグ用）
+
+                                # Get port name (for debug)
                                 output_port_name = available_output_port.name()
                                 print(f"    ✓ Connected {parent_name} ({output_port_name}) -> {body_name}")
                                 
-                                # ポイント情報を設定（ジョイント情報があれば使用）
+                                # Set point information (use joint information if available)
                                 joint_data_for_node = None
                                 for joint_data in joints_data:
                                     if joint_data['parent'] == parent_name and joint_data['child'] == body_name:
@@ -6622,14 +6622,14 @@ def import_mjcf(graph):
                                         break
                                 
                                 if joint_data_for_node:
-                                    # 親ノードのpointsに情報を追加
+                                    # Add information to parent node's points
                                     if not hasattr(parent_node, 'points'):
                                         parent_node.points = []
                                     
-                                    # 使用されているポートのインデックスを取得
+                                    # Get index of the port being used
                                     port_index = parent_output_ports.index(available_output_port)
                                     
-                                    # points配列を拡張
+                                    # Extend points array
                                     while len(parent_node.points) <= port_index:
                                         parent_node.points.append({
                                             'name': f'point_{len(parent_node.points)}',
@@ -6638,7 +6638,7 @@ def import_mjcf(graph):
                                             'rpy': [0.0, 0.0, 0.0]
                                         })
                                     
-                                    # ジョイント情報を設定
+                                    # Set joint information
                                     origin_rpy = joint_data_for_node['origin_rpy']
                                     parent_node.points[port_index] = {
                                         'name': joint_data_for_node['name'],
@@ -6648,8 +6648,8 @@ def import_mjcf(graph):
                                         'angle': list(origin_rpy)  # Set angle for 3D view display (radians)
                                     }
                                     
-                                    # 子ノードにジョイント情報を設定
-                                    # ファイルに定義されている場合は上書き、未定義の場合はSettingsのデフォルト値を使用
+                                    # Set joint information on child node
+                                    # Override if defined in file, use Settings default values if undefined
                                     if 'limit' in joint_data_for_node:
                                         if 'lower' in joint_data_for_node['limit']:
                                             node.joint_lower = joint_data_for_node['limit']['lower']
@@ -6660,8 +6660,8 @@ def import_mjcf(graph):
                                         if 'velocity' in joint_data_for_node['limit']:
                                             node.joint_velocity = joint_data_for_node['limit']['velocity']
                                     
-                                    # dynamics情報を設定
-                                    # ファイルに定義されている場合は上書き、未定義の場合はSettingsのデフォルト値を使用
+                                    # Set dynamics information
+                                    # Override if defined in file, use Settings default values if undefined
                                     if 'dynamics' in joint_data_for_node:
                                         if 'damping' in joint_data_for_node['dynamics']:
                                             node.joint_damping = joint_data_for_node['dynamics']['damping']
@@ -6674,16 +6674,16 @@ def import_mjcf(graph):
                                         if 'margin' in joint_data_for_node['dynamics']:
                                             node.joint_margin = joint_data_for_node['dynamics']['margin']
                                     
-                                    # 回転軸を設定
+                                    # Set rotation axis
                                     axis = joint_data_for_node['axis']
-                                    if abs(axis[2]) > 0.5:  # Z軸
+                                    if abs(axis[2]) > 0.5:  # Z axis
                                         node.rotation_axis = 2
-                                    elif abs(axis[1]) > 0.5:  # Y軸
+                                    elif abs(axis[1]) > 0.5:  # Y axis
                                         node.rotation_axis = 1
-                                    else:  # X軸
+                                    else:  # X axis
                                         node.rotation_axis = 0
                                     
-                                    # ジョイントタイプがfixedの場合
+                                    # If joint type is fixed
                                     if joint_data_for_node['type'] == 'fixed':
                                         node.rotation_axis = 3
                                     
@@ -6698,7 +6698,7 @@ def import_mjcf(graph):
                 else:
                     print(f"  No parent information found for {body_name} in MJCF hierarchy")
             
-            # 接続されたノード数をカウント
+            # Count connected nodes
             connected_count = 0
             for body_name, node in unconnected_nodes:
                 input_ports = node.input_ports()
@@ -6708,22 +6708,22 @@ def import_mjcf(graph):
                         break
             print(f"\n  Connected {connected_count} out of {len(unconnected_nodes)} unconnected nodes")
 
-            # 閉リンクジョイントノードの作成と接続（MJCFのequalityセクションから）
-            # 位置再計算の前に実行する必要がある
+            # Create and connect closed-loop joint nodes (from MJCF equality section)
+            # Must execute before position recalculation
             print("\n=== Creating Closed-Loop Joint Nodes from MJCF equality section ===")
             if closed_loop_joints:
                 closed_loop_nodes = {}
-                parent_port_indices = {}  # 親ノードごとのポートインデックスを管理
+                parent_port_indices = {}  # Manage port indices per parent node
                 
                 for joint_data in closed_loop_joints:
                     joint_name = joint_data['name']
                     parent_link = joint_data['parent']
                     child_link = joint_data['child']
                     
-                    # 閉リンクノードの名前を決定
+                    # Determine closed-loop node name
                     cl_node_name = f"{joint_name}_CL"
                     
-                    # 親リンクと子リンクがノードとして存在するか確認
+                    # Verify parent and child links exist as nodes
                     if parent_link not in nodes:
                         print(f"Skipping closed-loop joint '{joint_name}': parent link '{parent_link}' not found")
                         continue
@@ -6734,7 +6734,7 @@ def import_mjcf(graph):
                     parent_node = nodes[parent_link]
                     child_node = nodes[child_link]
                     
-                    # 閉リンクノードを作成（親と子の中間位置に配置）
+                    # Create closed-loop node (positioned between parent and child)
                     parent_pos = parent_node.pos()
                     child_pos = child_node.pos()
                     
@@ -6748,12 +6748,12 @@ def import_mjcf(graph):
                     else:
                         child_x, child_y = child_pos.x(), child_pos.y()
                     
-                    # 中間位置を計算
+                    # Calculate middle position
                     cl_node_x = (parent_x + child_x) / 2
                     cl_node_y = (parent_y + child_y) / 2
                     cl_node_pos = QtCore.QPointF(cl_node_x, cl_node_y)
                     
-                    # 閉リンクノードを作成
+                    # Create closed-loop node
                     print(f"Creating closed-loop node: {cl_node_name} ({parent_link} <-> {child_link})")
                     cl_node = graph.create_node(
                         'insilico.nodes.ClosedLoopJointNode',
@@ -6761,7 +6761,7 @@ def import_mjcf(graph):
                         pos=cl_node_pos
                     )
                     
-                    # メタデータを設定
+                    # Set metadata
                     cl_node.joint_name = joint_name
                     cl_node.joint_type = joint_data.get('original_type', 'ball')
                     cl_node.parent_link = parent_link
@@ -6771,23 +6771,23 @@ def import_mjcf(graph):
                     cl_node.gearbox_ratio = joint_data.get('gearbox_ratio', 1.0)
                     cl_node.gearbox_reference_body = joint_data.get('gearbox_reference_body')
                     
-                    # 閉リンクノードのpointsデータを初期化
+                    # Initialize closed-loop node's points data
                     if not hasattr(cl_node, 'points'):
                         cl_node.points = []
                     
                     closed_loop_nodes[cl_node_name] = cl_node
                     
-                    # 親リンクの出力ポートインデックスを取得
+                    # Get parent link output port index
                     if parent_link not in parent_port_indices:
                         parent_port_indices[parent_link] = 0
                     parent_port_index = parent_port_indices[parent_link]
                     parent_port_indices[parent_link] += 1
                     
-                    # 親ノードのpointsデータが不足している場合は初期化
+                    # Initialize parent node points data if insufficient
                     if not hasattr(parent_node, 'points'):
                         parent_node.points = []
                     
-                    # 必要なpointsデータを追加
+                    # Add required points data
                     while len(parent_node.points) <= parent_port_index:
                         parent_node.points.append({
                             'name': f'point_{len(parent_node.points) + 1}',
@@ -6797,7 +6797,7 @@ def import_mjcf(graph):
                             'angle': [0.0, 0.0, 0.0]
                         })
                     
-                    # 親ノードのpointsに閉リンクジョイントのorigin情報を設定
+                    # Set closed-loop joint origin info to parent node points
                     origin_rpy = joint_data.get('origin_rpy', [0.0, 0.0, 0.0])
                     parent_node.points[parent_port_index]['xyz'] = joint_data.get('origin_xyz', [0.0, 0.0, 0.0])
                     parent_node.points[parent_port_index]['rpy'] = [0.0, 0.0, 0.0]  # Keep rpy as zero (3D view uses angle)
@@ -6805,7 +6805,7 @@ def import_mjcf(graph):
                     parent_node.points[parent_port_index]['type'] = joint_data.get('original_type', 'ball')
                     parent_node.points[parent_port_index]['angle'] = list(origin_rpy)  # Set angle for 3D view (radians)
                     
-                    # 親リンクのポート名を取得
+                    # Get parent link port name
                     is_base_link_node = parent_node.__class__.__name__ == 'BaseLinkNode'
                     if is_base_link_node:
                         if parent_port_index == 0:
@@ -6815,10 +6815,10 @@ def import_mjcf(graph):
                     else:
                         parent_output_port_name = f'out_{parent_port_index + 1}'
                     
-                    # 親リンク -> 閉リンクノードの接続
+                    # Connect parent link -> closed-loop node
                     print(f"  Connecting {parent_link}.{parent_output_port_name} -> {cl_node_name}.in")
                     try:
-                        # 親ノードの出力ポートが不足している場合は追加
+                        # Add output ports to parent node if insufficient
                         parent_output_ports = parent_node.output_ports()
                         if parent_port_index >= len(parent_output_ports):
                             needed_ports = parent_port_index + 1 - len(parent_output_ports)
@@ -6842,16 +6842,16 @@ def import_mjcf(graph):
                         print(f"    ✗ Error connecting {parent_link} -> {cl_node_name}: {str(e)}")
                         traceback.print_exc()
                     
-                    # 閉リンクノード -> 子リンクの接続
-                    # NOTE: 閉リンク構造では、子リンクが既に階層構造の親を持っている場合がある
-                    # その場合、入力ポートは既に接続されているため、接続をスキップする
+                    # Connect closed-loop node -> child link
+                    # NOTE: In closed-loop structures, child link may already have a hierarchical parent
+                    # In that case, input port is already connected, so skip connection
                     print(f"  Connecting {cl_node_name}.out -> {child_link}.in")
                     try:
                         cl_output_port = cl_node.get_output('out')
                         child_input_port = child_node.get_input('in')
 
                         if cl_output_port and child_input_port:
-                            # 子リンクの入力ポートが既に接続されているかチェック
+                            # Check if child link's input port is already connected
                             if child_input_port.connected_ports():
                                 print(f"    ⚠ {child_link}.in is already connected (closed-loop structure)")
                                 print(f"      Closed-loop joint node created but not connected to child")
@@ -6868,7 +6868,7 @@ def import_mjcf(graph):
             else:
                 print("No closed-loop joints found in MJCF equality section")
 
-            # メッシュをSTL viewerにロード
+            # Load meshes to STL viewer
             print("\n=== Loading meshes to 3D viewer ===")
             if graph.stl_viewer:
                 stl_viewer_loaded_count = 0
@@ -6881,7 +6881,7 @@ def import_mjcf(graph):
                         skipped_base_link += 1
                         continue
 
-                    # デバッグ: ノードの属性を確認
+                    # Debug: check node attributes
                     has_stl_attr = hasattr(node, 'stl_file')
                     stl_value = getattr(node, 'stl_file', None) if has_stl_attr else None
 
@@ -6910,24 +6910,24 @@ def import_mjcf(graph):
             else:
                 print("Warning: Mesh viewer not available")
 
-            # 位置を再計算（閉リンクジョイントノード作成後）
+            # Recalculate positions (after closed-loop joint node creation)
             print("\nRecalculating positions...")
             QtCore.QTimer.singleShot(100, graph.recalculate_all_positions)
             
-            # STL読み込み完了後、すべてのノードのカラーを3Dビューに適用
-            # タイマーを使って、STL読み込みが完了してから色を適用
+            # Apply colors to all nodes in 3D view after STL loading completes
+            # Use timer to apply colors after STL loading finishes
             def apply_colors_after_stl_load():
                 if graph.stl_viewer:
                     print("\nApplying colors to 3D view after MJCF import...")
                     graph._apply_colors_to_all_nodes()
             
-            # STL読み込みが完了するのを待つため、少し遅延を入れる
+            # Add small delay to wait for STL loading to complete
             QtCore.QTimer.singleShot(500, apply_colors_after_stl_load)
 
-            # 一時ディレクトリのクリーンアップ（ZIPファイルの場合）
-            # 注: メッシュファイルは既にノードに読み込まれているため、一時ファイルは削除可能
-            # ただし、すぐに削除するとビューアが読み込めない可能性があるため、
-            # 数秒後に削除するようスケジュール
+            # Clean up temporary directory (for ZIP files)
+            # Note: Mesh files are already loaded into nodes, so temp files can be deleted
+            # However, deleting immediately may prevent viewer from loading,
+            # so schedule deletion after a few seconds
             if xml_file_to_load and working_dir != os.path.dirname(mjcf_file):
                 import shutil
                 def cleanup_temp_dir():
@@ -6938,7 +6938,7 @@ def import_mjcf(graph):
                     except Exception as e:
                         print(f"Warning: Could not clean up temporary directory: {e}")
 
-                # 5秒後にクリーンアップ（メッシュが読み込まれるのを待つ）
+                # Clean up after 5 seconds (wait for mesh loading)
                 QtCore.QTimer.singleShot(5000, cleanup_temp_dir)
 
             QtWidgets.QMessageBox.information(
@@ -6947,7 +6947,7 @@ def import_mjcf(graph):
                 f"Successfully imported {len(bodies_data)} bodies and {len(joints_data)} joints from MJCF file."
             )
 
-            # UIのName:フィールドを更新
+            # Update UI Name: field
             if hasattr(graph, 'name_input') and graph.name_input:
                 graph.name_input.setText(graph.robot_name)
                 print(f"Updated Name field to: {graph.robot_name}")
@@ -7128,7 +7128,7 @@ class ImporterWindow(QtWidgets.QWidget):
 
     def closeEvent(self, event):
         """Handle window close event"""
-        # グラフオブジェクトの参照をクリア
+        # Clear reference to graph object
         if hasattr(self.graph, 'importer_window'):
             self.graph.importer_window = None
         super().closeEvent(event)

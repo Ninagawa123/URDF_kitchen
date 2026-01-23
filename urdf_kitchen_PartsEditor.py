@@ -4,7 +4,7 @@ Description: A Python script for configuring connection points of parts for urdf
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 18, 2026
+Update.     : Jan 22, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -103,34 +103,20 @@ DEFAULT_DENSITY = 1000.0
 DEFAULT_POINT_NAME_PREFIX = "Point"
 
 def apply_dark_theme(app):
-    """シックなダークテーマを適用
-
-    Note: Base theme available in urdf_kitchen_utils.setup_dark_theme(app, 'parts_editor')
-    This function extends the base with additional custom widget styling.
-    """
-    # パレットの設定
+    """Apply dark theme"""
     palette = app.palette()
-    # メインウィンドウ背景：柔らかいダークグレー
     palette.setColor(QPalette.Window, QColor(70, 80, 80))
-    # テキスト：ダークグレー
     palette.setColor(QPalette.WindowText, QColor(240, 240, 237))
-    # 入力フィールド背景：オフホワイト
     palette.setColor(QPalette.Base, QColor(240, 240, 237))
     palette.setColor(QPalette.AlternateBase, QColor(230, 230, 227))
-    # ツールチップ
     palette.setColor(QPalette.ToolTipBase, QColor(240, 240, 237))
     palette.setColor(QPalette.ToolTipText, QColor(51, 51, 51))
-    # 通常のテキスト：ダークグレー
     palette.setColor(QPalette.Text, QColor(51, 51, 51))
-    # ボタン
     palette.setColor(QPalette.Button, QColor(240, 240, 237))
     palette.setColor(QPalette.ButtonText, QColor(51, 51, 51))
-    # 選択時のハイライト
     palette.setColor(QPalette.Highlight, QColor(150, 150, 150))
     palette.setColor(QPalette.HighlightedText, QColor(240, 240, 237))
     app.setPalette(palette)
-
-    # 追加のスタイル設定
     app.setStyleSheet("""
         QMainWindow {
             background-color: #404244;
@@ -279,11 +265,11 @@ class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
         shift_pressed = self.GetInteractor().GetShiftKey()
         ctrl_pressed = self.GetInteractor().GetControlKey()
         
-        step = 0.01  # デフォルトのステップ (10mm)
+        step = 0.01
         if shift_pressed and ctrl_pressed:
-            step = 0.0001  # 0.1mm
+            step = 0.0001
         elif shift_pressed:
-            step = 0.001  # 1mm
+            step = 0.001
         
         if self.parent:
             horizontal_axis, vertical_axis, screen_right, screen_up = self.parent.get_screen_axes()
@@ -319,48 +305,43 @@ class MainWindow(VTKViewerBase, QMainWindow):
         QMainWindow.__init__(self)
         self.setWindowTitle("URDF Kitchen - PartsEditor v0.1.0 -")
         self.setGeometry(0, 0, 1200, 600)
-        self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
-        self.absolute_origin = [0, 0, 0]  # 大原点の設定
-        self.initial_camera_position = [10, 0, 0]  # 初期カメラ位置
-        self.initial_camera_focal_point = [0, 0, 0]  # 初期焦点
-        self.initial_camera_view_up = [0, 0, 1]  # 初期の上方向
+        self.camera_rotation = [0, 0, 0]
+        self.absolute_origin = [0, 0, 0]
+        self.initial_camera_position = [10, 0, 0]
+        self.initial_camera_focal_point = [0, 0, 0]
+        self.initial_camera_view_up = [0, 0, 1]
 
-        self.num_points = 8  # ポイントの数を8に設定
+        self.num_points = 8
         self.point_coords = [list(self.absolute_origin) for _ in range(self.num_points)]
-        self.point_angles = [[0.0, 0.0, 0.0] for _ in range(self.num_points)]  # Body angles for each point (radians)
+        self.point_angles = [[0.0, 0.0, 0.0] for _ in range(self.num_points)]
         self.point_actors = [None] * self.num_points
         self.point_checkboxes = []
         self.point_inputs = []
 
-        self.com_coords = [0.0, 0.0, 0.0]  # Center of Mass座標
-        self.com_sphere_actor = None  # 赤い球（チェックなし時）
-        self.com_cursor_actor = None  # 十字付き円（チェックあり時、赤色）
+        self.com_coords = [0.0, 0.0, 0.0]
+        self.com_sphere_actor = None
+        self.com_cursor_actor = None
 
-        # 色の手動変更フラグ（Falseの場合は元の色を保持）
         self.color_manually_changed = False
-        self.mesh_color = None  # メッシュの色情報
+        self.mesh_color = None
 
-        # コマンドライン引数から渡されたファイルパスを保持
         self.pending_stl_file = None
 
         central_widget = QWidget(self)
         self.setCentralWidget(central_widget)
-        main_layout = QVBoxLayout(central_widget)  # 垂直方向のレイアウトに変更
+        main_layout = QVBoxLayout(central_widget)
 
-        # ファイル名表示用のラベル
         self.file_name_label = QLabel("File: No file loaded")
         main_layout.addWidget(self.file_name_label)
 
-        # 水平方向のレイアウトを作成（左側のUIと右側の3D表示用）
         content_layout = QHBoxLayout()
         main_layout.addLayout(content_layout)
 
-        # 左側のUI用ウィジェットとレイアウト
         left_widget = QWidget()
         self.left_layout = QVBoxLayout(left_widget)
-        content_layout.addWidget(left_widget, 1)  # stretch factorを1に設定
+        content_layout.addWidget(left_widget, 1)
 
-        # 右側のVTK表示用QLabelウィジェット（Mac互換性のためオフスクリーンレンダリング使用）
+        # VTK display widget (offscreen rendering for Mac compatibility)
         self.vtk_display = QLabel(central_widget)
         self.vtk_display.setMinimumSize(800, 600)
         self.vtk_display.setStyleSheet("""
@@ -376,11 +357,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.vtk_display.setText("3D View\n\n(Load 3D model file to display)")
         self.vtk_display.setScaledContents(False)
         self.vtk_display.setFocusPolicy(Qt.StrongFocus)
-        content_layout.addWidget(self.vtk_display, 4)  # stretch factorを4に設定（UIより広いスペースを確保）
+        content_layout.addWidget(self.vtk_display, 4)
 
         self.setup_ui()
 
-        # VTK初期化フラグ（StlDaeSourcerと同じパターン）
         self.vtk_initialized = False
 
         # Rendering lock to prevent re-entry
@@ -391,7 +371,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.stl_actor = None
         self.current_rotation = 0
 
-        self.stl_center = list(self.absolute_origin)  # STLモデルの中心を大原点に初期化
+        self.stl_center = list(self.absolute_origin)
 
         self.animation_timer = QTimer()
         self.animation_timer.timeout.connect(self.animate_rotation)
@@ -437,7 +417,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         """Handle IPC data received from Assembler"""
         try:
             data = socket.readAll().data().decode('utf-8')
-            print(f"Received IPC request: {data[:100]}...")  # 長いメッセージの場合は最初の100文字のみ表示
+            print(f"Received IPC request: {data[:100]}...")
 
             # Parse the file path from the request
             if data.startswith("LOAD:"):
@@ -452,9 +432,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 else:
                     socket.write(b"ERROR: File not found")
             elif data.startswith("LOAD_JSON:"):
-                # JSON形式でコライダーデータを含むメッセージ
                 import json
-                json_str = data[10:].strip()  # "LOAD_JSON:"の後の部分
+                json_str = data[10:].strip()
                 try:
                     message_data = json.loads(json_str)
                     stl_file = message_data.get('stl_file')
@@ -535,24 +514,18 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.refresh_view()
                 self.reset_camera()
 
-            # コライダー情報がある場合、コライダーXMLファイルを確認
             if collider_info:
                 if collider_info.get('type') == 'primitive' and collider_info.get('xml_path'):
                     collider_xml_path = collider_info['xml_path']
                     if os.path.exists(collider_xml_path):
                         print(f"Collider XML file created by Assembler: {collider_xml_path}")
                         print(f"  This file will be available when saving from PartsEditor")
-                        # コライダーXMLファイルは既にSTLファイルと同じディレクトリに作成されているので、
-                        # PartsEditorが保存時にこのファイルを認識できる
                     else:
                         print(f"Warning: Collider XML file not found: {collider_xml_path}")
                 elif collider_info.get('type') == 'mesh' and collider_info.get('mesh_path'):
                     print(f"Collider mesh specified: {os.path.basename(collider_info['mesh_path'])}")
-                    # メッシュコライダーの場合は、PartsEditorでは直接処理しない
-                    # （Assemblerで管理される）
-            
-            # コライダーXMLファイルが存在する場合、自動的に読み込む（Assemblerから作成されたもの）
-            # STLファイルと同じディレクトリに_collider.xmlがあるか確認
+
+            # Check for collider XML file in the same directory
             stl_dir = os.path.dirname(stl_path)
             stl_basename = os.path.splitext(os.path.basename(stl_path))[0]
             auto_collider_xml_path = os.path.join(stl_dir, f"{stl_basename}_collider.xml")
@@ -568,7 +541,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
     def showEvent(self, event):
         super().showEvent(event)
-        # VTKの初期化は最初のshowEvent時に遅延実行（StlDaeSourcerパターン）
         if not self.vtk_initialized:
             QTimer.singleShot(100, self._initialize_vtk_delayed)
             self.vtk_initialized = True
@@ -608,7 +580,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             QTimer.singleShot(200, self.render_to_image)
             QTimer.singleShot(300, lambda: self.vtk_display.setFocus())
 
-            # コマンドライン引数からのファイルロードがある場合、VTK初期化後にロード
             if self.pending_stl_file:
                 QTimer.singleShot(400, self._load_pending_stl)
         except Exception as e:
@@ -622,63 +593,47 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.setup_points_ui()
 
     def setup_buttons(self):
-        button_layout = QVBoxLayout()  # メインの垂直レイアウト
-        button_layout.setSpacing(10)  # ボタン間の間隔を5ピクセルに設定（デフォルトは約10）
+        button_layout = QVBoxLayout()
+        button_layout.setSpacing(10)
 
-        # first_row をラップするための QWidget を作成
         first_row_widget = QWidget()
         first_row_layout = QHBoxLayout()
-        first_row_layout.setContentsMargins(0, 0, 0, 0)  # マージンを0に設定
-        first_row_layout.setSpacing(5)  # ボタン間のスペーシングを5ピクセルに設定
+        first_row_layout.setContentsMargins(0, 0, 0, 0)
+        first_row_layout.setSpacing(5)
 
-        # # 最初の行の水平レイアウト
         first_row = QHBoxLayout()
-        
-        # # 最初の行を追加
         button_layout.addLayout(first_row)
 
-        # Import Meshボタン
         self.load_button = QPushButton("Import Mesh")
         self.load_button.clicked.connect(self.load_stl_file)
         first_row.addWidget(self.load_button)
 
-        # Load XMLボタン
         self.load_xml_button = QPushButton("Load XML")
         self.load_xml_button.clicked.connect(self.load_xml_file)
         first_row.addWidget(self.load_xml_button)
 
-        # Reloadボタン
         self.reload_button = QPushButton("Reload")
         self.reload_button.clicked.connect(self.reload_files)
         first_row.addWidget(self.reload_button)
 
-        # first_row_layout を first_row_widget にセット
         first_row_widget.setLayout(first_row_layout)
 
-        # Import Mesh with XMLボタン
-        self.load_stl_xml_button = QPushButton("Import Mesh with XML")
+        self.load_stl_xml_button = QPushButton("Load Mesh with XML")
         self.load_stl_xml_button.clicked.connect(self.load_stl_with_xml)
         button_layout.addWidget(self.load_stl_xml_button)
 
-        # 間隔を1.5倍にし、中央に罫線を配置
-        # 上部スペース
         spacer_top = QWidget()
-        #spacer_top.setFixedHeight(4)  # 元の間隔の半分程度
         button_layout.addWidget(spacer_top)
 
-        # 罫線
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         separator.setStyleSheet("QFrame { color: #707070; }")
         button_layout.addWidget(separator)
 
-        # 下部スペース
         spacer_bottom = QWidget()
-        #spacer_bottom.setFixedHeight(4)  # 元の間隔の半分程度
         button_layout.addWidget(spacer_bottom)
 
-        # MeshSourcer ボタン
         self.mesh_sourcer_button = QPushButton("MeshSourcer")
         self.mesh_sourcer_button.clicked.connect(self.open_mesh_sourcer)
         button_layout.addWidget(self.mesh_sourcer_button)
@@ -686,10 +641,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.left_layout.addLayout(button_layout)
 
     def open_mesh_sourcer(self):
-        """現在のメッシュファイルを読み込んだ状態でMeshSourcerを開く"""
+        """Open MeshSourcer with current mesh file"""
         import subprocess
-
-        # 現在開いているメッシュファイルのパスを確認
         if not hasattr(self, 'stl_file_path') or not self.stl_file_path:
             QMessageBox.warning(
                 self,
@@ -706,7 +659,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             )
             return
 
-        # MeshSourcerのスクリプトパスを取得
         mesh_sourcer_path = os.path.join(os.path.dirname(__file__), "urdf_kitchen_MeshSourcer.py")
 
         if not os.path.exists(mesh_sourcer_path):
@@ -718,7 +670,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             return
 
         try:
-            # MeshSourcerを起動し、現在のメッシュファイルをコマンドライン引数として渡す
             subprocess.Popen([sys.executable, mesh_sourcer_path, self.stl_file_path])
             print(f"Launched MeshSourcer with file: {self.stl_file_path}")
         except Exception as e:
@@ -735,17 +686,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
         grid_layout.setHorizontalSpacing(5)
         grid_layout.setContentsMargins(0, 0, 0, 0)
 
-        # チェックボックスの列の最小幅を設定
-        grid_layout.setColumnMinimumWidth(0, 15)  # この行を追加
+        grid_layout.setColumnMinimumWidth(0, 15)
 
-        # プロパティの設定（Volume, Density, Mass）
         properties = [
             ("Volume (m^3):", "volume"),
             ("Density (kg/m^3):", "density"),
             ("Mass (kg):", "mass")
         ]
 
-        # Volume, Density, Massの設定
         current_row = 0
         for i, (label_text, prop_name) in enumerate(properties):
             checkbox = QCheckBox()
@@ -754,8 +702,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             label = QLabel(label_text)
             input_field = QLineEdit("0.000000")
             setattr(self, f"{prop_name}_input", input_field)
-            
-            # リターンキーで値を適用
             if prop_name == "volume":
                 input_field.returnPressed.connect(self.apply_volume_value)
             elif prop_name == "density":
@@ -768,7 +714,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             grid_layout.addWidget(input_field, current_row, 2)
             current_row += 1
 
-        # Center of Mass（チェックボックス、ラベル、X/Y/Z入力フィールドを1行に配置）
         com_checkbox = QCheckBox()
         com_checkbox.stateChanged.connect(self.toggle_com)
         self.com_checkbox = com_checkbox
@@ -776,8 +721,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         com_label = QLabel("Center of Mass:")
         grid_layout.addWidget(com_label, current_row, 1)
-
-        # Center of MassのX、Y、Z入力フィールド
         com_layout = QHBoxLayout()
         com_layout.setSpacing(5)
         com_layout.setContentsMargins(0, 0, 0, 0)
@@ -803,7 +746,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
         grid_layout.addLayout(com_layout, current_row, 2)
         current_row += 1
 
-        # Inertia Tensor（Center of Massの次に配置）
         inertia_label = QLabel("Inertia Tensor:")
         grid_layout.addWidget(inertia_label, current_row, 1)
 
@@ -814,7 +756,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.inertia_tensor_input.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
         self.inertia_tensor_input.setWordWrapMode(QTextOption.WrapMode.WrapAnywhere)
 
-        # フォントサイズを10ptに設定
         font = self.inertia_tensor_input.font()
         font.setPointSize(10)
         self.inertia_tensor_input.setFont(font)
@@ -822,24 +763,20 @@ class MainWindow(VTKViewerBase, QMainWindow):
         grid_layout.addWidget(self.inertia_tensor_input, current_row, 2)
         current_row += 1
 
-        # デフォルト値の設定
         self.density_input.setText("1.000000")
 
-        # Calculateボタンの前にスペーサーを追加
         pre_calculate_spacer = QWidget()
-        pre_calculate_spacer.setFixedHeight(2)  # 2ピクセルの空間
+        pre_calculate_spacer.setFixedHeight(2)
         grid_layout.addWidget(pre_calculate_spacer, current_row, 0, 1, 3)
         current_row += 1
 
-        # Calculate ボタン
         self.calculate_button = QPushButton("Calculate")
         self.calculate_button.clicked.connect(self.calculate_and_update_properties)
         grid_layout.addWidget(self.calculate_button, current_row, 1, 1, 2)
         current_row += 1
 
-        # スペーサーを追加（小さな空間）
         spacer = QWidget()
-        spacer.setFixedHeight(16)  # 4ピクセルの空間
+        spacer.setFixedHeight(16)
         grid_layout.addWidget(spacer, current_row, 0, 1, 3)
         current_row += 1
 
@@ -873,20 +810,16 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         color_layout.addStretch()
 
-        # カラーレイアウトを追加
         grid_layout.addLayout(color_layout, current_row, 0, 1, 3)
         current_row += 1
 
-        # Axis layout
         axis_layout = QHBoxLayout()
 
-        # ラジオボタンのグループを作成
         self.axis_group = QButtonGroup(self)
         axis_label = QLabel("Axis:")
         axis_layout.addWidget(axis_label)
 
-        # ラジオボタンの作成
-        radio_texts = ["X:roll", "Y:pitch", "Z:yaw", "fixed"]  # fixedを追加
+        radio_texts = ["X:roll", "Y:pitch", "Z:yaw", "fixed"]
         self.radio_buttons = []
         for i, text in enumerate(radio_texts):
             radio = QRadioButton(text)
@@ -895,7 +828,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             self.radio_buttons.append(radio)
         self.radio_buttons[0].setChecked(True)
 
-        # Rotate Testボタン
         self.rotate_test_button = QPushButton("Rotate Test")
         self.rotate_test_button.pressed.connect(self.start_rotation_test)
         self.rotate_test_button.released.connect(self.stop_rotation_test)
@@ -904,11 +836,9 @@ class MainWindow(VTKViewerBase, QMainWindow):
         grid_layout.addLayout(axis_layout, current_row, 0, 1, 3)
         current_row += 1
 
-        # Angle (deg) layout
         angle_layout = QHBoxLayout()
         angle_layout.addWidget(QLabel("Angle (deg):"))
 
-        # X軸回転
         angle_layout.addWidget(QLabel("X:"))
         self.angle_x_input = QLineEdit()
         self.angle_x_input.setFixedWidth(60)
@@ -916,7 +846,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.angle_x_input.setToolTip("Body initial rotation around X axis (degrees)")
         angle_layout.addWidget(self.angle_x_input)
 
-        # Y軸回転
         angle_layout.addWidget(QLabel("Y:"))
         self.angle_y_input = QLineEdit()
         self.angle_y_input.setFixedWidth(60)
@@ -924,7 +853,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.angle_y_input.setToolTip("Body initial rotation around Y axis (degrees)")
         angle_layout.addWidget(self.angle_y_input)
 
-        # Z軸回転
         angle_layout.addWidget(QLabel("Z:"))
         self.angle_z_input = QLineEdit()
         self.angle_z_input.setFixedWidth(60)
@@ -932,7 +860,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.angle_z_input.setToolTip("Body initial rotation around Z axis (degrees)")
         angle_layout.addWidget(self.angle_z_input)
 
-        # Connect Enter key to save angles
         self.angle_x_input.returnPressed.connect(self.save_current_point_angles)
         self.angle_y_input.returnPressed.connect(self.save_current_point_angles)
         self.angle_z_input.returnPressed.connect(self.save_current_point_angles)
@@ -941,109 +868,81 @@ class MainWindow(VTKViewerBase, QMainWindow):
         grid_layout.addLayout(angle_layout, current_row, 0, 1, 3)
         current_row += 1
 
-        # 回転テスト用の変数
         self.rotation_timer = QTimer()
         self.rotation_timer.timeout.connect(self.update_test_rotation)
         self.original_transform = None
         self.test_rotation_angle = 0
 
-        # 最後に一度だけgrid_layoutを追加
         self.left_layout.addLayout(grid_layout)
 
     def setup_points_ui(self):
         points_layout = QGridLayout()
 
-        # グリッドのマージンとスペーシングの設定
         points_layout.setContentsMargins(0, 0, 0, 0)
         points_layout.setVerticalSpacing(3)
-        points_layout.setHorizontalSpacing(15)  # 列間のスペースを増やす
+        points_layout.setHorizontalSpacing(15)
 
-        # 座標入力フィールドの最小幅を設定
-        #coordinate_input_width = 120  # インプットフィールドの最小幅（ピクセル単位）
-
-        # 各ポイントに対して入力フィールドとチェックボックスを作成
         for i in range(self.num_points):
             row = i
 
-            # チェックボックスはPoint番号のみ表示
             checkbox = QCheckBox(f"Point {i+1}")
-            checkbox.setObjectName("point_checkbox")  # ポイント用のチェックボックスに識別用の名前を設定
-            checkbox.setMinimumWidth(80)  # チェックボックスの最小幅を設定
+            checkbox.setObjectName("point_checkbox")
+            checkbox.setMinimumWidth(80)
             checkbox.stateChanged.connect(lambda state, index=i: self.toggle_point(state, index))
             self.point_checkboxes.append(checkbox)
             points_layout.addWidget(checkbox, row, 0)
 
-            # 座標入力用のウィジェットを作成
             inputs = []
-            
-            # 座標ラベルとテキストボックスの作成
-            # 軸の色定義 (X=淡い赤, Y=淡い緑, Z=明るい青)
             axis_colors = [UI_COLOR_X, UI_COLOR_Y, UI_COLOR_Z]
 
             for j, axis in enumerate(['X', 'Y', 'Z']):
-                # 水平レイアウトを作成して、ラベルとテキストボックスをグループ化
                 h_layout = QHBoxLayout()
-                h_layout.setSpacing(2)  # ラベルとテキストボックス間の間隔を最小に
-                h_layout.setContentsMargins(0, 0, 0, 0)  # マージンを0に
+                h_layout.setSpacing(2)
+                h_layout.setContentsMargins(0, 0, 0, 0)
 
-                # ラベルを作成（軸と同じ色）
                 label = QLabel(f"{axis}:")
-                label.setFixedWidth(15)  # ラベルの幅を固定
+                label.setFixedWidth(15)
                 label.setStyleSheet(f"QLabel {{ color: {axis_colors[j]}; font-weight: bold; }}")
                 h_layout.addWidget(label)
-                
-                # テキストボックスを作成
-                input_field = QLineEdit(str(self.point_coords[i][j]))
-                input_field.setFixedWidth(80)  # テキストボックスの幅を固定
 
-                # リターンキーで3Dビューを更新
+                input_field = QLineEdit(str(self.point_coords[i][j]))
+                input_field.setFixedWidth(80)
                 input_field.returnPressed.connect(lambda idx=i: self.set_point(idx))
 
                 h_layout.addWidget(input_field)
-                
-                # 水平レイアウトを伸縮させないようにする
                 h_layout.addStretch()
-                
-                # 水平レイアウトをコンテナウィジェットに設定
+
                 container = QWidget()
                 container.setLayout(h_layout)
-                
-                # グリッドレイアウトに追加
                 points_layout.addWidget(container, row, j + 1)
-                
+
                 inputs.append(input_field)
-                
+
             self.point_inputs.append(inputs)
 
-        # グリッドレイアウトの列の伸縮比率を設定
-        points_layout.setColumnStretch(0, 1)  # Point番号の列
-        points_layout.setColumnStretch(1, 1)  # X座標の列
-        points_layout.setColumnStretch(2, 1)  # Y座標の列
-        points_layout.setColumnStretch(3, 1)  # Z座標の列
+        points_layout.setColumnStretch(0, 1)
+        points_layout.setColumnStretch(1, 1)
+        points_layout.setColumnStretch(2, 1)
+        points_layout.setColumnStretch(3, 1)
 
-        # RESET ボタン（Point 8の下に配置、テキスト幅サイズ、右寄せ）
-        button_row = self.num_points  # Point 8の次の行
+        button_row = self.num_points
         reset_button = QPushButton("Reset Point")
         reset_button.clicked.connect(self.handle_reset_only)
-        # 2文字分ずつ左右に広げる（約4文字分の幅を追加）
         char_width = reset_button.fontMetrics().averageCharWidth()
         reset_button.setFixedWidth(reset_button.fontMetrics().boundingRect("Reset Point").width() + 20 + char_width * 4)
-        points_layout.addWidget(reset_button, button_row, 0, 1, 4, Qt.AlignRight)  # 全列にまたがって右寄せ
+        points_layout.addWidget(reset_button, button_row, 0, 1, 4, Qt.AlignRight)
 
         self.left_layout.addLayout(points_layout)
 
-        # 罫線（Reset PointとExportボタンの間）
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         separator.setStyleSheet("QFrame { color: #707070; }")
         self.left_layout.addWidget(separator)
 
-        # Export用のボタン配置
         export_layout = QVBoxLayout()
         export_layout.setSpacing(5)
 
-        # 1行目：Export XML と Export Mirror Mesh with XML を横並び
         export_row1 = QHBoxLayout()
         export_row1.setSpacing(5)
 
@@ -1057,7 +956,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         export_layout.addLayout(export_row1)
 
-        # 2行目：Batch Mirror ボタン
         self.bulk_convert_button = QPushButton("Batch Mirror \"l_\" to \"r_\" Meshes and XMLs")
         self.bulk_convert_button.clicked.connect(self.bulk_convert_l_to_r)
         export_layout.addWidget(self.bulk_convert_button)
@@ -1103,15 +1001,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.update_all_points()
 
     def _load_pending_stl(self):
-        """VTK初期化完了後にコマンドライン引数から渡されたSTLファイルをロード"""
+        """Load STL file from command line arguments after VTK initialization"""
         if not self.pending_stl_file or not os.path.exists(self.pending_stl_file):
             return
 
         try:
-            # STLファイルを読み込む
             self.show_stl(self.pending_stl_file)
 
-            # 対応するXMLファイルがあれば読み込む
             xml_path = os.path.splitext(self.pending_stl_file)[0] + '.xml'
             if os.path.exists(xml_path):
                 try:
@@ -1119,20 +1015,12 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     tree = ET.parse(xml_path)
                     root = tree.getroot()
 
-                    # XMLからパラメータを読み込む
                     has_parameters = self.load_parameters_from_xml(root)
 
-                    # パラメータがXMLに含まれていない場合のみ再計算を行う
                     if not has_parameters:
                         self.calculate_and_update_properties()
-
-                    # ポイントデータを読み込む
                     self._load_points_from_xml(root)
-
-                    # 表示を更新
                     self.refresh_view()
-
-                    # カメラをリセット
                     self.reset_camera()
 
                     print(f"Loaded: {self.pending_stl_file}")
@@ -1146,7 +1034,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             import traceback
             traceback.print_exc()
         finally:
-            # ロード完了後はクリア
             self.pending_stl_file = None
 
     def toggle_wireframe(self):
@@ -1213,7 +1100,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             horizontal_axis, vertical_axis, screen_right, screen_up = self.get_screen_axes()
 
-            # Center of Massがチェックされている場合
             if hasattr(self, 'com_checkbox') and self.com_checkbox.isChecked():
                 if key == Qt.Key_Up:
                     self.move_com_screen(screen_up, step)
@@ -1225,7 +1111,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     self.move_com_screen(screen_right, step)
                 self.render_to_image()
 
-            # Pointsの移動
             for i, checkbox in enumerate(self.point_checkboxes):
                 if checkbox.isChecked():
                     if key == Qt.Key_Up:
@@ -1244,13 +1129,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
         renderer = self.renderer
         camera = renderer.GetActiveCamera()
 
-        # スクリーン座標からワールド座標への変換
         coordinate = vtk.vtkCoordinate()
         coordinate.SetCoordinateSystemToDisplay()
         coordinate.SetValue(x, y, 0)
         world_pos = coordinate.GetComputedWorldValue(renderer)
 
-        # カメラの向きに基づいて、z座標を現在のポイントのz座標に保つ
         camera_pos = np.array(camera.GetPosition())
         focal_point = np.array(camera.GetFocalPoint())
         view_direction = focal_point - camera_pos
@@ -1266,16 +1149,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
         print(f"Point {index+1} moved to: ({new_pos[0]:.6f}, {new_pos[1]:.6f}, {current_z:.6f})")
 
     def update_inertia_from_mass(self, mass):
-        # イナーシャを重さから計算する例（適宜調整してください）
-        inertia = mass * 0.1  # 例として、重さの0.1倍をイナーシャとする
+        inertia = mass * 0.1
         self.inertia_input.setText(f"{inertia:.12f}")
 
     def update_properties(self):
-        # 優先順位: Mass > Volume > Inertia > Density
         priority_order = ['mass', 'volume', 'inertia', 'density']
         values = {}
 
-        # チェックされているプロパティの値を取得
         for prop in priority_order:
             checkbox = getattr(self, f"{prop}_checkbox")
             input_field = getattr(self, f"{prop}_input")
@@ -1286,7 +1166,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     print(f"Invalid input for {prop}")
                     return
 
-        # 値の計算
         if 'mass' in values and 'volume' in values:
             values['density'] = values['mass'] / values['volume']
         elif 'mass' in values and 'density' in values:
@@ -1294,45 +1173,37 @@ class MainWindow(VTKViewerBase, QMainWindow):
         elif 'volume' in values and 'density' in values:
             values['mass'] = values['volume'] * values['density']
 
-        # Inertiaの計算 (簡略化した例: 立方体と仮定)
         if 'mass' in values and 'volume' in values:
             side_length = np.cbrt(values['volume'])
             values['inertia'] = (1/6) * values['mass'] * side_length**2
 
-        # 結果を入力フィールドに反映
         for prop in priority_order:
             input_field = getattr(self, f"{prop}_input")
             if prop in values:
                 input_field.setText(f"{values[prop]:.12f}")
 
     def update_all_points_size(self, obj=None, event=None):
-        """ポイントのサイズを更新（可視性の厳密な管理を追加）"""
+        """Update point sizes"""
         for index, actor in enumerate(self.point_actors):
             if actor:
-                # チェックボックスの状態を確認
                 is_checked = self.point_checkboxes[index].isChecked()
-                
-                # 一旦アクターを削除
                 self.renderer.RemoveActor(actor)
-
-                # 新しいアクターを作成
                 self.point_actors[index] = create_crosshair_marker(
                     coords=[0, 0, 0],
                     radius_scale=self.calculate_sphere_radius()
                 )
                 self.point_actors[index].SetPosition(self.point_coords[index])
                 
-                # チェック状態に応じて可視性を設定
                 if is_checked:
                     self.renderer.AddActor(self.point_actors[index])
                     self.point_actors[index].VisibilityOn()
                 else:
                     self.point_actors[index].VisibilityOff()
-        
+
         self.render_to_image()
 
     def update_all_points(self):
-        """全ポイントの表示を更新（チェック状態の確認を追加）"""
+        """Update all point displays"""
         for i in range(self.num_points):
             if self.point_actors[i]:
                 if self.point_checkboxes[i].isChecked():
@@ -1342,39 +1213,30 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 else:
                     self.point_actors[i].VisibilityOff()
                     self.renderer.RemoveActor(self.point_actors[i])
-        
+
         self.render_to_image()
 
     def calculate_sphere_radius(self):
-        # ビューポートのサイズを取得
         viewport_size = self.renderer.GetSize()
-        
-        # 画面の対角線の長さを計算
         diagonal = math.sqrt(viewport_size[0]**2 + viewport_size[1]**2)
-        
-        # 対角線の10%をサイズとして設定
-        radius = (diagonal * 0.1) / 2  # 半径なので2で割る
-        
-        # カメラのパラレルスケールでスケーリング
+        radius = (diagonal * 0.1) / 2
+
         camera = self.renderer.GetActiveCamera()
         parallel_scale = camera.GetParallelScale()
         viewport = self.renderer.GetViewport()
         aspect_ratio = (viewport[2] - viewport[0]) / (viewport[3] - viewport[1])
-        
-        # ビューポートのサイズに基づいて適切なスケールに変換
+
         scaled_radius = (radius / viewport_size[1]) * parallel_scale * 2
-        
+
         if aspect_ratio > 1:
             scaled_radius /= aspect_ratio
-            
+
         return scaled_radius
 
     def calculate_properties(self):
-        # 優先順位: Volume > Density > Mass > Inertia
         priority_order = ['volume', 'density', 'mass', 'inertia']
         values = {}
 
-        # チェックされているプロパティの値を取得
         for prop in priority_order:
             checkbox = getattr(self, f"{prop}_checkbox")
             input_field = getattr(self, f"{prop}_input")
@@ -1385,7 +1247,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     print(f"Invalid input for {prop}")
                     return
 
-        # 値の計算
         if 'volume' in values and 'density' in values:
             values['mass'] = values['volume'] * values['density']
         elif 'mass' in values and 'volume' in values:
@@ -1393,12 +1254,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
         elif 'mass' in values and 'density' in values:
             values['volume'] = values['mass'] / values['density']
 
-        # Inertiaの計算 (簡略化した例: 立方体と仮定)
         if 'mass' in values and 'volume' in values:
             side_length = np.cbrt(values['volume'])
             values['inertia'] = (1/6) * values['mass'] * side_length**2
 
-        # 結果を入力フィールドに反映
         for prop in priority_order:
             input_field = getattr(self, f"{prop}_input")
             if prop in values:
@@ -1651,32 +1510,21 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.render_to_image()
 
     def calculate_center_of_mass(self):
-        """
-        重心を計算して表示する。
-        チェックボックスがオンの場合は入力値を使用し、オフの場合は四面体分解法で正確に計算する。
-
-        Assumes uniform density throughout the mesh.
-        Uses tetrahedral decomposition for accurate volumetric center of mass calculation.
-        """
+        """Calculate and display center of mass using tetrahedral decomposition"""
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
             print("No 3D model has been loaded.")
             return
 
-        # 重心の座標を取得（チェックボックスの状態に応じて）
         if hasattr(self, 'com_checkbox') and self.com_checkbox.isChecked():
             try:
-                # X、Y、Z入力フィールドから座標を取得
                 center_of_mass = [float(self.com_inputs[i].text()) for i in range(3)]
                 print(f"Using manual Center of Mass: {center_of_mass}")
             except (ValueError, IndexError) as e:
                 print(f"Error parsing Center of Mass input: {e}")
                 return None
         else:
-            # STLから重心を正確に計算（四面体分解法を使用）
             print("Calculating Center of Mass using tetrahedral decomposition (uniform density assumed)...")
             poly_data = self.stl_actor.GetMapper().GetInput()
-
-            # 四面体分解法で体積重心を計算
             total_volume = 0.0
             weighted_com = np.zeros(3)
 
@@ -1724,19 +1572,15 @@ class MainWindow(VTKViewerBase, QMainWindow):
             if abs(volume_ratio - 1.0) > 0.01:
                 print(f"Warning: Volume mismatch! Ratio = {volume_ratio:.4f}")
 
-            # 計算された値を入力欄に設定
             for i in range(3):
                 self.com_inputs[i].setText(f"{center_of_mass[i]:.6f}")
             print(f"Calculated Center of Mass (volumetric): [{center_of_mass[0]:.6f}, {center_of_mass[1]:.6f}, {center_of_mass[2]:.6f}]")
 
-        # com_coordsを更新
         self.com_coords = list(center_of_mass)
 
-        # 既存の赤い球アクターを削除
         if hasattr(self, 'com_sphere_actor') and self.com_sphere_actor:
             self.renderer.RemoveActor(self.com_sphere_actor)
 
-        # 重心を可視化（赤い球）
         sphere = vtk.vtkSphereSource()
         sphere.SetCenter(center_of_mass)
         sphere.SetRadius(self.calculate_sphere_radius() * 0.5)
@@ -1746,10 +1590,9 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         self.com_sphere_actor = vtk.vtkActor()
         self.com_sphere_actor.SetMapper(mapper)
-        self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)  # 赤色
+        self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)
         self.com_sphere_actor.GetProperty().SetOpacity(0.7)
 
-        # チェック状態に応じて表示/非表示
         if hasattr(self, 'com_checkbox') and self.com_checkbox.isChecked():
             self.com_sphere_actor.VisibilityOff()
         else:
@@ -1761,16 +1604,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         return center_of_mass
 
     def calculate_inertia_tensor(self):
-        """
-        三角形メッシュの慣性テンソルを計算する（統合関数を使用）。
-
-        urdf_kitchen_utils.calculate_inertia_with_trimesh() を使用して、
-        trimeshとVTKのハイブリッド方式で高精度に計算します。
-
-        Returns:
-            numpy.ndarray: 3x3の慣性テンソル行列
-            None: エラーが発生した場合
-        """
+        """Calculate inertia tensor using trimesh/VTK hybrid method"""
         if not hasattr(self, 'stl_file_path') or not self.stl_file_path:
             print("No 3D model file is loaded.")
             return None
@@ -1782,30 +1616,25 @@ class MainWindow(VTKViewerBase, QMainWindow):
             print("Warning: Could not read density, using 1.0")
             density = 1.0
 
-        # UIから重心を取得（チェックボックスの状態により決定）
         center_of_mass = None
         if hasattr(self, 'com_checkbox') and self.com_checkbox.isChecked():
-            # COMがチェックされている場合は、UIの値を使用
             center_of_mass = self.get_center_of_mass()
             if center_of_mass is None:
                 print("Error getting center of mass from UI")
                 return None
 
-        # 統合関数を使用して慣性テンソルを計算
         result = calculate_inertia_with_trimesh(
             mesh_file_path=self.stl_file_path,
-            mass=None,  # densityから計算
+            mass=None,
             center_of_mass=center_of_mass,
             density=density,
             auto_repair=True
         )
 
-        # エラーチェック
         if not result['success']:
             print(f"Error calculating inertia: {result['error_message']}")
             return None
 
-        # 結果を表示
         print(f"Volume: {result['volume']:.6f}, Density: {density:.6f}, Mass: {result['mass']:.6f}")
         print(f"Center of Mass (used): [{result['center_of_mass'][0]:.6f}, {result['center_of_mass'][1]:.6f}, {result['center_of_mass'][2]:.6f}]")
         print(f"Center of Mass (trimesh): [{result['trimesh_com'][0]:.6f}, {result['trimesh_com'][1]:.6f}, {result['trimesh_com'][2]:.6f}]")
@@ -1817,7 +1646,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
         print("\nCalculated Inertia Tensor (about Center of Mass):")
         print(inertia_tensor)
 
-        # URDFフォーマットに変換してUIを更新
         urdf_inertia = self.format_inertia_for_urdf(inertia_tensor)
         if hasattr(self, 'inertia_tensor_input'):
             self.inertia_tensor_input.setText(urdf_inertia)
@@ -1832,12 +1660,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
             print("No 3D model file has been loaded.")
             return
 
-        # STLファイルのパスとファイル名を取得
         stl_dir = os.path.dirname(self.stl_file_path)
         stl_filename = os.path.basename(self.stl_file_path)
         stl_name_without_ext = os.path.splitext(stl_filename)[0]
 
-        # デフォルトのURDFファイル名を設定
         default_urdf_filename = f"{stl_name_without_ext}.xml"
         urdf_file_path, _ = QFileDialog.getSaveFileName(self, "Export XML File", os.path.join(
             stl_dir, default_urdf_filename), "XML Files (*.xml)")
@@ -1846,7 +1672,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             return
 
         try:
-            # 色情報の取得と変換
             rgb_values = [float(input.text()) for input in self.color_inputs]
             hex_color = '#{:02X}{:02X}{:02X}'.format(
                 int(rgb_values[0] * 255),
@@ -1855,7 +1680,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             )
             rgba_str = f"{rgb_values[0]:.6f} {rgb_values[1]:.6f} {rgb_values[2]:.6f} 1.0"
 
-            # 重心の座標を取得
             try:
                 com_values = [float(self.com_inputs[i].text()) for i in range(3)]
                 center_of_mass_str = f"{com_values[0]:.6f} {com_values[1]:.6f} {com_values[2]:.6f}"
@@ -1863,16 +1687,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 print("Warning: Invalid center of mass format, using default values")
                 center_of_mass_str = "0.000000 0.000000 0.000000"
 
-            # 軸情報の取得
-            axis_options = ["1 0 0", "0 1 0", "0 0 1", "0 0 0"]  # fixedのために"0 0 0"を追加
+            axis_options = ["1 0 0", "0 1 0", "0 0 1", "0 0 0"]
             checked_id = self.axis_group.checkedId()
             if 0 <= checked_id < len(axis_options):
                 axis_vector = axis_options[checked_id]
             else:
                 print("Warning: No axis selected, using default X axis")
                 axis_vector = "1 0 0"
-
-            # URDFの内容を構築
             urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <urdf_part>
     <material name="{hex_color}">
@@ -1892,7 +1713,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
         <center_of_mass>{center_of_mass_str}</center_of_mass>
     </link>"""
 
-            # ポイント要素の追加
             for i, checkbox in enumerate(self.point_checkboxes):
                 if checkbox.isChecked():
                     x, y, z = self.point_coords[i]
@@ -1903,14 +1723,12 @@ class MainWindow(VTKViewerBase, QMainWindow):
         <point_angle>{angle_x:.6f} {angle_y:.6f} {angle_z:.6f}</point_angle>
     </point>"""
 
-            # 軸情報の追加
             urdf_content += f"""
     <joint>
         <axis xyz="{axis_vector}" />
     </joint>
 </urdf_part>"""
 
-            # ファイルに保存
             with open(urdf_file_path, "w") as f:
                 f.write(urdf_content)
             print(f"URDF file saved: {urdf_file_path}")
@@ -1919,22 +1737,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
             print(f"Error during URDF export: {str(e)}")
             traceback.print_exc()
 
-
     def get_center_of_mass(self):
-        """
-        UIまたは計算から重心を取得する
-
-        Returns:
-            numpy.ndarray: 重心の座標 [x, y, z]
-            None: エラーが発生した場合
-        """
+        """Get center of mass from UI or calculate from mesh"""
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
             print("No 3D model is loaded.")
             return None
 
         if hasattr(self, 'com_checkbox') and self.com_checkbox.isChecked():
             try:
-                # X、Y、Z入力フィールドから座標を取得
                 center_of_mass = np.array([float(self.com_inputs[i].text()) for i in range(3)])
                 print(f"Using manual Center of Mass: {center_of_mass}")
                 return center_of_mass
@@ -1942,7 +1752,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 print(f"Error parsing Center of Mass input: {e}")
                 return None
 
-        # チェックされていない場合やエラー時は計算値を使用
         try:
             poly_data = self.stl_actor.GetMapper().GetInput()
             com_filter = vtk.vtkCenterOfMass()
@@ -1957,42 +1766,29 @@ class MainWindow(VTKViewerBase, QMainWindow):
             return None
 
     def format_inertia_for_urdf(self, inertia_tensor):
-        """
-        慣性テンソルをURDFフォーマットの文字列に変換する
-        
-        Args:
-            inertia_tensor (numpy.ndarray): 3x3の慣性テンソル行列
-        
-        Returns:
-            str: URDF形式の慣性テンソル文字列
-        """
-        # 値が非常に小さい場合は0とみなす閾値
+        """Format inertia tensor to URDF string"""
         threshold = 1e-10
 
-        # 対角成分
         ixx = inertia_tensor[0][0] if abs(inertia_tensor[0][0]) > threshold else 0
         iyy = inertia_tensor[1][1] if abs(inertia_tensor[1][1]) > threshold else 0
         izz = inertia_tensor[2][2] if abs(inertia_tensor[2][2]) > threshold else 0
-        
-        # 非対角成分
+
         ixy = inertia_tensor[0][1] if abs(inertia_tensor[0][1]) > threshold else 0
         ixz = inertia_tensor[0][2] if abs(inertia_tensor[0][2]) > threshold else 0
         iyz = inertia_tensor[1][2] if abs(inertia_tensor[1][2]) > threshold else 0
 
         return f'<inertia ixx="{ixx:.8f}" ixy="{ixy:.8f}" ixz="{ixz:.8f}" iyy="{iyy:.8f}" iyz="{iyz:.8f}" izz="{izz:.8f}"/>'
 
-
     def add_axes(self):
         if not hasattr(self, 'axes_actors'):
             self.axes_actors = []
 
-        # 既存の軸アクターを削除
         for actor in self.axes_actors:
             self.renderer.RemoveActor(actor)
         self.axes_actors.clear()
 
-        axis_length = 5  # 固定の軸の長さ
-        colors = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]  # 赤、緑、青
+        axis_length = 5
+        colors = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]
         for i, color in enumerate(colors):
             for direction in [1, -1]:
                 line_source = vtk.vtkLineSource()
@@ -2024,43 +1820,32 @@ class MainWindow(VTKViewerBase, QMainWindow):
             self.show_stl(file_path)
 
     def show_stl(self, file_path):
-        #古いアクターを削除
+        # Remove old actors
         if hasattr(self, 'stl_actor') and self.stl_actor:
             self.renderer.RemoveActor(self.stl_actor)
         if hasattr(self, 'com_actor') and self.com_actor:
             self.renderer.RemoveActor(self.com_actor)
             self.com_actor = None
 
-        # レンダラーをクリア
         self.renderer.Clear()
-
-        # 座標軸の再追加
         self.axes_widget = self.add_axes_widget()
-
         self.stl_file_path = file_path
 
-        # Use common utility function to load mesh
         poly_data, volume, extracted_color = load_mesh_to_polydata(file_path)
 
-        # Handle color extraction for DAE files
         if extracted_color is not None:
             print(f"Extracted color from .dae file: RGBA({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f}, {extracted_color[3]:.3f})")
-            # メッシュカラーとして保存
             self.mesh_color = extracted_color
-            # 色が手動で変更されたフラグをリセット（ファイルから読み込んだ色）
             self.color_manually_changed = False
-            # UIのカラーボタンも更新
             if hasattr(self, 'color_button'):
                 color = QtGui.QColor(int(extracted_color[0]*255), int(extracted_color[1]*255), int(extracted_color[2]*255))
                 self.color_button.setStyleSheet(f"background-color: {color.name()};")
 
-        # Create mapper and actor
         mapper = vtk.vtkPolyDataMapper()
         mapper.SetInputData(poly_data)
         self.stl_actor = vtk.vtkActor()
         self.stl_actor.SetMapper(mapper)
 
-        # Apply extracted color to the actor
         if extracted_color is not None:
             self.stl_actor.GetProperty().SetColor(extracted_color[0], extracted_color[1], extracted_color[2])
             self.stl_actor.GetProperty().SetOpacity(extracted_color[3])
@@ -2068,39 +1853,27 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         self.model_bounds = poly_data.GetBounds()
         self.renderer.AddActor(self.stl_actor)
-        
-        # 体積をUIに反映（小数点以下12桁）
+
         self.volume_input.setText(f"{volume:.12f}")
-        
-        # デフォルトの密度を取得して質量を計算
+
         density = float(self.density_input.text())
-        mass = volume * density  # 体積 × 密度 = 質量
+        mass = volume * density
         self.mass_input.setText(f"{mass:.12f}")
 
-        # カメラのフィッティングと描画更新
         self.fit_camera_to_model()
         self.update_all_points()
-
-        # プロパティを更新（慣性テンソルと重心を計算）
         self.calculate_and_update_properties()
-        
-        # 境界ボックスを出力
+
         print(f"STL model bounding box: [{self.model_bounds[0]:.6f}, {self.model_bounds[1]:.6f}], [{self.model_bounds[2]:.6f}, {self.model_bounds[3]:.6f}], [{self.model_bounds[4]:.6f}, {self.model_bounds[5]:.6f}]")
 
-        # 大原点を表示
         self.show_absolute_origin()
-
-        # ファイル名をフルパスで更新
         self.file_name_label.setText(f"File: {file_path}")
-
-        # カメラをリセット（Rキーと同等の処理）
         self.reset_camera()
-        
+
     def show_absolute_origin(self):
-        # 大原点を表す球を作成
         sphere = vtk.vtkSphereSource()
         sphere.SetCenter(0, 0, 0)
-        sphere.SetRadius(0.0005)  # 適切なサイズに調整してください
+        sphere.SetRadius(0.0005)
         sphere.Update()
 
         mapper = vtk.vtkPolyDataMapper()
@@ -2108,13 +1881,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         actor = vtk.vtkActor()
         actor.SetMapper(mapper)
-        actor.GetProperty().SetColor(1, 1, 0)  # 黄色
+        actor.GetProperty().SetColor(1, 1, 0)
 
         self.renderer.AddActor(actor)
         self.render_to_image()
 
     def show_point(self, index):
-        """ポイントを表示（XMLロード時にも使用）"""
+        """Show point (also used for XML loading)"""
         if not self.point_checkboxes[index].isChecked():
             print(f"DEBUG: show_point({index}) - checkbox not checked")
             return
@@ -2164,7 +1937,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             self.is_animating = False  # Allow new input
 
     def toggle_point(self, state, index):
-        """ポイントの表示/非表示を切り替え"""
+        """Toggle point visibility"""
         print(f"DEBUG: toggle_point({state}, {index}) - Point {index+1}")
         if state == Qt.CheckState.Checked.value:
             print(f"DEBUG: Checked - creating/showing Point {index+1}")
@@ -2197,20 +1970,18 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.render_to_image()
 
     def toggle_com(self, state):
-        """Center of Massの表示/非表示を切り替え"""
+        """Toggle Center of Mass visibility"""
         if state == Qt.CheckState.Checked.value:
-            # チェック時：赤い球を非表示、十字付き円（赤）を表示
+            # When checked: hide red sphere, show cross-circle (red)
             if self.com_sphere_actor:
                 self.com_sphere_actor.VisibilityOff()
 
             if self.com_cursor_actor is None:
-                # Center of Mass用の赤い円マーカーを作成
                 self.com_cursor_actor = vtk.vtkAssembly()
                 origin = [0, 0, 0]
                 axis_length = self.calculate_sphere_radius() * 36
                 circle_radius = self.calculate_sphere_radius()
 
-                # XYZ軸の作成（RGB配色）
                 colors = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]
                 for i, color in enumerate(colors):
                     for direction in [1, -1]:
@@ -2233,24 +2004,23 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         actor.GetProperty().SetLineWidth(2)
                         self.com_cursor_actor.AddPart(actor)
 
-                # 3つの円を作成（赤色）
                 for i in range(3):
                     circle = vtk.vtkRegularPolygonSource()
                     circle.SetNumberOfSides(50)
                     circle.SetRadius(circle_radius)
                     circle.SetCenter(origin[0], origin[1], origin[2])
                     if i == 0:
-                        circle.SetNormal(0, 0, 1)  # XY平面
+                        circle.SetNormal(0, 0, 1)
                     elif i == 1:
-                        circle.SetNormal(0, 1, 0)  # XZ平面
+                        circle.SetNormal(0, 1, 0)
                     else:
-                        circle.SetNormal(1, 0, 0)  # YZ平面
+                        circle.SetNormal(1, 0, 0)
 
                     mapper = vtk.vtkPolyDataMapper()
                     mapper.SetInputConnection(circle.GetOutputPort())
                     actor = vtk.vtkActor()
                     actor.SetMapper(mapper)
-                    actor.GetProperty().SetColor(1, 0, 0)  # 赤色
+                    actor.GetProperty().SetColor(1, 0, 0)
                     actor.GetProperty().SetRepresentationToWireframe()
                     actor.GetProperty().SetLineWidth(6)
                     actor.GetProperty().SetOpacity(0.7)
@@ -2264,25 +2034,19 @@ class MainWindow(VTKViewerBase, QMainWindow):
             self.renderer.AddActor(self.com_cursor_actor)
             print(f"DEBUG: Center of Mass marker shown at {self.com_coords}")
         else:
-            # チェックなし時：十字付き円を非表示、赤い球を表示
             if self.com_cursor_actor:
                 self.com_cursor_actor.VisibilityOff()
                 self.renderer.RemoveActor(self.com_cursor_actor)
 
-            # インプットフィールドの値を読み取ってcom_coordsを更新
             try:
                 self.com_coords = [float(self.com_inputs[i].text()) for i in range(3)]
                 print(f"Updated Center of Mass from input: {self.com_coords}")
             except (ValueError, IndexError) as e:
                 print(f"Error reading Center of Mass input: {e}")
-                # エラー時は現在の値を維持
 
-            # 赤い球の位置を最新の値に更新
             if self.com_sphere_actor:
-                # 既存の赤い球を削除
                 self.renderer.RemoveActor(self.com_sphere_actor)
 
-                # 新しい位置で赤い球を作成
                 sphere = vtk.vtkSphereSource()
                 sphere.SetCenter(self.com_coords)
                 sphere.SetRadius(self.calculate_sphere_radius() * 0.5)
@@ -2291,18 +2055,16 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 mapper.SetInputConnection(sphere.GetOutputPort())
 
                 self.com_sphere_actor.SetMapper(mapper)
-                self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)  # 赤色
+                self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)
                 self.com_sphere_actor.GetProperty().SetOpacity(0.7)
 
-                # レンダラーに再追加
                 self.renderer.AddActor(self.com_sphere_actor)
                 self.com_sphere_actor.VisibilityOn()
 
         self.render_to_image()
 
     def save_current_point_angles(self):
-        """現在選択されているポイントのAngle値を保存"""
-        # どのポイントが選択されているか確認
+        """Save angle values for currently selected point"""
         selected_index = None
         for i, checkbox in enumerate(self.point_checkboxes):
             if checkbox.isChecked():
@@ -2313,13 +2075,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
             print("DEBUG: No point selected, cannot save angles")
             return
 
-        # UI入力値を読み取り（deg入力 → rad保存）
         try:
             angle_x = float(self.angle_x_input.text()) if self.angle_x_input.text() else 0.0
             angle_y = float(self.angle_y_input.text()) if self.angle_y_input.text() else 0.0
             angle_z = float(self.angle_z_input.text()) if self.angle_z_input.text() else 0.0
 
-            # 選択されたポイントに角度を保存（radian）
             self.point_angles[selected_index] = [
                 math.radians(angle_x),
                 math.radians(angle_y),
@@ -2327,7 +2087,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
             ]
             print(f"DEBUG: Saved angles for Point {selected_index+1}: {self.point_angles[selected_index]} (rad)")
 
-            # 3Dビューのマーカーに角度を反映
             if self.point_actors[selected_index]:
                 self.apply_marker_rotation(selected_index)
                 self.render_to_image()
@@ -2335,29 +2094,28 @@ class MainWindow(VTKViewerBase, QMainWindow):
             print(f"ERROR: Invalid angle value: {e}")
 
     def apply_marker_rotation(self, index):
-        """指定されたポイントのマーカーに回転を適用"""
+        """Apply rotation to marker for specified point"""
         if not self.point_actors[index]:
             return
 
         angles = self.point_angles[index]
-        # VTKでは角度を度数法で設定（内部はradian）
         angles_deg = [math.degrees(a) for a in angles]
-        self.point_actors[index].SetOrientation(0, 0, 0)  # リセット
-        self.point_actors[index].RotateX(angles_deg[0])  # X軸回転
-        self.point_actors[index].RotateY(angles_deg[1])  # Y軸回転
-        self.point_actors[index].RotateZ(angles_deg[2])  # Z軸回転
+        self.point_actors[index].SetOrientation(0, 0, 0)
+        self.point_actors[index].RotateX(angles_deg[0])
+        self.point_actors[index].RotateY(angles_deg[1])  # Y-axis rotation
+        self.point_actors[index].RotateZ(angles_deg[2])  # Z-axis rotation
         print(f"DEBUG: Applied rotation to Point {index+1} marker: {angles_deg} (deg)")
 
     def create_com_coordinate(self, assembly, coords):
-        """Center of Mass用の十字付き円を作成（赤色）"""
+        """Create cross-circle for Center of Mass (red color)"""
         origin = coords
-        axis_length = self.calculate_sphere_radius() * 36  # 直径の18倍（6倍の3倍）を軸の長さとして使用
+        axis_length = self.calculate_sphere_radius() * 36  # Use 18x diameter (6x * 3) as axis length
         circle_radius = self.calculate_sphere_radius()
 
-        # XYZ軸の作成
-        colors = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]  # 赤、緑、青
+        # Create XYZ axes
+        colors = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]  # Red, green, blue
         for i, color in enumerate(colors):
-            for direction in [1, -1]:  # 正方向と負方向の両方
+            for direction in [1, -1]:  # Both positive and negative directions
                 line_source = vtk.vtkLineSource()
                 line_source.SetPoint1(
                     origin[0] - (axis_length / 2) * (i == 0) * direction,
@@ -2380,17 +2138,17 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
                 assembly.AddPart(actor)
 
-        # XY, XZ, YZ平面の円を作成（赤色）
+        # Create circles on XY, XZ, YZ planes (red color)
         for i in range(3):
             circle = vtk.vtkRegularPolygonSource()
             circle.SetNumberOfSides(50)
             circle.SetRadius(circle_radius)
             circle.SetCenter(origin[0], origin[1], origin[2])
-            if i == 0:  # XY平面
+            if i == 0:  # XY plane
                 circle.SetNormal(0, 0, 1)
-            elif i == 1:  # XZ平面
+            elif i == 1:  # XZ plane
                 circle.SetNormal(0, 1, 0)
-            else:  # YZ平面
+            else:  # YZ plane
                 circle.SetNormal(1, 0, 0)
 
             mapper = vtk.vtkPolyDataMapper()
@@ -2399,13 +2157,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
             actor = vtk.vtkActor()
             actor.SetMapper(mapper)
 
-            # 円のプロパティを設定（赤色）
-            actor.GetProperty().SetColor(1, 0, 0)  # 赤色
-            actor.GetProperty().SetRepresentationToWireframe()  # 常にワイヤーフレーム表示
-            actor.GetProperty().SetLineWidth(6)  # 線の太さを6に設定
-            actor.GetProperty().SetOpacity(0.7)  # 不透明度を少し下げて見やすくする
+            # Set circle properties (red color)
+            actor.GetProperty().SetColor(1, 0, 0)  # Red
+            actor.GetProperty().SetRepresentationToWireframe()  # Always wireframe display
+            actor.GetProperty().SetLineWidth(6)  # Line width set to 6
+            actor.GetProperty().SetOpacity(0.7)  # Reduce opacity for better visibility
 
-            # タグ付けのためにUserTransformを設定
+            # Set UserTransform for tagging
             transform = vtk.vtkTransform()
             actor.SetUserTransform(transform)
 
@@ -2420,10 +2178,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
             ])
             return size * 0.5
         else:
-            return 5  # デフォルトの長さ
+            return 5  # Default length
 
     def move_com_screen(self, direction, step):
-        """Center of Massをスクリーン座標系で移動"""
+        """Move Center of Mass in screen coordinates"""
         move_vector = direction * step
         new_position = [
             self.com_coords[0] + move_vector[0],
@@ -2435,36 +2193,36 @@ class MainWindow(VTKViewerBase, QMainWindow):
         print(f"Center of Mass moved to: ({new_position[0]:.6f}, {new_position[1]:.6f}, {new_position[2]:.6f})")
 
     def update_com_display(self):
-        """Center of Massの表示を更新"""
-        # 入力フィールドを更新
+        """Update Center of Mass display"""
+        # Update input fields
         for i in range(3):
             self.com_inputs[i].setText(f"{self.com_coords[i]:.6f}")
 
-        # カーソルアクターの位置を更新
+        # Update cursor actor position
         if self.com_cursor_actor:
             self.com_cursor_actor.SetPosition(self.com_coords)
 
         self.render_to_image()
 
     def on_com_input_return(self):
-        """Center of Massのインプットフィールドでリターンキーが押された時の処理"""
+        """Handle Return key press in Center of Mass input field"""
         try:
-            # インプットフィールドから値を読み取る
+            # Read values from input fields
             self.com_coords = [float(self.com_inputs[i].text()) for i in range(3)]
             print(f"Center of Mass updated from input: {self.com_coords}")
 
-            # チェック状態に応じて表示を更新
+            # Update display based on checkbox state
             if hasattr(self, 'com_checkbox') and self.com_checkbox.isChecked():
-                # チェックされている場合：カーソルアクターの位置を更新
+                # When checked: update cursor actor position
                 if self.com_cursor_actor:
                     self.com_cursor_actor.SetPosition(self.com_coords)
             else:
-                # チェックされていない場合：赤い球の位置を更新
+                # When unchecked: update red sphere position
                 if self.com_sphere_actor:
-                    # 既存の赤い球を削除
+                    # Remove existing red sphere
                     self.renderer.RemoveActor(self.com_sphere_actor)
 
-                    # 新しい位置で赤い球を作成
+                    # Create red sphere at new position
                     sphere = vtk.vtkSphereSource()
                     sphere.SetCenter(self.com_coords)
                     sphere.SetRadius(self.calculate_sphere_radius() * 0.5)
@@ -2473,101 +2231,101 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     mapper.SetInputConnection(sphere.GetOutputPort())
 
                     self.com_sphere_actor.SetMapper(mapper)
-                    self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)  # 赤色
+                    self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)  # Red
                     self.com_sphere_actor.GetProperty().SetOpacity(0.7)
 
-                    # レンダラーに再追加
+                    # Re-add to renderer
                     self.renderer.AddActor(self.com_sphere_actor)
                     self.com_sphere_actor.VisibilityOn()
 
-            # 画面を更新
+            # Update display
             self.render_to_image()
 
         except (ValueError, IndexError) as e:
             print(f"Error parsing Center of Mass input: {e}")
 
     def apply_volume_value(self):
-        """Volumeのインプットフィールドでリターンキーが押された時の処理"""
+        """Handle Return key press in Volume input field"""
         try:
             volume_value = float(self.volume_input.text())
             print(f"Volume value applied: {volume_value:.6f}")
-            # 値が変数やメモリに採用され有効な値として適用される
-            # 必要に応じて計算をトリガー
+            # Value is applied and stored as valid
+            # Trigger calculation if needed
             if self.volume_checkbox.isChecked():
-                # チェックされている場合、値は固定として扱われる
+                # When checked, value is treated as fixed
                 pass
         except ValueError:
             print(f"Error: Invalid volume input. Please enter a valid number.")
 
     def apply_density_value(self):
-        """Densityのインプットフィールドでリターンキーが押された時の処理"""
+        """Handle Return key press in Density input field"""
         try:
             density_value = float(self.density_input.text())
             print(f"Density value applied: {density_value:.6f}")
-            # 値が変数やメモリに採用され有効な値として適用される
-            # 必要に応じて計算をトリガー
+            # Value is applied and stored as valid
+            # Trigger calculation if needed
             if self.density_checkbox.isChecked():
-                # チェックされている場合、値は固定として扱われる
+                # When checked, value is treated as fixed
                 pass
         except ValueError:
             print(f"Error: Invalid density input. Please enter a valid number.")
 
     def apply_mass_value(self):
-        """Massのインプットフィールドでリターンキーが押された時の処理"""
+        """Handle Return key press in Mass input field"""
         try:
             mass_value = float(self.mass_input.text())
             print(f"Mass value applied: {mass_value:.6f}")
-            # 値が変数やメモリに採用され有効な値として適用される
-            # 必要に応じて計算をトリガー
+            # Value is applied and stored as valid
+            # Trigger calculation if needed
             if self.mass_checkbox.isChecked():
-                # チェックされている場合、値は固定として扱われる
+                # When checked, value is treated as fixed
                 pass
         except ValueError:
             print(f"Error: Invalid mass input. Please enter a valid number.")
 
     def fit_camera_to_model(self):
-        """STLモデルが画面にフィットするようにカメラの距離のみを調整"""
+        """Adjust camera distance so STL model fits on screen"""
         if not self.model_bounds:
             return
 
         camera = self.renderer.GetActiveCamera()
-        
-        # モデルの中心を計算
+
+        # Calculate model center
         center = [(self.model_bounds[i] + self.model_bounds[i+1]) / 2 for i in range(0, 6, 2)]
-        
-        # モデルの大きさを計算
+
+        # Calculate model size
         size = max([
             self.model_bounds[1] - self.model_bounds[0],
             self.model_bounds[3] - self.model_bounds[2],
             self.model_bounds[5] - self.model_bounds[4]
         ])
 
-        # 20%の余裕を追加
+        # Add 20% margin
         size *= 1.4  # 1.0 + 0.2 + 0.2 = 1.4
 
-        # 現在のカメラの方向ベクトルを保持
+        # Preserve current camera direction vector
         current_position = np.array(camera.GetPosition())
-        focal_point = np.array(center)  # モデルの中心を焦点に
+        focal_point = np.array(center)  # Set model center as focal point
         direction = current_position - focal_point
-        
-        # 方向ベクトルを正規化
+
+        # Normalize direction vector
         direction = direction / np.linalg.norm(direction)
-        
-        # 新しい位置を計算（方向は保持したまま距離のみ調整）
+
+        # Calculate new position (preserve direction, adjust distance only)
         new_position = focal_point + direction * size
 
-        # カメラの位置を更新（方向は変えない）
+        # Update camera position (keep direction unchanged)
         camera.SetPosition(new_position)
-        camera.SetFocalPoint(*center)  # モデルの中心を見る
+        camera.SetFocalPoint(*center)  # Look at model center
 
-        # ビューポートのアスペクト比を取得
+        # Get viewport aspect ratio
         viewport = self.renderer.GetViewport()
         aspect_ratio = (viewport[2] - viewport[0]) / (viewport[3] - viewport[1])
 
-        # モデルが画面にフィットするようにパラレルスケールを設定
-        if aspect_ratio > 1:  # 横長の画面
+        # Set parallel scale so model fits on screen
+        if aspect_ratio > 1:  # Wide screen
             camera.SetParallelScale(size / 2)
-        else:  # 縦長の画面
+        else:  # Tall screen
             camera.SetParallelScale(size / (2 * aspect_ratio))
 
         self.renderer.ResetCameraClippingRange()
@@ -2584,13 +2342,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
         view_up = np.array(camera.GetViewUp())
         forward = np.array(camera.GetDirectionOfProjection())
         
-        # NumPyのベクトル演算を使用
+        # Use NumPy vector operations
         right = np.cross(forward, view_up)
         
         screen_right = right
         screen_up = view_up
 
-        # ドット積の計算にNumPyを使用
+        # Use NumPy for dot product calculation
         if abs(np.dot(screen_right, [1, 0, 0])) > abs(np.dot(screen_right, [0, 0, 1])):
             horizontal_axis = 'x'
             vertical_axis = 'z' if abs(np.dot(screen_up, [0, 0, 1])) > abs(np.dot(screen_up, [0, 1, 0])) else 'y'
@@ -2601,7 +2359,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         return horizontal_axis, vertical_axis, screen_right, screen_up
 
     def handle_reset_only(self):
-        """チェックされたポイントを原点にリセット"""
+        """Reset checked points to origin"""
         for i, checkbox in enumerate(self.point_checkboxes):
             if checkbox.isChecked():
                 self.reset_point_to_origin(i)
@@ -2610,18 +2368,18 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.render_to_image()
 
     def export_mirror_stl_xml(self):
-        """3DモデルファイルをY軸でミラーリングし、対応するXMLファイルも生成する（STL/DAE対応）"""
+        """Mirror 3D model file on Y-axis and generate corresponding XML file (STL/DAE support)"""
         if not hasattr(self, 'stl_file_path') or not self.stl_file_path:
             print("No 3D model file has been loaded.")
             return
 
         try:
-            # 元のファイルのパスとファイル名を取得
+            # Get original file path and filename
             original_dir = os.path.dirname(self.stl_file_path)
             original_filename = os.path.basename(self.stl_file_path)
             name, ext = os.path.splitext(original_filename)
 
-            # 新しいファイル名を生成（L/R反転）
+            # Generate new filename (flip L/R)
             if name.startswith('L_'):
                 new_name = 'R_' + name[2:]
             elif name.startswith('l_'):
@@ -2633,11 +2391,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
             else:
                 new_name = 'mirrored_' + name
 
-            # ミラー化したファイルのパスを設定
+            # Set mirrored file paths
             mirrored_stl_path = os.path.join(original_dir, new_name + ext)
             mirrored_xml_path = os.path.join(original_dir, new_name + '.xml')
 
-            # 既存ファイルのチェックとダイアログ表示
+            # Check existing files and show dialog
             if os.path.exists(mirrored_stl_path) or os.path.exists(mirrored_xml_path):
                 existing_files = []
                 if os.path.exists(mirrored_stl_path):
@@ -2689,11 +2447,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 poly_data.SetPoints(points)
                 poly_data.SetPolys(triangles)
 
-                # Y軸に対して反転する変換を作成
+                # Create transform to flip on Y-axis
                 transform = vtk.vtkTransform()
                 transform.Scale(1, -1, 1)
 
-                # 変換を適用
+                # Apply transform
                 transform_filter = vtk.vtkTransformPolyDataFilter()
                 transform_filter.SetInputData(poly_data)
                 transform_filter.SetTransform(transform)
@@ -2705,17 +2463,17 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 reader.SetFileName(self.stl_file_path)
                 reader.Update()
 
-                # Y軸に対して反転する変換を作成
+                # Create transform to flip on Y-axis
                 transform = vtk.vtkTransform()
                 transform.Scale(1, -1, 1)
 
-                # 変換を適用
+                # Apply transform
                 transform_filter = vtk.vtkTransformPolyDataFilter()
                 transform_filter.SetInputConnection(reader.GetOutputPort())
                 transform_filter.SetTransform(transform)
                 transform_filter.Update()
 
-            # 法線の修正
+            # Fix normals
             normal_generator = vtk.vtkPolyDataNormals()
             normal_generator.SetInputData(transform_filter.GetOutput())
             normal_generator.ConsistencyOn()
@@ -2724,7 +2482,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             normal_generator.ComputePointNormalsOn()
             normal_generator.Update()
 
-            # XMLファイルを確認し読み込む
+            # Check and load XML file
             xml_path = os.path.splitext(self.stl_file_path)[0] + '.xml'
             xml_data = None
             mass_value_str = "0.0"
@@ -2740,27 +2498,27 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     xml_data = tree.getroot()
                     print(f"Found and loaded XML file: {xml_path}")
 
-                    # XMLから物理パラメータを取得（元のフォーマットを保持）
+                    # Get physical parameters from XML (preserve original format)
                     mass_element = xml_data.find(".//mass")
                     mass_value_str = mass_element.get('value') if mass_element is not None else "0.0"
-                    mass = float(mass_value_str)  # 計算用
-                    
+                    mass = float(mass_value_str)  # For calculation
+
                     volume_element = xml_data.find(".//volume")
                     volume_value_str = volume_element.get('value') if volume_element is not None else "0.0"
-                    volume = float(volume_value_str)  # 計算用
-                    
-                    # 重心位置を取得（center_of_mass要素から）
+                    volume = float(volume_value_str)  # For calculation
+
+                    # Get center of mass position (from center_of_mass element)
                     com_element = xml_data.find(".//center_of_mass")
                     if com_element is not None and com_element.text:
                         x, y, z = map(float, com_element.text.strip().split())
-                        center_of_mass = [x, -y, z]  # Y座標のみを反転
+                        center_of_mass = [x, -y, z]  # Flip Y coordinate only
                     else:
-                        # inertialのorigin要素から取得
+                        # Get from inertial origin element
                         inertial_origin = xml_data.find(".//inertial/origin")
                         if inertial_origin is not None:
                             xyz = inertial_origin.get('xyz')
                             x, y, z = map(float, xyz.split())
-                            center_of_mass = [x, -y, z]  # Y座標のみを反転
+                            center_of_mass = [x, -y, z]  # Flip Y coordinate only
                         else:
                             print("Warning: No center of mass information found in XML")
                             center_of_mass = [0, 0, 0]
@@ -2768,7 +2526,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     print(f"Original mass: {mass:.6f}, volume: {volume:.6f}")
                     print(f"Original center of mass: {center_of_mass}")
 
-                    # 色情報を取得
+                    # Get color information
                     color_element = xml_data.find(".//material/color")
                     if color_element is not None:
                         rgba_str = color_element.get('rgba')
@@ -2782,7 +2540,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     print(f"Error details: {str(e)}")
                     return
 
-            # ミラー化したファイルを保存
+            # Save mirrored file
             print(f"\nSaving mirrored file to: {mirrored_stl_path}")
 
             # Determine output format from extension
@@ -2838,33 +2596,33 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 writer.SetInputData(normal_generator.GetOutput())
                 writer.Write()
 
-            # イナーシャテンソルを取得してミラーリング変換
+            # Get inertia tensor and apply mirror transformation
             print("\nProcessing inertia tensor for mirrored model...")
             inertia_element = None
             if xml_data is not None:
                 inertia_element = xml_data.find(".//inertia")
-            
+
             if inertia_element is not None:
-                # 元のXMLからイナーシャテンソルを取得してミラーリング変換
+                # Get inertia tensor from original XML and apply mirror transformation
                 ixx = float(inertia_element.get('ixx', 0))
                 iyy = float(inertia_element.get('iyy', 0))
                 izz = float(inertia_element.get('izz', 0))
                 ixy = float(inertia_element.get('ixy', 0))
                 ixz = float(inertia_element.get('ixz', 0))
                 iyz = float(inertia_element.get('iyz', 0))
-                # Y軸ミラーの場合、ixyとiyzの符号を反転
+                # For Y-axis mirror, flip sign of ixy and iyz
                 inertia_str = f'ixx="{ixx:.12f}" ixy="{-ixy:.12f}" ixz="{ixz:.12f}" iyy="{iyy:.12f}" iyz="{-iyz:.12f}" izz="{izz:.12f}"'
                 print(f"Mirrored inertia tensor from XML: ixx={ixx:.6f}, iyy={iyy:.6f}, izz={izz:.6f}, ixy={-ixy:.6f}, ixz={ixz:.6f}, iyz={-iyz:.6f}")
             else:
-                # 元のXMLにイナーシャ情報がない場合、メッシュから計算
+                # If original XML has no inertia data, calculate from mesh
                 print("Warning: No inertia data in XML, calculating from mesh...")
                 inertia_tensor = self.calculate_inertia_tensor_for_mirrored(
                     normal_generator.GetOutput(), mass, center_of_mass)
-                # format_inertia_for_urdfの戻り値から<inertia と/>を削除
+                # Remove <inertia and /> from format_inertia_for_urdf return value
                 inertia_formatted = self.format_inertia_for_urdf(inertia_tensor)
                 inertia_str = inertia_formatted.replace('<inertia ', '').replace('/>', '').strip()
 
-            # XMLファイルの内容を生成
+            # Generate XML file content
             print(f"\nGenerating XML content...")
             urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <urdf_part>
@@ -2885,7 +2643,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         <center_of_mass>{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}</center_of_mass>
     </link>"""
 
-            # ポイントデータを反転してコピー
+            # Flip and copy point data
             if xml_data is not None:
                 print("Processing point data...")
                 points = xml_data.findall('.//point')
@@ -2894,16 +2652,16 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     if xyz_element is not None and xyz_element.text:
                         try:
                             x, y, z = map(float, xyz_element.text.strip().split())
-                            mirrored_y = -y  # Y座標のみ反転
+                            mirrored_y = -y  # Flip Y coordinate only
                             point_name = point.get('name')
 
-                            # point_angleの処理（Y軸ミラーリング時の回転変換）
+                            # Process point_angle (rotation transform for Y-axis mirror)
                             angle_element = point.find('point_angle')
                             point_angle_str = ""
                             if angle_element is not None and angle_element.text:
                                 try:
                                     angle_x, angle_y, angle_z = map(float, angle_element.text.strip().split())
-                                    # Y軸ミラーの場合、X軸とZ軸の回転を符号反転
+                                    # For Y-axis mirror, flip sign of X and Z axis rotations
                                     mirrored_angle_x = -angle_x
                                     mirrored_angle_y = angle_y
                                     mirrored_angle_z = -angle_z
@@ -2920,7 +2678,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         except ValueError:
                             print(f"Error processing point coordinates in XML")
 
-            # 軸情報を取得して適用
+            # Get and apply axis information
             if xml_data is not None:
                 print("Processing axis information...")
                 axis_element = xml_data.find('.//joint/axis')
@@ -2932,7 +2690,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             else:
                 mirrored_axis = "1 0 0"
 
-            # 関節角度制限を取得（ロール/ヨー軸の場合は入れ替え）
+            # Get joint angle limits (swap for roll/yaw axis)
             joint_limit_str = ""
             if xml_data is not None:
                 limit_element = xml_data.find('.//joint/limit')
@@ -2943,14 +2701,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     velocity = limit_element.get('velocity')
 
                     if lower is not None and upper is not None:
-                        # 軸の種類を判定（1 0 0 = Roll, 0 1 0 = Pitch, 0 0 1 = Yaw）
+                        # Determine axis type (1 0 0 = Roll, 0 1 0 = Pitch, 0 0 1 = Yaw)
                         axis_xyz = [float(x) for x in mirrored_axis.split()]
-                        is_roll = abs(axis_xyz[0]) > 0.5  # X軸成分が大きい = Roll
-                        is_yaw = abs(axis_xyz[2]) > 0.5   # Z軸成分が大きい = Yaw
+                        is_roll = abs(axis_xyz[0]) > 0.5  # Large X component = Roll
+                        is_yaw = abs(axis_xyz[2]) > 0.5   # Large Z component = Yaw
 
                         if is_roll or is_yaw:
-                            # Roll/Yaw軸の場合は最小・最大を入れ替え、かつ符号を反転
-                            # 例：lower=-10, upper=190 -> lower=-190, upper=10
+                            # For Roll/Yaw axis, swap min/max and negate
+                            # Example: lower=-10, upper=190 -> lower=-190, upper=10
                             lower_val = float(lower)
                             upper_val = float(upper)
                             lower = str(-upper_val)
@@ -2970,24 +2728,24 @@ class MainWindow(VTKViewerBase, QMainWindow):
     </joint>
 </urdf_part>"""
 
-            # XMLファイルを保存
+            # Save XML file
             print(f"Saving XML to: {mirrored_xml_path}")
             with open(mirrored_xml_path, "w") as f:
                 f.write(urdf_content)
 
-            # 対応するcollider XMLファイルを処理
-            # 元のファイル名からcollider XMLのパスを生成
+            # Process corresponding collider XML file
+            # Generate collider XML path from original filename
             original_name_base = os.path.splitext(original_filename)[0]
             collider_xml_path = os.path.join(original_dir, original_name_base + '_collider.xml')
             
             if os.path.exists(collider_xml_path):
                 print(f"\nFound collider XML: {collider_xml_path}")
                 try:
-                    # 新しいcollider XMLファイル名を生成
+                    # Generate new collider XML filename
                     new_collider_xml_name = new_name + '_collider.xml'
                     new_collider_xml_path = os.path.join(original_dir, new_collider_xml_name)
-                    
-                    # コライダーXMLファイルを読み込み
+
+                    # Load collider XML file
                     tree = ET.parse(collider_xml_path)
                     root = tree.getroot()
                     
@@ -2998,35 +2756,35 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         if collider_elem is None:
                             print(f"  ⚠ Warning: No collider element found, skipping")
                         else:
-                            # コライダータイプを取得
+                            # Get collider type
                             collider_type = collider_elem.get('type', 'box')
-                            
-                            # ジオメトリ情報を取得
+
+                            # Get geometry information
                             geometry_elem = collider_elem.find('geometry')
                             geometry_attrs = {}
                             if geometry_elem is not None:
                                 geometry_attrs = dict(geometry_elem.attrib)
-                            
-                            # 位置情報を取得してxz平面で反転（y座標を反転）
+
+                            # Get position and flip on XZ plane (flip Y coordinate)
                             position_elem = collider_elem.find('position')
                             if position_elem is not None:
                                 x = float(position_elem.get('x', '0.0'))
                                 y = float(position_elem.get('y', '0.0'))
                                 z = float(position_elem.get('z', '0.0'))
-                                mirrored_y = -y  # Y座標を反転
+                                mirrored_y = -y  # Flip Y coordinate
                             else:
                                 x, y, z = 0.0, 0.0, 0.0
                                 mirrored_y = 0.0
-                            
-                            # 回転情報を取得（RollとYawを反転、Pitchはそのまま）
+
+                            # Get rotation (flip Roll and Yaw, keep Pitch)
                             rotation_elem = collider_elem.find('rotation')
                             if rotation_elem is not None:
                                 roll = float(rotation_elem.get('roll', '0.0'))
                                 pitch = float(rotation_elem.get('pitch', '0.0'))
                                 yaw = float(rotation_elem.get('yaw', '0.0'))
-                                # RollとYawを反転、Pitchはそのまま
+                                # Flip Roll and Yaw, keep Pitch
                                 mirrored_roll = -roll
-                                mirrored_pitch = pitch  # Pitchは反転しない
+                                mirrored_pitch = pitch  # Don't flip Pitch
                                 mirrored_yaw = -yaw
                             else:
                                 roll, pitch, yaw = 0.0, 0.0, 0.0
@@ -3034,31 +2792,31 @@ class MainWindow(VTKViewerBase, QMainWindow):
                                 mirrored_pitch = 0.0
                                 mirrored_yaw = 0.0
                             
-                            # 新しいコライダーXMLファイルを作成
+                            # Create new collider XML file
                             new_root = ET.Element('urdf_kitchen_collider')
                             new_collider_elem = ET.SubElement(new_root, 'collider')
                             new_collider_elem.set('type', collider_type)
-                            
-                            # ジオメトリ要素を追加
+
+                            # Add geometry element
                             if geometry_attrs:
                                 new_geometry_elem = ET.SubElement(new_collider_elem, 'geometry')
                                 for key, value in geometry_attrs.items():
                                     new_geometry_elem.set(key, value)
-                            
-                            # 位置要素を追加（y座標を反転）
+
+                            # Add position element (flip Y coordinate)
                             new_position_elem = ET.SubElement(new_collider_elem, 'position')
                             new_position_elem.set('x', f"{x:.6f}")
                             new_position_elem.set('y', f"{mirrored_y:.6f}")
                             new_position_elem.set('z', f"{z:.6f}")
-                            
-                            # 回転要素を追加（RollとYawを反転、Pitchはそのまま）
+
+                            # Add rotation element (flip Roll and Yaw, keep Pitch)
                             new_rotation_elem = ET.SubElement(new_collider_elem, 'rotation')
                             new_rotation_elem.set('roll', f"{mirrored_roll:.6f}")
                             new_rotation_elem.set('pitch', f"{mirrored_pitch:.6f}")
                             new_rotation_elem.set('yaw', f"{mirrored_yaw:.6f}")
                             print(f"  Mirrored rotation: Roll={roll:.4f}->{mirrored_roll:.4f}, Pitch={pitch:.4f}->{mirrored_pitch:.4f}, Yaw={yaw:.4f}->{mirrored_yaw:.4f}")
-                            
-                            # mesh_file要素があればコピー（l_をr_に置換）
+
+                            # Copy mesh_file element if exists (replace l_ with r_)
                             mesh_file_elem = collider_elem.find('mesh_file')
                             if mesh_file_elem is not None and mesh_file_elem.text:
                                 new_mesh_file_elem = ET.SubElement(new_collider_elem, 'mesh_file')
@@ -3070,7 +2828,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                                 else:
                                     new_mesh_file_elem.text = original_mesh_name
                             
-                            # XMLファイルを保存
+                            # Save XML file
                             new_tree = ET.ElementTree(new_root)
                             ET.indent(new_tree, space="    ")
                             new_tree.write(new_collider_xml_path, encoding='utf-8', xml_declaration=True)
@@ -3086,14 +2844,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
             print(f"{file_type}: {mirrored_stl_path}")
             print(f"XML file: {mirrored_xml_path}")
 
-            # ダイアログボックスで出力内容を表示
+            # Show output contents in dialog box
             dialog = ResultDialog(mirrored_stl_path, mirrored_xml_path, self)
             dialog.exec()
 
         except Exception as e:
             print(f"\nAn error occurred during mirror export: {str(e)}")
             traceback.print_exc()
-            # エラーダイアログも表示
+            # Show error dialog
             QMessageBox.critical(
                 self,
                 "Export Error",
@@ -3103,15 +2861,15 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
     def calculate_inertia_tensor_for_mirrored(self, poly_data, mass, center_of_mass):
         """
-        ミラーリングされたモデルの慣性テンソルを計算
+        Calculate inertia tensor for mirrored model
 
         Args:
-            poly_data: vtkPolyData オブジェクト
-            mass: float 質量
-            center_of_mass: list[float] 重心座標 [x, y, z]
+            poly_data: vtkPolyData object
+            mass: float mass value
+            center_of_mass: list[float] center of mass coordinates [x, y, z]
 
         Returns:
-            numpy.ndarray: 3x3 慣性テンソル行列
+            numpy.ndarray: 3x3 inertia tensor matrix
         """
         # Use shared triangle-based method with mirroring from urdf_kitchen_utils
         inertia_tensor = calculate_inertia_tensor(
@@ -3125,14 +2883,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
 
     def _load_points_from_xml(self, root):
-        """XMLからポイントデータを読み込む"""
+        """Load point data from XML"""
         points_with_data = set()
-        # './/point'とすることで、どの階層にあるpointタグも検索できる
+        # Use './/point' to search for point tags at any level
         points = root.findall('.//point')
         print(f"Found {len(points)} points in XML")
 
         for i, point in enumerate(points):
-            if i >= len(self.point_checkboxes):  # 配列の境界チェック
+            if i >= len(self.point_checkboxes):  # Array bounds check
                 break
 
             xyz_element = point.find('point_xyz')
@@ -3141,14 +2899,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     x, y, z = map(float, xyz_element.text.strip().split())
                     print(f"Loading point {i+1}: ({x}, {y}, {z})")
 
-                    # 座標の設定
+                    # Set coordinates
                     self.point_inputs[i][0].setText(f"{x:.6f}")
                     self.point_inputs[i][1].setText(f"{y:.6f}")
                     self.point_inputs[i][2].setText(f"{z:.6f}")
                     self.point_coords[i] = [x, y, z]
                     points_with_data.add(i)
 
-                    # point_angleの読み込み（radian）
+                    # Load point_angle (in radians)
                     angle_element = point.find('point_angle')
                     if angle_element is not None and angle_element.text:
                         try:
@@ -3167,10 +2925,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         self.point_angles[i] = [0.0, 0.0, 0.0]
                         print(f"No point_angle found for point {i+1}, using default [0, 0, 0]")
 
-                    # チェックボックスをオンにする
+                    # Turn on checkbox
                     self.point_checkboxes[i].setChecked(True)
 
-                    # ポイントの表示を設定
+                    # Set point display
                     if self.point_actors[i] is None:
                         self.point_actors[i] = create_crosshair_marker(
                             coords=[0, 0, 0],
@@ -3194,7 +2952,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         else:
             print(f"Successfully loaded {len(points_with_data)} points")
 
-            # 最初にチェックされたポイントのAngle値をUIに反映
+            # Update UI with Angle values of first checked point
             first_point_index = min(points_with_data)
             self.angle_x_input.setText(f"{self.point_angles[first_point_index][0]:.2f}")
             self.angle_y_input.setText(f"{self.point_angles[first_point_index][1]:.2f}")
@@ -3204,7 +2962,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         return points_with_data
 
     def _apply_color_from_xml(self, root):
-        """XMLからカラー情報を適用"""
+        """Apply color information from XML"""
         color_element = root.find(".//material/color")
         if color_element is not None:
             rgba_str = color_element.get('rgba')
@@ -3229,7 +2987,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     print(f"Error details: {e}")
 
     def _refresh_display(self):
-        """表示を更新する"""
+        """Refresh display"""
         self.renderer.ResetCamera()
         self.fit_camera_to_model()
         self.update_all_points_size()
@@ -3240,17 +2998,17 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.render_to_image()
 
     def load_parameters_from_xml(self, root):
-        """XMLからパラメータを読み込んで設定する共通処理"""
+        """Common process to load and set parameters from XML"""
         try:
-            # まず全てのポイントをリセット
+            # First reset all points
             for i in range(self.num_points):
-                # 座標を0にリセット
+                # Reset coordinates to 0
                 self.point_coords[i] = [0, 0, 0]
                 for j in range(3):
                     self.point_inputs[i][j].setText("0.000000")
-                # チェックボックスを外す
+                # Uncheck checkbox
                 self.point_checkboxes[i].setChecked(False)
-                # 既存のアクターを削除
+                # Remove existing actor
                 if self.point_actors[i]:
                     self.point_actors[i].VisibilityOff()
                     self.renderer.RemoveActor(self.point_actors[i])
@@ -3258,7 +3016,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             has_parameters = False
 
-            # 色情報の読み込み
+            # Load color information
             material_element = root.find(".//material")
             if material_element is not None:
                 color_element = material_element.find("color")
@@ -3267,14 +3025,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     if rgba_str:
                         try:
                             r, g, b, a = map(float, rgba_str.split())
-                            # 色情報を入力フィールドに設定
+                            # Set color information to input fields
                             self.color_inputs[0].setText(f"{r:.3f}")
                             self.color_inputs[1].setText(f"{g:.3f}")
                             self.color_inputs[2].setText(f"{b:.3f}")
                             if len(self.color_inputs) >= 4:
                                 self.color_inputs[3].setText(f"{a:.3f}")
 
-                            # STLモデルに色を適用
+                            # Apply color to STL model
                             if hasattr(self, 'stl_actor') and self.stl_actor:
                                 self.stl_actor.GetProperty().SetColor(r, g, b)
                                 self.stl_actor.GetProperty().SetOpacity(a)
@@ -3285,14 +3043,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         except ValueError as e:
                             print(f"Error parsing color values: {e}")
 
-            # 軸情報の読み込み
+            # Load axis information
             joint_element = root.find(".//joint/axis")
             if joint_element is not None:
                 axis_str = joint_element.get('xyz')
                 if axis_str:
                     try:
                         x, y, z = map(float, axis_str.split())
-                        # 対応するラジオボタンを選択
+                        # Select corresponding radio button
                         if x == 1:
                             self.radio_buttons[0].setChecked(True)
                             print("Set axis to X (roll)")
@@ -3309,7 +3067,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     except ValueError as e:
                         print(f"Error parsing axis values: {e}")
 
-            # 体積を取得して設定
+            # Get and set volume
             volume_element = root.find(".//volume")
             if volume_element is not None:
                 volume = volume_element.get('value')
@@ -3317,7 +3075,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.volume_checkbox.setChecked(True)
                 has_parameters = True
 
-            # 質量を取得して設定
+            # Get and set mass
             mass_element = root.find(".//mass")
             if mass_element is not None:
                 mass = mass_element.get('value')
@@ -3325,23 +3083,23 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.mass_checkbox.setChecked(True)
                 has_parameters = True
 
-            # 重心の取得と設定（優先順位付き）
+            # Get and set center of mass (with priority)
             com_str = None
-            
-            # まず<center_of_mass>タグを確認
+
+            # First check <center_of_mass> tag
             com_element = root.find(".//center_of_mass")
             if com_element is not None and com_element.text:
                 com_str = com_element.text.strip()
-            
-            # 次にinertialのorigin要素を確認
+
+            # Next check inertial origin element
             if com_str is None:
                 inertial_origin = root.find(".//inertial/origin")
                 if inertial_origin is not None:
                     xyz = inertial_origin.get('xyz')
                     if xyz:
                         com_str = xyz
-            
-            # 最後にvisualのorigin要素を確認
+
+            # Finally check visual origin element
             if com_str is None:
                 visual_origin = root.find(".//visual/origin")
                 if visual_origin is not None:
@@ -3349,7 +3107,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     if xyz:
                         com_str = xyz
 
-            # 重心値を設定
+            # Set center of mass value
             if com_str:
                 try:
                     x, y, z = map(float, com_str.split())
@@ -3359,13 +3117,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     self.com_coords = [x, y, z]
                     print(f"Loaded center of mass: ({x:.6f}, {y:.6f}, {z:.6f})")
 
-                    # Center of Massの赤い球を更新
+                    # Update Center of Mass red sphere
                     if hasattr(self, 'renderer'):
-                        # 既存の赤い球を削除
+                        # Remove existing red sphere
                         if hasattr(self, 'com_sphere_actor') and self.com_sphere_actor:
                             self.renderer.RemoveActor(self.com_sphere_actor)
 
-                        # 新しい位置で赤い球を作成
+                        # Create red sphere at new position
                         sphere = vtk.vtkSphereSource()
                         sphere.SetCenter(self.com_coords)
                         sphere.SetRadius(self.calculate_sphere_radius() * 0.5)
@@ -3375,10 +3133,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
                         self.com_sphere_actor = vtk.vtkActor()
                         self.com_sphere_actor.SetMapper(mapper)
-                        self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)  # 赤色
+                        self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)  # Red
                         self.com_sphere_actor.GetProperty().SetOpacity(0.7)
 
-                        # チェック状態を確認して表示/非表示を設定
+                        # Check state to set visibility
                         if hasattr(self, 'com_checkbox') and self.com_checkbox.isChecked():
                             self.com_sphere_actor.VisibilityOff()
                         else:
@@ -3391,14 +3149,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 except ValueError as e:
                     print(f"Error parsing center of mass values: {e}")
 
-            # 慣性テンソルの設定
+            # Set inertia tensor
             inertia_element = root.find(".//inertia")
             if inertia_element is not None:
                 inertia_str = ET.tostring(inertia_element, encoding='unicode')
                 self.inertia_tensor_input.setText(inertia_str)
                 has_parameters = True
 
-            # ポイントデータの読み込み
+            # Load point data
             points = root.findall(".//point")
             for i, point in enumerate(points):
                 if i >= len(self.point_checkboxes):
@@ -3408,16 +3166,16 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 if xyz_element is not None and xyz_element.text:
                     try:
                         x, y, z = map(float, xyz_element.text.strip().split())
-                        # 座標値を設定
+                        # Set coordinate values
                         self.point_inputs[i][0].setText(f"{x:.6f}")
                         self.point_inputs[i][1].setText(f"{y:.6f}")
                         self.point_inputs[i][2].setText(f"{z:.6f}")
                         self.point_coords[i] = [x, y, z]
-                        
-                        # チェックボックスをオンにする
+
+                        # Turn on checkbox
                         self.point_checkboxes[i].setChecked(True)
-                        
-                        # ポイントを表示
+
+                        # Display point
                         if self.point_actors[i] is None:
                             self.point_actors[i] = vtk.vtkAssembly()
                             self.create_point_coordinate(self.point_actors[i], [0, 0, 0])
@@ -3430,9 +3188,9 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     except ValueError as e:
                         print(f"Error parsing point {i+1} coordinates: {e}")
 
-            # カメラをリセット
+            # Reset camera
             self.reset_camera()
-            
+
             return has_parameters
 
         except Exception as e:
@@ -3441,43 +3199,43 @@ class MainWindow(VTKViewerBase, QMainWindow):
             return False
 
     def load_xml_file(self):
-        """XMLファイルのみを読み込み、パラメータを反映する"""
+        """Load XML file only and apply parameters"""
         try:
             xml_path, _ = QFileDialog.getOpenFileName(self, "Open XML File", "", "XML Files (*.xml)")
             if not xml_path:
                 return
 
-            # XMLファイルパスを保存
+            # Save XML file path
             self.xml_file_path = xml_path
 
-            # XMLファイルを解析
+            # Parse XML file
             tree = ET.parse(xml_path)
             root = tree.getroot()
-            
+
             print("Processing XML file...")
 
-            # XMLからパラメータを読み込む
+            # Load parameters from XML
             has_parameters = self.load_parameters_from_xml(root)
 
-            # パラメータがXMLに含まれていない場合のみ再計算を行う
+            # Recalculate only if parameters not found in XML
             if not has_parameters:
                 self.calculate_and_update_properties()
 
-            # 全てのポイントをリセット
+            # Reset all points
             print("Resetting all points...")
             for i in range(self.num_points):
-                # テキストフィールドをクリア
+                # Clear text fields
                 self.point_inputs[i][0].setText("0.000000")
                 self.point_inputs[i][1].setText("0.000000")
                 self.point_inputs[i][2].setText("0.000000")
-                
-                # 内部座標データをリセット
+
+                # Reset internal coordinate data
                 self.point_coords[i] = [0, 0, 0]
-                
-                # チェックボックスを解除
+
+                # Uncheck checkbox
                 self.point_checkboxes[i].setChecked(False)
-                
-                # 3Dビューのポイントを非表示にし、アクターを削除
+
+                # Hide 3D view points and remove actors
                 if self.point_actors[i]:
                     self.point_actors[i].VisibilityOff()
                     self.renderer.RemoveActor(self.point_actors[i])
@@ -3485,10 +3243,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
             
             print("All points have been reset")
 
-            # データが設定されたポイントを追跡
+            # Track points with data set
             points_with_data = set()
 
-            # 各ポイントの座標を読み込む
+            # Load coordinates for each point
             points = root.findall('./point')
             print(f"Found {len(points)} points in XML")
 
@@ -3496,19 +3254,19 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 xyz_element = point.find('point_xyz')
                 if xyz_element is not None and xyz_element.text:
                     try:
-                        # 座標テキストを分割して数値に変換
+                        # Split coordinate text and convert to numbers
                         x, y, z = map(float, xyz_element.text.strip().split())
                         print(f"Point {i+1}: {x}, {y}, z")
 
-                        # テキストフィールドに値を設定
+                        # Set values to text fields
                         self.point_inputs[i][0].setText(f"{x:.6f}")
                         self.point_inputs[i][1].setText(f"{y:.6f}")
                         self.point_inputs[i][2].setText(f"{z:.6f}")
-                        
-                        # 内部の座標データを更新
+
+                        # Update internal coordinate data
                         self.point_coords[i] = [x, y, z]
 
-                        # point_angleの読み込み（radian）
+                        # Load point_angle (in radians)
                         angle_element = point.find('point_angle')
                         if angle_element is not None and angle_element.text:
                             try:
@@ -3526,10 +3284,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         else:
                             self.point_angles[i] = [0.0, 0.0, 0.0]
 
-                        # チェックボックスを有効化
+                        # Enable checkbox
                         self.point_checkboxes[i].setChecked(True)
-                        
-                        # ポイントの表示を設定
+
+                        # Set point display
                         if self.point_actors[i] is None:
                             self.point_actors[i] = vtk.vtkAssembly()
                             self.create_point_coordinate(self.point_actors[i], [0, 0, 0])
@@ -3543,7 +3301,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     except Exception as e:
                         print(f"Error processing point {i+1}: {e}")
 
-            # STLモデルが読み込まれている場合のみ色を適用
+            # Apply color only if STL model is loaded
             if hasattr(self, 'stl_actor') and self.stl_actor:
                 color_element = root.find(".//material/color")
                 if color_element is not None:
@@ -3552,14 +3310,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         try:
                             r, g, b, a = map(float, rgba_str.split())
 
-                            # インプットフィールドに値を設定
+                            # Set values to input fields
                             self.color_inputs[0].setText(f"{r:.3f}")
                             self.color_inputs[1].setText(f"{g:.3f}")
                             self.color_inputs[2].setText(f"{b:.3f}")
                             if len(self.color_inputs) >= 4:
                                 self.color_inputs[3].setText(f"{a:.3f}")
 
-                            # STLモデルに色を適用
+                            # Apply color to STL model
                             self.stl_actor.GetProperty().SetColor(r, g, b)
                             self.stl_actor.GetProperty().SetOpacity(a)
                             self.render_to_image()
@@ -3569,7 +3327,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                             print(f"Warning: Invalid color format in XML: {rgba_str}")
                             print(f"Error details: {e}")
 
-            # 軸情報の処理
+            # Process axis information
             axis_element = root.find(".//axis")
             if axis_element is not None:
                 xyz_str = axis_element.get('xyz')
@@ -3585,12 +3343,12 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     except ValueError:
                         print(f"Warning: Invalid axis format in XML: {xyz_str}")
 
-            # 表示の更新
+            # Update display
             if hasattr(self, 'renderer'):
                 self.renderer.ResetCamera()
                 self.update_all_points()
 
-                # STLモデルが存在する場合、カメラをフィット
+                # Fit camera if STL model exists
                 if hasattr(self, 'stl_actor') and self.stl_actor:
                     self.fit_camera_to_model()
 
@@ -3605,13 +3363,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
             traceback.print_exc()
 
     def reload_files(self):
-        """現在読み込まれているMeshファイルとXMLファイルを再読み込みする"""
+        """Reload currently loaded Mesh and XML files"""
         try:
             print("\n" + "="*60)
             print("RELOADING FILES")
             print("="*60)
 
-            # 現在のファイルパスを保存
+            # Save current file paths
             mesh_path = getattr(self, 'stl_file_path', None)
             xml_path = getattr(self, 'xml_file_path', None)
 
@@ -3621,7 +3379,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             reload_count = 0
 
-            # Meshファイルの再読み込み
+            # Reload Mesh file
             if mesh_path and os.path.exists(mesh_path):
                 print(f"\n[1/2] Reloading mesh file: {mesh_path}")
                 self.show_stl(mesh_path)
@@ -3631,29 +3389,29 @@ class MainWindow(VTKViewerBase, QMainWindow):
             else:
                 print("No mesh file to reload")
 
-            # XMLファイルの再読み込み
+            # Reload XML file
             if xml_path and os.path.exists(xml_path):
                 print(f"\n[2/2] Reloading XML file: {xml_path}")
 
                 try:
-                    # XMLファイルを解析
+                    # Parse XML file
                     tree = ET.parse(xml_path)
                     root = tree.getroot()
 
-                    # XMLからパラメータを読み込む
+                    # Load parameters from XML
                     has_parameters = self.load_parameters_from_xml(root)
 
-                    # パラメータがXMLに含まれていない場合のみ再計算を行う
+                    # Recalculate only if parameters not found in XML
                     if not has_parameters:
                         self.calculate_and_update_properties()
 
-                    # ポイントデータを読み込む（既存のヘルパー関数を使用）
+                    # Load point data (using existing helper function)
                     points_with_data = self._load_points_from_xml(root)
 
-                    # カラー情報を適用（既存のヘルパー関数を使用）
+                    # Apply color information (using existing helper function)
                     self._apply_color_from_xml(root)
 
-                    # 表示を更新
+                    # Update display
                     self._refresh_display()
 
                     print(f"✓ XML file reloaded successfully")
@@ -3671,7 +3429,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             else:
                 print("No XML file to reload")
 
-            # 完了メッセージ
+            # Completion message
             print("\n" + "="*60)
             if reload_count > 0:
                 print(f"✓ Reload completed: {reload_count} file(s) reloaded")
@@ -3684,18 +3442,18 @@ class MainWindow(VTKViewerBase, QMainWindow):
             traceback.print_exc()
 
     def refresh_view(self):
-        """ビューの更新とカメラのフィッティングを行う"""
+        """Refresh view and fit camera"""
         if hasattr(self, 'renderer'):
             self.renderer.ResetCamera()
             self.update_all_points()
-            # STLモデルが存在する場合、カメラをフィット
+            # Fit camera if STL model exists
             if hasattr(self, 'stl_actor') and self.stl_actor:
                 self.fit_camera_to_model()
             self.renderer.ResetCameraClippingRange()
             self.render_to_image()
 
     def load_stl_with_xml(self):
-        """3Dモデルファイル（STL/OBJ/DAE）とXMLファイルを一緒に読み込む"""
+        """Load 3D model file (STL/OBJ/DAE) together with XML file"""
         try:
             # Use common utility function for file filter
             file_filter = get_mesh_file_filter(trimesh_available=True)
@@ -3703,39 +3461,39 @@ class MainWindow(VTKViewerBase, QMainWindow):
             if not stl_path:
                 return
 
-            # 3Dモデルファイルを読み込む
+            # Load 3D model file
             self.show_stl(stl_path)
 
-            # 対応するXMLファイルのパスを生成
+            # Generate corresponding XML file path
             xml_path = os.path.splitext(stl_path)[0] + '.xml'
 
             if not os.path.exists(xml_path):
                 print(f"Corresponding XML file not found: {xml_path}")
                 return
 
-            # XMLファイルを解析
+            # Parse XML file
             try:
                 tree = ET.parse(xml_path)
                 root = tree.getroot()
-                
-                # XMLからパラメータを読み込む
+
+                # Load parameters from XML
                 has_parameters = self.load_parameters_from_xml(root)
-                
-                # パラメータがXMLに含まれていない場合のみ再計算を行う
+
+                # Recalculate only if parameters not found in XML
                 if not has_parameters:
                     self.calculate_and_update_properties()
-                    
-                # ポイントデータを読み込む
+
+                # Load point data
                 points_with_data = self._load_points_from_xml(root)
-                
+
                 print(f"XML file loaded: {xml_path}")
                 if points_with_data:
                     print(f"Loaded {len(points_with_data)} points")
-                
-                # 表示を更新
+
+                # Update display
                 self.refresh_view()
 
-                # カメラをリセット（Rキーと同等の処理）
+                # Reset camera (same as R key)
                 self.reset_camera()
 
             except ET.ParseError:
@@ -3750,14 +3508,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
     def bulk_convert_l_to_r(self):
         """
-        フォルダ内の'l_'または'L_'で始まるSTL/OBJ/DAEファイルを処理し、
-        XZ平面を中心とした左右対称の'r_'または'R_'ファイルとXMLを生成する。
-        既存のファイルは上書きする。
+        Process STL/OBJ/DAE files starting with 'l_' or 'L_' in folder,
+        generate left-right symmetric 'r_' or 'R_' files and XML centered on XZ plane.
+        Existing files will be overwritten.
         """
         try:
             import re
 
-            # フォルダ選択ダイアログを表示
+            # Show folder selection dialog
             folder_path = QFileDialog.getExistingDirectory(
                 self, "Select Folder for Bulk Conversion")
             if not folder_path:
@@ -3765,17 +3523,17 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             print(f"Selected folder: {folder_path}")
 
-            # 処理したファイルの数を追跡
+            # Track number of processed files
             processed_count = 0
             collider_count = 0
-            # 生成されたファイルのリストを保存
+            # Save list of generated files
             generated_files = []
 
-            # l_*_collider パターン（l_で始まり_collider.拡張子で終わる）
-            # 例: l_hipjoint_upper_collider.stl, l_elbow_collider.dae
+            # l_*_collider pattern (starts with l_ and ends with _collider.extension)
+            # Example: l_hipjoint_upper_collider.stl, l_elbow_collider.dae
             collider_pattern = re.compile(r'^l_.+_collider\.(stl|obj|dae)$', re.IGNORECASE)
 
-            # フォルダ内のすべてのSTL/OBJ/DAEファイルを検索
+            # Search all STL/OBJ/DAE files in folder
             print("\n=== Searching for l_ prefix files ===")
             print("Collider pattern: l_*_collider.(stl|obj|dae)")
             print("Examples: l_hipjoint_upper_collider.stl, l_elbow_collider.dae")
@@ -3783,14 +3541,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             for file_name in os.listdir(folder_path):
                 if file_name.lower().startswith(('l_', 'L_')) and file_name.lower().endswith(('.stl', '.obj', '.dae')):
-                    # コライダーファイルかどうかを判定
+                    # Determine if this is a collider file
                     is_collider = collider_pattern.match(file_name.lower())
                     file_type = "COLLIDER" if is_collider else "mesh"
 
                     print(f"✓ Found {file_type}: {file_name}")
                     stl_path = os.path.join(folder_path, file_name)
 
-                    # 新しいファイル名を生成（l_ を r_ に変換）
+                    # Generate new filename (convert l_ to r_)
                     new_name = 'R_' + file_name[2:] if file_name.startswith('L_') else 'r_' + file_name[2:]
                     new_name_without_ext = os.path.splitext(new_name)[0]
                     new_stl_path = os.path.join(folder_path, new_name)
@@ -3799,10 +3557,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     print(f"  → Mesh: {new_name}")
                     print(f"  → XML:  {os.path.basename(new_xml_path)}")
                     if is_collider:
-                        # コライダーの場合、XMLファイル名のパターンを明示
+                        # For collider, explicitly show XML filename pattern
                         print(f"  → Pattern match: r_.*_collider.xml ✓")
 
-                    # 既存ファイルがある場合は上書き
+                    # Overwrite if existing files exist
                     if os.path.exists(new_stl_path) or os.path.exists(new_xml_path):
                         print(f"  ⚠ Overwriting existing files")
 
@@ -3812,17 +3570,17 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         # Use common utility function to load mesh
                         poly_data, volume_unused, extracted_color = load_mesh_to_polydata(stl_path)
 
-                        # Y軸反転の変換を設定
+                        # Set Y-axis flip transform
                         transform = vtk.vtkTransform()
                         transform.Scale(1, -1, 1)
 
-                        # 頂点を変換
+                        # Transform vertices
                         transformer = vtk.vtkTransformPolyDataFilter()
                         transformer.SetInputData(poly_data)
                         transformer.SetTransform(transform)
                         transformer.Update()
 
-                        # 法線の修正
+                        # Fix normals
                         normal_generator = vtk.vtkPolyDataNormals()
                         normal_generator.SetInputData(transformer.GetOutput())
                         normal_generator.ConsistencyOn()
@@ -3831,7 +3589,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         normal_generator.ComputePointNormalsOn()
                         normal_generator.Update()
 
-                        # 対応するXMLファイルを探す
+                        # Search for corresponding XML file
                         xml_path = os.path.splitext(stl_path)[0] + '.xml'
                         xml_data = None
                         mass_value_str = "0.0"
@@ -3847,29 +3605,29 @@ class MainWindow(VTKViewerBase, QMainWindow):
                                 xml_data = tree.getroot()
                                 print(f"Found and loaded XML file: {xml_path}")
 
-                                # XMLから物理パラメータを取得（元のフォーマットを保持）
+                                # Get physical parameters from XML (preserve original format)
                                 mass_element = xml_data.find(".//mass")
                                 mass_value_str = mass_element.get('value') if mass_element is not None else "0.0"
-                                mass = float(mass_value_str)  # 計算用
-                                
+                                mass = float(mass_value_str)  # For calculation
+
                                 volume_element = xml_data.find(".//volume")
                                 volume_value_str = volume_element.get('value') if volume_element is not None else "0.0"
-                                volume = float(volume_value_str)  # 計算用
-                                
-                                # 重心位置を取得（center_of_mass要素から）
+                                volume = float(volume_value_str)  # For calculation
+
+                                # Get center of mass position (from center_of_mass element)
                                 com_element = xml_data.find(".//center_of_mass")
                                 if com_element is not None and com_element.text:
                                     x, y, z = map(float, com_element.text.strip().split())
-                                    center_of_mass = [x, -y, z]  # Y座標のみを反転
+                                    center_of_mass = [x, -y, z]  # Flip Y coordinate only
                                 else:
-                                    # inertialのorigin要素から取得
+                                    # Get from inertial origin element
                                     inertial_origin = xml_data.find(".//inertial/origin")
                                     if inertial_origin is not None:
                                         xyz = inertial_origin.get('xyz')
                                         x, y, z = map(float, xyz.split())
-                                        center_of_mass = [x, -y, z]  # Y座標のみを反転
+                                        center_of_mass = [x, -y, z]  # Flip Y coordinate only
 
-                                # 色情報を取得
+                                # Get color information
                                 color_element = xml_data.find(".//material/color")
                                 if color_element is not None:
                                     rgba_str = color_element.get('rgba')
@@ -3885,31 +3643,31 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         # Use common utility function to save mesh
                         save_polydata_to_mesh(new_stl_path, normal_generator.GetOutput())
 
-                        # イナーシャテンソルを取得してミラーリング変換
+                        # Get inertia tensor and apply mirror transformation
                         inertia_element = None
                         if xml_data is not None:
                             inertia_element = xml_data.find(".//inertia")
-                        
+
                         if inertia_element is not None:
-                            # 元のXMLからイナーシャテンソルを取得してミラーリング変換
+                            # Get inertia tensor from original XML and apply mirror transformation
                             ixx = float(inertia_element.get('ixx', 0))
                             iyy = float(inertia_element.get('iyy', 0))
                             izz = float(inertia_element.get('izz', 0))
                             ixy = float(inertia_element.get('ixy', 0))
                             ixz = float(inertia_element.get('ixz', 0))
                             iyz = float(inertia_element.get('iyz', 0))
-                            # Y軸ミラーの場合、ixyとiyzの符号を反転
+                            # For Y-axis mirror, flip sign of ixy and iyz
                             inertia_str = f'ixx="{ixx:.12f}" ixy="{-ixy:.12f}" ixz="{ixz:.12f}" iyy="{iyy:.12f}" iyz="{-iyz:.12f}" izz="{izz:.12f}"'
                         else:
-                            # 元のXMLにイナーシャ情報がない場合、メッシュから計算
+                            # If original XML has no inertia data, calculate from mesh
                             print("Warning: No inertia data in XML, calculating from mesh...")
                             inertia_tensor = self.calculate_inertia_tensor_for_mirrored(
                                 normal_generator.GetOutput(), mass, center_of_mass)
-                            # format_inertia_for_urdfの戻り値から<inertia と/>を削除
+                            # Remove <inertia and /> from format_inertia_for_urdf return value
                             inertia_formatted = self.format_inertia_for_urdf(inertia_tensor)
                             inertia_str = inertia_formatted.replace('<inertia ', '').replace('/>', '').strip()
 
-                        # XMLファイルの内容を生成
+                        # Generate XML file content
                         urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <urdf_part>
     <material name="{hex_color}">
@@ -3929,7 +3687,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         <center_of_mass>{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}</center_of_mass>
     </link>"""
 
-                        # ポイントデータを反転してコピー
+                        # Flip and copy point data
                         if xml_data is not None:
                             points = xml_data.findall('.//point')
                             for point in points:
@@ -3937,22 +3695,22 @@ class MainWindow(VTKViewerBase, QMainWindow):
                                 if xyz_element is not None and xyz_element.text:
                                     try:
                                         x, y, z = map(float, xyz_element.text.strip().split())
-                                        mirrored_y = -y  # Y座標のみ反転
+                                        mirrored_y = -y  # Flip Y coordinate only
                                         point_name = point.get('name')
 
-                                        # point_angleの処理（Y軸ミラーリング時の回転変換）
+                                        # Process point_angle (rotation transform for Y-axis mirror)
                                         angle_element = point.find('point_angle')
                                         point_angle_str = ""
                                         if angle_element is not None and angle_element.text:
                                             try:
                                                 angle_x, angle_y, angle_z = map(float, angle_element.text.strip().split())
-                                                # Y軸ミラーの場合、X軸とZ軸の回転を符号反転
+                                                # For Y-axis mirror, flip sign of X and Z axis rotations
                                                 mirrored_angle_x = -angle_x
                                                 mirrored_angle_y = angle_y
                                                 mirrored_angle_z = -angle_z
                                                 point_angle_str = f"\n        <point_angle>{mirrored_angle_x:.6f} {mirrored_angle_y:.6f} {mirrored_angle_z:.6f}</point_angle>"
                                             except ValueError:
-                                                pass  # point_angleが不正な場合は無視
+                                                pass  # Ignore if point_angle is invalid
 
                                         urdf_content += f"""
     <point name="{point_name}" type="fixed">
@@ -3961,7 +3719,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                                     except ValueError:
                                         print(f"Error processing point coordinates in XML")
 
-                        # 軸情報を取得して適用
+                        # Get and apply axis information
                         if xml_data is not None:
                             axis_element = xml_data.find('.//joint/axis')
                             if axis_element is not None:
@@ -3978,14 +3736,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
     </joint>
 </urdf_part>"""
 
-                        # XMLファイルを保存
+                        # Save XML file
                         with open(new_xml_path, "w") as f:
                             f.write(urdf_content)
 
                         processed_count += 1
                         if is_collider:
                             collider_count += 1
-                        # 生成されたファイルをリストに追加
+                        # Add generated files to list
                         generated_files.append({
                             'mesh': new_stl_path,
                             'xml': new_xml_path
@@ -4003,7 +3761,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             xml_collider_pattern = re.compile(r'^l_.+_collider\.xml$', re.IGNORECASE)
             xml_only_count = 0
 
-            # すでに処理されたXMLのリスト（メッシュと一緒に処理されたもの）
+            # List of already processed XMLs (processed with mesh)
             processed_xml_names = set()
             for item in generated_files:
                 if 'xml' in item:
@@ -4011,10 +3769,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             for file_name in os.listdir(folder_path):
                 if xml_collider_pattern.match(file_name.lower()):
-                    # 既にメッシュと一緒に処理されていないかチェック
+                    # Check if already processed with mesh
                     output_xml_name = 'R_' + file_name[2:] if file_name.startswith('L_') else 'r_' + file_name[2:]
                     if output_xml_name in processed_xml_names:
-                        continue  # 既に処理済み
+                        continue  # Already processed
 
                     xml_path = os.path.join(folder_path, file_name)
                     new_xml_name = output_xml_name
@@ -4024,24 +3782,24 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     print(f"  → Will create: {new_xml_name}")
 
                     try:
-                        # XMLファイルを読み込み
+                        # Load XML file
                         tree = ET.parse(xml_path)
                         xml_data = tree.getroot()
 
-                        # 物理パラメータを取得
+                        # Get physical parameters
                         mass_element = xml_data.find(".//mass")
                         volume_element = xml_data.find(".//volume")
 
                         mass = float(mass_element.get('value')) if mass_element is not None else 1.0
                         volume = float(volume_element.get('value')) if volume_element is not None else 1.0
 
-                        # 重心位置を取得して反転
+                        # Get center of mass position and flip
                         com_element = xml_data.find(".//center_of_mass")
                         if com_element is not None and com_element.text:
                             x, y, z = map(float, com_element.text.strip().split())
-                            center_of_mass = [x, -y, z]  # Y座標のみ反転
+                            center_of_mass = [x, -y, z]  # Flip Y coordinate only
                         else:
-                            # inertialのorigin要素から取得
+                            # Get from inertial origin element
                             inertial_origin = xml_data.find(".//inertial/origin")
                             if inertial_origin is not None:
                                 xyz = inertial_origin.get('xyz')
@@ -4050,7 +3808,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                             else:
                                 center_of_mass = [0, 0, 0]
 
-                        # 色情報を取得
+                        # Get color information
                         color_element = xml_data.find(".//material/color")
                         if color_element is not None:
                             rgba_str = color_element.get('rgba')
@@ -4059,7 +3817,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                             rgba_str = "1.0 1.0 1.0 1.0"
                             hex_color = "#FFFFFF"
 
-                        # イナーシャテンソルを取得して反転
+                        # Get inertia tensor and flip
                         inertia_element = xml_data.find(".//inertia")
                         if inertia_element is not None:
                             ixx = float(inertia_element.get('ixx', 0))
@@ -4068,15 +3826,15 @@ class MainWindow(VTKViewerBase, QMainWindow):
                             ixy = float(inertia_element.get('ixy', 0))
                             ixz = float(inertia_element.get('ixz', 0))
                             iyz = float(inertia_element.get('iyz', 0))
-                            # Y軸ミラーの場合、ixyとiyzの符号を反転
+                            # For Y-axis mirror, flip sign of ixy and iyz
                             inertia_str = f'ixx="{ixx:.12f}" ixy="{-ixy:.12f}" ixz="{ixz:.12f}" iyy="{iyy:.12f}" iyz="{-iyz:.12f}" izz="{izz:.12f}"'
                         else:
                             inertia_str = 'ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"'
 
-                        # リンク名を生成
+                        # Generate link name
                         base_name = os.path.splitext(new_xml_name)[0]
 
-                        # XMLファイルの内容を生成
+                        # Generate XML file content
                         urdf_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <urdf_part>
     <material name="{hex_color}">
@@ -4096,14 +3854,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
         <center_of_mass>{center_of_mass[0]:.6f} {center_of_mass[1]:.6f} {center_of_mass[2]:.6f}</center_of_mass>
     </link>"""
 
-                        # ポイントデータを反転してコピー
+                        # Flip and copy point data
                         points = xml_data.findall('.//point')
                         for point in points:
                             xyz_element = point.find('point_xyz')
                             if xyz_element is not None and xyz_element.text:
                                 try:
                                     x, y, z = map(float, xyz_element.text.strip().split())
-                                    mirrored_y = -y  # Y座標のみ反転
+                                    mirrored_y = -y  # Flip Y coordinate only
                                     point_name = point.get('name')
                                     urdf_content += f"""
     <point name="{point_name}" type="fixed">
@@ -4112,7 +3870,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                                 except ValueError:
                                     print(f"Error processing point coordinates in XML")
 
-                        # 軸情報を取得して適用
+                        # Get and apply axis information
                         axis_element = xml_data.find('.//joint/axis')
                         if axis_element is not None:
                             axis_str = axis_element.get('xyz')
@@ -4126,7 +3884,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
     </joint>
 </urdf_part>"""
 
-                        # XMLファイルを保存
+                        # Save XML file
                         with open(new_xml_path, "w") as f:
                             f.write(urdf_content)
 
@@ -4157,7 +3915,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     print(f"  → Will create: {new_collider_xml_name}")
 
                     try:
-                        # コライダーXMLファイルを読み込み
+                        # Load collider XML file
                         tree = ET.parse(collider_xml_path)
                         root = tree.getroot()
 
@@ -4170,36 +3928,36 @@ class MainWindow(VTKViewerBase, QMainWindow):
                             print(f"  ⚠ Warning: No collider element found, skipping")
                             continue
 
-                        # コライダータイプを取得
+                        # Get collider type
                         collider_type = collider_elem.get('type', 'box')
 
-                        # ジオメトリ情報を取得
+                        # Get geometry information
                         geometry_elem = collider_elem.find('geometry')
                         geometry_attrs = {}
                         if geometry_elem is not None:
                             geometry_attrs = dict(geometry_elem.attrib)
 
-                        # 位置情報を取得してxz平面で反転（y座標を反転）
+                        # Get position and flip on XZ plane (flip Y coordinate)
                         position_elem = collider_elem.find('position')
                         if position_elem is not None:
                             x = float(position_elem.get('x', '0.0'))
                             y = float(position_elem.get('y', '0.0'))
                             z = float(position_elem.get('z', '0.0'))
-                            mirrored_y = -y  # Y座標を反転
+                            mirrored_y = -y  # Flip Y coordinate
                         else:
                             x, y, z = 0.0, 0.0, 0.0
                             mirrored_y = 0.0
 
-                        # 回転情報を取得してxz平面で反転
-                        # xz平面で反転する場合、rollとyawはそのまま、pitchは反転
+                        # Get rotation and flip on XZ plane
+                        # For XZ plane flip, keep roll and yaw, flip pitch
                         rotation_elem = collider_elem.find('rotation')
                         if rotation_elem is not None:
                             roll = float(rotation_elem.get('roll', '0.0'))
                             pitch = float(rotation_elem.get('pitch', '0.0'))
                             yaw = float(rotation_elem.get('yaw', '0.0'))
-                            # RollとYawを反転、Pitchはそのまま
+                            # Flip Roll and Yaw, keep Pitch
                             mirrored_roll = -roll
-                            mirrored_pitch = pitch  # Pitchは反転しない
+                            mirrored_pitch = pitch  # Don't flip Pitch
                             mirrored_yaw = -yaw
                         else:
                             roll, pitch, yaw = 0.0, 0.0, 0.0
@@ -4207,31 +3965,31 @@ class MainWindow(VTKViewerBase, QMainWindow):
                             mirrored_pitch = 0.0
                             mirrored_yaw = 0.0
 
-                        # 新しいコライダーXMLファイルを作成
+                        # Create new collider XML file
                         new_root = ET.Element('urdf_kitchen_collider')
                         new_collider_elem = ET.SubElement(new_root, 'collider')
                         new_collider_elem.set('type', collider_type)
 
-                        # ジオメトリ要素を追加
+                        # Add geometry element
                         if geometry_attrs:
                             new_geometry_elem = ET.SubElement(new_collider_elem, 'geometry')
                             for key, value in geometry_attrs.items():
                                 new_geometry_elem.set(key, value)
 
-                        # 位置要素を追加（y座標を反転）
+                        # Add position element (flip Y coordinate)
                         new_position_elem = ET.SubElement(new_collider_elem, 'position')
                         new_position_elem.set('x', f"{x:.6f}")
                         new_position_elem.set('y', f"{mirrored_y:.6f}")
                         new_position_elem.set('z', f"{z:.6f}")
 
-                        # 回転要素を追加（RollとYawを反転、Pitchはそのまま）
+                        # Add rotation element (flip Roll and Yaw, keep Pitch)
                         new_rotation_elem = ET.SubElement(new_collider_elem, 'rotation')
                         new_rotation_elem.set('roll', f"{mirrored_roll:.6f}")
                         new_rotation_elem.set('pitch', f"{mirrored_pitch:.6f}")
                         new_rotation_elem.set('yaw', f"{mirrored_yaw:.6f}")
                         print(f"  Mirrored rotation: Roll={roll:.4f}->{mirrored_roll:.4f}, Pitch={pitch:.4f}->{mirrored_pitch:.4f}, Yaw={yaw:.4f}->{mirrored_yaw:.4f}")
 
-                        # XMLファイルを保存
+                        # Save XML file
                         new_tree = ET.ElementTree(new_root)
                         ET.indent(new_tree, space="    ")
                         new_tree.write(new_collider_xml_path, encoding='utf-8', xml_declaration=True)
@@ -4248,7 +4006,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         traceback.print_exc()
                         continue
 
-            # 処理完了メッセージ
+            # Processing complete message
             total_processed = processed_count + xml_only_count + collider_xml_count
             if total_processed > 0:
                 regular_count = processed_count - collider_count
@@ -4261,7 +4019,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 if collider_xml_count > 0:
                     print(f"  - Collider XML files (l_*_collider.xml): {collider_xml_count} files")
                 print(f"All files mirrored across XZ plane (Y-axis flip)")
-                # ダイアログボックスで生成されたファイルのリストを表示
+                # Show generated file list in dialog box
                 dialog = BulkConversionCompleteDialog(generated_files, folder_path, self)
                 dialog.exec()
             else:
@@ -4276,70 +4034,108 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
     def mirror_axis_value(self, axis_str):
         """
-        軸情報を左右反転する際の処理
-        回転軸の向きは左右で変更しない
-        
+        Process axis information for left-right mirroring
+        Rotation axis direction is not changed for mirroring
+
         Args:
-            axis_str (str): "x y z" 形式の軸情報
-        
+            axis_str (str): axis information in "x y z" format
+
         Returns:
-            str: 変換後の軸情報
+            str: transformed axis information
         """
         try:
             x, y, z = map(float, axis_str.split())
-            # 軸の向きは変更せずにそのまま返す
+            # Return as-is without changing axis direction
             return f"{x:.1f} {y:.1f} {z:.1f}"
         except ValueError:
             print(f"Error parsing axis values: {axis_str}")
-            return "1 0 0"  # デフォルト値
+            return "1 0 0"  # Default value
 
 
     def start_rotation_test(self):
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
             return
-            
-        # 現在の変換行列を保存
+
         self.original_transform = vtk.vtkTransform()
-        self.original_transform.DeepCopy(self.stl_actor.GetUserTransform() 
-                                    if self.stl_actor.GetUserTransform() 
+        self.original_transform.DeepCopy(self.stl_actor.GetUserTransform()
+                                    if self.stl_actor.GetUserTransform()
                                     else vtk.vtkTransform())
-        
+
+        # Save original positions for 3D view rotation
+        self.original_point_positions = []
+        for i in range(self.num_points):
+            if self.point_actors[i]:
+                self.original_point_positions.append(list(self.point_actors[i].GetPosition()))
+            else:
+                self.original_point_positions.append(list(self.point_coords[i]))
+        self.original_com_position = list(self.com_coords)
+
         self.test_rotation_angle = 0
-        self.rotation_timer.start(16)  # 約60FPS
+        self.rotation_timer.start(16)
 
     def stop_rotation_test(self):
         self.rotation_timer.stop()
-        
-        # 元の位置に戻す
+
         if self.stl_actor and self.original_transform:
             self.stl_actor.SetUserTransform(self.original_transform)
-            self.render_to_image()
+
+        # Restore original positions (3D view only, input fields unchanged)
+        if hasattr(self, 'original_point_positions'):
+            for i in range(self.num_points):
+                if self.point_actors[i] and i < len(self.original_point_positions):
+                    self.point_actors[i].SetPosition(self.original_point_positions[i])
+        if hasattr(self, 'original_com_position'):
+            if self.com_sphere_actor:
+                self.com_sphere_actor.SetPosition(self.original_com_position)
+            if self.com_cursor_actor:
+                self.com_cursor_actor.SetPosition(self.original_com_position)
+
+        self.render_to_image()
 
     def update_test_rotation(self):
         if not self.stl_actor:
             return
-                
-        # 選択された軸を確認
+
         axis_index = self.axis_group.checkedId()
-        
-        # fixedが選択されている場合（axis_index == 3）は何もしない
-        if axis_index == 3:
+        if axis_index == 3:  # Fixed axis selected
             return
-                
-        # 以下は従来の処理
+
         rotation_axis = [0, 0, 0]
         rotation_axis[axis_index] = 1
-        
-        # 回転角度を更新
-        self.test_rotation_angle += 2  # 1フレームあたり2度回転
-        
-        # 回転変換を作成
+        self.test_rotation_angle += 2
+
         transform = vtk.vtkTransform()
         transform.DeepCopy(self.original_transform)
         transform.RotateWXYZ(self.test_rotation_angle, *rotation_axis)
-        
-        # 変換を適用
         self.stl_actor.SetUserTransform(transform)
+
+        # Apply rotation to points and Center of Mass (3D view only)
+        angle_rad = math.radians(self.test_rotation_angle)
+        cos_a = math.cos(angle_rad)
+        sin_a = math.sin(angle_rad)
+
+        def rotate_point(pos, axis_idx):
+            x, y, z = pos
+            if axis_idx == 0:
+                return [x, y * cos_a - z * sin_a, y * sin_a + z * cos_a]
+            elif axis_idx == 1:
+                return [x * cos_a + z * sin_a, y, -x * sin_a + z * cos_a]
+            else:
+                return [x * cos_a - y * sin_a, x * sin_a + y * cos_a, z]
+
+        if hasattr(self, 'original_point_positions'):
+            for i in range(self.num_points):
+                if self.point_actors[i] and i < len(self.original_point_positions):
+                    rotated_pos = rotate_point(self.original_point_positions[i], axis_index)
+                    self.point_actors[i].SetPosition(rotated_pos)
+
+        if hasattr(self, 'original_com_position'):
+            rotated_com = rotate_point(self.original_com_position, axis_index)
+            if self.com_sphere_actor:
+                self.com_sphere_actor.SetPosition(rotated_com)
+            if self.com_cursor_actor:
+                self.com_cursor_actor.SetPosition(rotated_com)
+
         self.render_to_image()
 
     def _on_color_changed(self, rgba_color):
@@ -4353,33 +4149,33 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.apply_color_to_stl()
 
     def apply_color_to_stl(self):
-        """選択された色を3Dモデルに適用（RGBA対応）"""
+        """Apply selected color to 3D model (RGBA supported)"""
         if not hasattr(self, 'stl_actor') or not self.stl_actor:
             print("No 3D model has been loaded.")
             return
 
         try:
-            # RGBA値を取得（0-1の範囲）
+            # Get RGBA values (0-1 range)
             rgba_values = [float(input.text()) for input in self.color_inputs]
 
-            # 値の範囲チェック
+            # Range check for values
             rgba_values = [max(0.0, min(1.0, value)) for value in rgba_values]
 
-            # メッシュカラーとして保存（RGBA形式）
+            # Save as mesh color (RGBA format)
             if len(rgba_values) == 3:
-                # RGBのみの場合、Alpha=1.0を追加
+                # RGB only case, add Alpha=1.0
                 self.mesh_color = rgba_values + [1.0]
             else:
-                # RGBAの場合、そのまま保存
+                # RGBA case, save as-is
                 self.mesh_color = rgba_values
 
-            # 色が手動で変更されたことをマーク
+            # Mark that color was manually changed
             self.color_manually_changed = True
 
-            # STLモデルの色を変更（RGB）
+            # Change STL model color (RGB)
             self.stl_actor.GetProperty().SetColor(*rgba_values[:3])
 
-            # 透明度を設定（Alpha）
+            # Set opacity (Alpha)
             if len(rgba_values) >= 4:
                 self.stl_actor.GetProperty().SetOpacity(rgba_values[3])
                 print(f"Applied color: RGBA({rgba_values[0]:.3f}, {rgba_values[1]:.3f}, "
@@ -4396,15 +4192,15 @@ class MainWindow(VTKViewerBase, QMainWindow):
             print(f"Error applying color: {str(e)}")
 
     def add_axes_widget(self):
-        """座標軸を表示するウィジェットを追加（オフスクリーンレンダリングモードでは無効）"""
+        """Add axes widget (disabled in offscreen rendering mode)"""
         # Note: vtkOrientationMarkerWidget requires an interactor,
         # which is not available in offscreen rendering mode
         # Return None to maintain compatibility
         return None
 
     def add_instruction_text(self):
-        """画面上に操作説明を表示"""
-        # 左上のテキスト
+        """Display instruction text on screen"""
+        # Top-left text
         text_actor_top = vtk.vtkTextActor()
         text_actor_top.SetInput(
             "[W/S]: Up/Down Rotate\n"
@@ -4416,14 +4212,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
             "[Shift + Drag]: Move View\n"
         )
         text_actor_top.GetTextProperty().SetFontSize(14)
-        text_actor_top.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # 水色
+        text_actor_top.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # Cyan
         text_actor_top.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
-        text_actor_top.SetPosition(0.03, 0.97)  # 左上に配置
+        text_actor_top.SetPosition(0.03, 0.97)  # Position at top-left
         text_actor_top.GetTextProperty().SetJustificationToLeft()
         text_actor_top.GetTextProperty().SetVerticalJustificationToTop()
         self.renderer.AddActor(text_actor_top)
 
-        # 左下のテキスト
+        # Bottom-left text
         text_actor_bottom = vtk.vtkTextActor()
         text_actor_bottom.SetInput(
             "[Arrows] : Move Point 10mm\n"
@@ -4431,29 +4227,29 @@ class MainWindow(VTKViewerBase, QMainWindow):
             "  +[Ctrl]: Move Point 0.1mm\n\n"
         )
         text_actor_bottom.GetTextProperty().SetFontSize(14)
-        text_actor_bottom.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # 水色
+        text_actor_bottom.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # Cyan
         text_actor_bottom.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
-        text_actor_bottom.SetPosition(0.03, 0.03)  # 左下に配置
+        text_actor_bottom.SetPosition(0.03, 0.03)  # Position at bottom-left
         text_actor_bottom.GetTextProperty().SetJustificationToLeft()
         text_actor_bottom.GetTextProperty().SetVerticalJustificationToBottom()
         self.renderer.AddActor(text_actor_bottom)
 
     def process_mirror_properties(self, xml_data, reverse_output, density=1.0):
         """
-        ミラーリングされたモデルの物理プロパティを処理する
+        Process physical properties for mirrored model
         Args:
-            xml_data: 元のXMLデータ
-            reverse_output: 反転後のvtkPolyData
-            density: デフォルトの密度（元のXMLに質量情報がない場合に使用）
+            xml_data: original XML data
+            reverse_output: vtkPolyData after mirroring
+            density: default density (used when original XML has no mass info)
         Returns:
             tuple: (volume, mass, center_of_mass, inertia_tensor)
         """
-        # 体積を計算（新しいジオメトリから）
+        # Calculate volume (from new geometry)
         mass_properties = vtk.vtkMassProperties()
         mass_properties.SetInputData(reverse_output)
         volume = mass_properties.GetVolume()
 
-        # 質量を元のXMLから取得（ない場合は体積×密度で計算）
+        # Get mass from original XML (calculate as volume * density if not found)
         if xml_data is not None:
             mass_element = xml_data.find(".//mass")
             if mass_element is not None:
@@ -4463,24 +4259,24 @@ class MainWindow(VTKViewerBase, QMainWindow):
         else:
             mass = volume * density
 
-        # 重心を計算
+        # Calculate center of mass
         com_filter = vtk.vtkCenterOfMass()
         com_filter.SetInputData(reverse_output)
         com_filter.SetUseScalarsAsWeights(False)
         com_filter.Update()
         center_of_mass = list(com_filter.GetCenter())
-        
-        # Y座標のみを反転
+
+        # Flip Y coordinate only
         center_of_mass[1] = -center_of_mass[1]
 
-        # 慣性テンソルを計算（質量を考慮）
+        # Calculate inertia tensor (considering mass)
         inertia_tensor = np.zeros((3, 3))
         poly_data = reverse_output
         num_cells = poly_data.GetNumberOfCells()
 
-        # 実際の質量を使用して慣性テンソルを計算
-        density_for_inertia = mass / volume  # 実際の質量から密度を逆算
-        
+        # Calculate inertia tensor using actual mass
+        density_for_inertia = mass / volume  # Back-calculate density from actual mass
+
         for i in range(num_cells):
             cell = poly_data.GetCell(i)
             if cell.GetCellType() == vtk.VTK_TRIANGLE:
@@ -4489,7 +4285,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 r = centroid - np.array(center_of_mass)
                 area = 0.5 * np.linalg.norm(np.cross(p2 - p1, p3 - p1))
 
-                # 慣性テンソルの計算
+                # Inertia tensor calculation
                 inertia_tensor[0, 0] += area * (r[1]**2 + r[2]**2)
                 inertia_tensor[1, 1] += area * (r[0]**2 + r[2]**2)
                 inertia_tensor[2, 2] += area * (r[0]**2 + r[1]**2)
@@ -4497,12 +4293,12 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 inertia_tensor[0, 2] -= area * r[0] * r[2]
                 inertia_tensor[1, 2] -= area * r[1] * r[2]
 
-        # 対称性を利用して下三角を埋める
+        # Fill lower triangle using symmetry
         inertia_tensor[1, 0] = inertia_tensor[0, 1]
         inertia_tensor[2, 0] = inertia_tensor[0, 2]
         inertia_tensor[2, 1] = inertia_tensor[1, 2]
 
-        # 実際の質量に基づいて慣性テンソルをスケーリング
+        # Scale inertia tensor based on actual mass
         inertia_tensor *= density_for_inertia
 
         return volume, mass, center_of_mass, inertia_tensor
@@ -4686,37 +4482,37 @@ class ResultDialog(QDialog):
         self.setWindowTitle("Export Complete")
         self.setModal(True)
 
-        # ウィンドウサイズを大きく設定
-        self.resize(400, 250)  # 幅を600に、高さを200に増加
+        # Set larger window size
+        self.resize(400, 250)  # Increase width to 600, height to 200
 
-        # レイアウトを作成
+        # Create layout
         layout = QVBoxLayout()
-        layout.setSpacing(10)  # ウィジェット間の間隔を設定
+        layout.setSpacing(10)  # Set spacing between widgets
 
-        # メッセージラベルを作成
+        # Create message label
         title_label = QLabel("Following files have been saved:")
         title_label.setStyleSheet("font-weight: bold;")
         layout.addWidget(title_label)
 
-        # 3Dモデルファイルパスを表示
+        # Display 3D model file path
         stl_label = QLabel(f"Mesh: {stl_path}")
-        stl_label.setWordWrap(True)  # 長いパスの折り返しを有効化
+        stl_label.setWordWrap(True)  # Enable word wrap for long paths
         layout.addWidget(stl_label)
 
-        # XMLファイルパスを表示
+        # Display XML file path
         xml_label = QLabel(f"XML: {xml_path}")
-        xml_label.setWordWrap(True)  # 長いパスの折り返しを有効化
+        xml_label.setWordWrap(True)  # Enable word wrap for long paths
         layout.addWidget(xml_label)
 
-        # スペーサーを追加
+        # Add spacer
         layout.addSpacing(20)
 
-        # Closeボタンを作成
+        # Create Close button
         close_button = QPushButton("Close")
         close_button.clicked.connect(self.accept)
         close_button.setFixedWidth(100)
 
-        # ボタンを中央に配置するための水平レイアウト
+        # Horizontal layout to center the button
         button_layout = QHBoxLayout()
         button_layout.addStretch()
         button_layout.addWidget(close_button)
@@ -4726,33 +4522,33 @@ class ResultDialog(QDialog):
 
         self.setLayout(layout)
 
-        # Enterキーでダイアログを閉じられるようにする
+        # Allow closing dialog with Enter key
         close_button.setDefault(True)
 
 class BulkConversionCompleteDialog(QDialog):
-    """Batch Mirror処理完了後に生成されたファイルのリストを表示するダイアログ"""
+    """Dialog to display list of generated files after Batch Mirror processing"""
     def __init__(self, generated_files: list, folder_path: str, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Batch Conversion Complete")
         self.setModal(True)
 
-        # ウィンドウサイズを設定
+        # Set window size
         self.resize(600, 400)
 
-        # レイアウトを作成
+        # Create layout
         layout = QVBoxLayout()
         layout.setSpacing(10)
 
-        # ファイルタイプごとのカウント
+        # Count by file type
         mesh_count = sum(1 for f in generated_files if f['mesh'] is not None)
         xml_only_count = sum(1 for f in generated_files if f['mesh'] is None)
 
-        # メッセージラベルを作成
+        # Create message label
         title_label = QLabel(f"✓ Batch Conversion Complete!")
         title_label.setStyleSheet("font-weight: bold; font-size: 14pt; color: #2ecc71;")
         layout.addWidget(title_label)
 
-        # 統計情報を表示
+        # Display statistics
         stats_text = f"Total: {len(generated_files)} pair(s) created"
         if mesh_count > 0:
             stats_text += f"\n  • Mesh files: {mesh_count}"
@@ -4764,51 +4560,51 @@ class BulkConversionCompleteDialog(QDialog):
         stats_label.setStyleSheet("font-size: 11pt; margin: 5px 0px;")
         layout.addWidget(stats_label)
 
-        # ディレクトリパスを表示
+        # Display directory path
         dir_label = QLabel(f"Directory: {folder_path}")
         dir_label.setStyleSheet("font-size: 10pt;")
         dir_label.setWordWrap(True)
         layout.addWidget(dir_label)
 
-        # 区切り線
+        # Separator line
         separator = QFrame()
         separator.setFrameShape(QFrame.HLine)
         separator.setFrameShadow(QFrame.Sunken)
         layout.addWidget(separator)
 
-        # ファイルリストのヘッダー
+        # File list header
         list_header = QLabel("Generated Files:")
         list_header.setStyleSheet("font-weight: bold; font-size: 11pt; margin-top: 5px;")
         layout.addWidget(list_header)
 
-        # スクロール可能なテキストエリアを作成
+        # Create scrollable text area
         text_edit = QTextEdit()
         text_edit.setReadOnly(True)
         text_edit.setStyleSheet("QTextEdit { font-family: monospace; background-color: #f5f5f5; }")
 
-        # 生成されたファイルのリストをテキストとして構築（ファイル名のみ）
+        # Build generated file list as text (filenames only)
         file_list_text = ""
         for i, file_pair in enumerate(generated_files, 1):
-            # メッシュファイルがある場合のみ追加（スタンドアロンXMLの場合はNone）
+            # Add only if mesh file exists (None for standalone XML)
             if file_pair['mesh'] is not None:
                 mesh_filename = os.path.basename(file_pair['mesh'])
                 file_list_text += f"{mesh_filename}\n"
 
             xml_filename = os.path.basename(file_pair['xml'])
             file_list_text += f"{xml_filename}\n"
-            # ファイルペア間に空行を追加（最後のセット以外）
+            # Add blank line between file pairs (except last set)
             if i < len(generated_files):
                 file_list_text += "\n"
 
         text_edit.setPlainText(file_list_text)
         layout.addWidget(text_edit)
 
-        # Closeボタンを作成
+        # Create Close button
         close_button = QPushButton("Close")
         close_button.clicked.connect(self.accept)
         close_button.setFixedWidth(100)
 
-        # ボタンを中央に配置するための水平レイアウト
+        # Horizontal layout to center the button
         button_layout = QHBoxLayout()
         button_layout.addStretch()
         button_layout.addWidget(close_button)
@@ -4818,7 +4614,7 @@ class BulkConversionCompleteDialog(QDialog):
 
         self.setLayout(layout)
 
-        # Enterキーでダイアログを閉じられるようにする
+        # Allow closing dialog with Enter key
         close_button.setDefault(True)
 
 # signal_handler moved to urdf_kitchen_utils.py
@@ -4826,7 +4622,7 @@ class BulkConversionCompleteDialog(QDialog):
 
 if __name__ == "__main__":
 
-    # Ctrl+Cのシグナルハンドラを設定（utils関数使用）
+    # Set up Ctrl+C signal handler (using utils function)
     setup_signal_handlers()
 
     app = QApplication(sys.argv)
@@ -4835,8 +4631,8 @@ if __name__ == "__main__":
     window = MainWindow()
     window.show()
 
-    # コマンドライン引数からSTLファイルのパスを取得
-    # VTK初期化前なので、pending_stl_fileに保存してVTK初期化後にロード
+    # Get STL file path from command line arguments
+    # Before VTK initialization, save to pending_stl_file for loading after VTK init
     if len(sys.argv) > 1:
         stl_file_path = sys.argv[1]
         if os.path.exists(stl_file_path):
@@ -4844,7 +4640,7 @@ if __name__ == "__main__":
         else:
             print(f"File not found: {stl_file_path}")
 
-    # シグナル処理用タイマー（utils関数使用）
+    # Timer for signal processing (using utils function)
     timer = setup_signal_processing_timer(app)
 
     try:
