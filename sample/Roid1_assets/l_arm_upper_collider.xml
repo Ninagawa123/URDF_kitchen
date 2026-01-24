@@ -1,0 +1,9 @@
+<?xml version="1.0" ?>
+<urdf_kitchen_collider version="1.0">
+  <mesh_file>l_arm_upper.stl</mesh_file>
+  <collider type="box">
+    <geometry size_x="0.0289" size_y="0.0209" size_z="0.0760"/>
+    <position x="-0.0002" y="-0.0000" z="-0.0305"/>
+    <rotation roll="0.000000" pitch="0.000000" yaw="0.000000"/>
+  </collider>
+</urdf_kitchen_collider>

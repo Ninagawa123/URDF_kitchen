@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urdf_part>
+    <material name="#FFFFFF">
+        <color rgba="1.000000 1.000000 1.000000 1.0" />
+    </material>
+    <link name="l_hipjoint_upper">
+        <visual>
+            <origin xyz="0.002326 0.001426 -0.011210" rpy="0 0 0"/>
+            <material name="#FFFFFF" />
+        </visual>
+        <inertial>
+            <origin xyz="0.002326 0.001426 -0.011210"/>
+            <mass value="0.0115"/>
+            <volume value="0.000009977325"/>
+            <inertia ixx="0.00000402" ixy="0.00000001" ixz="-0.00000020" iyy="0.00000680" iyz="0.00000007" izz="0.00000650"/>
+        </inertial>
+        <center_of_mass>0.002326 0.001426 -0.011210</center_of_mass>
+    </link>
+    <point name="point1" type="fixed">
+        <point_xyz>0.000000 -0.004550 -0.023200</point_xyz>
+        <point_angle>0.000000 0.000000 0.000000</point_angle>
+    </point>
+    <joint>
+        <axis xyz="0 0 1" />
+    </joint>
+</urdf_part>

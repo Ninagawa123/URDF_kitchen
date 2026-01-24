@@ -1,0 +1,9 @@
+<?xml version="1.0" ?>
+<urdf_kitchen_collider version="1.0">
+  <mesh_file>c_waist.stl</mesh_file>
+  <collider type="box">
+    <geometry size_x="0.0410" size_y="0.0641" size_z="0.0295"/>
+    <position x="-0.0115" y="0.0000" z="-0.0020"/>
+    <rotation roll="0.000000" pitch="0.000000" yaw="0.000000"/>
+  </collider>
+</urdf_kitchen_collider>

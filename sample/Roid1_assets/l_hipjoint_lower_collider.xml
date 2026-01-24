@@ -1,0 +1,9 @@
+<?xml version="1.0" ?>
+<urdf_kitchen_collider version="1.0">
+  <mesh_file>l_hipjoint_lower.stl</mesh_file>
+  <collider type="box">
+    <geometry size_x="0.0291" size_y="0.0405" size_z="0.0199"/>
+    <position x="0.0038" y="0.0115" z="0.0000"/>
+    <rotation roll="0.000000" pitch="0.000000" yaw="0.000000"/>
+  </collider>
+</urdf_kitchen_collider>
