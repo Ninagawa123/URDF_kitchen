@@ -655,6 +655,48 @@ class AdaptiveMarkerSize:
         return radius
 
 
+# ============================================================================
+# MESH AND COORDINATE UTILITIES
+# ============================================================================
+
+def is_mesh_reversed_check(visual_origin, mesh_scale):
+    """
+    Check if mesh is reversed (mirrored)
+
+    Args:
+        visual_origin: visual_origin dict {'xyz': [...], 'rpy': [...]}
+        mesh_scale: mesh_scale list [x, y, z]
+
+    Returns:
+        bool: True if reversed
+    """
+    PI = math.pi
+    PI_TOLERANCE = 0.01
+
+    # Consider reversed if any RPY axis is close to PI
+    if visual_origin:
+        rpy = visual_origin.get('rpy', [0.0, 0.0, 0.0])
+        for angle in rpy:
+            if abs(abs(angle) - PI) < PI_TOLERANCE:
+                return True
+
+    # Consider reversed if any mesh_scale axis is negative
+    if mesh_scale:
+        for scale in mesh_scale:
+            if scale < 0:
+                return True
+
+    return False
+
+
+def create_cumulative_coord(index):
+    """Create cumulative coordinate data"""
+    return {
+        'point_index': index,
+        'xyz': [0.0, 0.0, 0.0]
+    }
+
+
 def create_crosshair_marker(coords, radius_scale=1.0):
     """
     Create a 3D crosshair marker with circles (3-axis crosshair + 3 circles).

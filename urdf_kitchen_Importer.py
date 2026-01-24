@@ -7,8 +7,8 @@ Description: URDF/MJCF Import functionality for URDF Kitchen.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Jan 22, 2026
-Version     : 0.2.0
+Update.     : Jan 24, 2026
+Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
 Copyright (c) 2024 Ninagawa123
@@ -40,7 +40,9 @@ from urdf_kitchen_utils import (
     resolve_path_in_xml_element,
     find_package_root,
     match_package_name,
-    normalize_name_for_matching
+    normalize_name_for_matching,
+    is_mesh_reversed_check,
+    create_cumulative_coord
 )
 
 
@@ -65,48 +67,6 @@ DEFAULT_ORIGIN_ZERO = {
     'xyz': [0.0, 0.0, 0.0],
     'rpy': [0.0, 0.0, 0.0]
 }
-
-
-# ============================================================================
-# HELPER FUNCTIONS (from urdf_kitchen_Assembler.py)
-# ============================================================================
-
-def is_mesh_reversed_check(visual_origin, mesh_scale):
-    """
-    Check if mesh is reversed (mirrored)
-
-    Args:
-        visual_origin: visual_origin dict {'xyz': [...], 'rpy': [...]}
-        mesh_scale: mesh_scale list [x, y, z]
-
-    Returns:
-        bool: True if reversed
-    """
-    PI = math.pi
-    PI_TOLERANCE = 0.01
-
-    # Consider reversed if any RPY axis is close to PI
-    if visual_origin:
-        rpy = visual_origin.get('rpy', [0.0, 0.0, 0.0])
-        for angle in rpy:
-            if abs(abs(angle) - PI) < PI_TOLERANCE:
-                return True
-
-    # Consider reversed if any mesh_scale axis is negative
-    if mesh_scale:
-        for scale in mesh_scale:
-            if scale < 0:
-                return True
-
-    return False
-
-
-def create_cumulative_coord(index):
-    """Create cumulative coordinate data"""
-    return {
-        'point_index': index,
-        'xyz': DEFAULT_COORDS_ZERO.copy()
-    }
 
 
 # ============================================================================
@@ -2748,7 +2708,12 @@ class MJCFParser:
                         # Inherit euler from class default (quat takes precedence)
                         elif 'euler' in geom_defaults:
                             euler_values = [float(v) for v in geom_defaults['euler'].split()]
-                            geom_rpy = self.conversion_utils.euler_to_rpy(euler_values, eulerseq)
+                            # Convert to degrees if needed (euler_to_rpy expects degrees)
+                            if angle_unit == 'radian':
+                                euler_degrees = [math.degrees(v) for v in euler_values]
+                            else:
+                                euler_degrees = euler_values
+                            geom_rpy = self.conversion_utils.euler_to_rpy(euler_degrees, eulerseq)
                             geom_quat = self.conversion_utils.rpy_to_quat(geom_rpy)
                 # Inherit from global default if no class or class didn't have orientation
                 elif None in default_classes:
@@ -2763,7 +2728,12 @@ class MJCFParser:
                         # Inherit euler from global default (quat takes precedence)
                         elif 'euler' in geom_defaults:
                             euler_values = [float(v) for v in geom_defaults['euler'].split()]
-                            geom_rpy = self.conversion_utils.euler_to_rpy(euler_values, eulerseq)
+                            # Convert to degrees if needed (euler_to_rpy expects degrees)
+                            if angle_unit == 'radian':
+                                euler_degrees = [math.degrees(v) for v in euler_values]
+                            else:
+                                euler_degrees = euler_values
+                            geom_rpy = self.conversion_utils.euler_to_rpy(euler_degrees, eulerseq)
                             geom_quat = self.conversion_utils.rpy_to_quat(geom_rpy)
                 
                 # Direct attributes override class defaults
@@ -2774,7 +2744,12 @@ class MJCFParser:
                     geom_quat = [float(v) for v in geom_quat_str.split()]
                     geom_rpy = self.conversion_utils.quat_to_rpy(geom_quat)
                 elif geom_euler_str:
-                    euler_degrees = [float(v) for v in geom_euler_str.split()]
+                    euler_values = [float(v) for v in geom_euler_str.split()]
+                    # Convert to degrees if needed (euler_to_rpy expects degrees)
+                    if angle_unit == 'radian':
+                        euler_degrees = [math.degrees(v) for v in euler_values]
+                    else:
+                        euler_degrees = euler_values
                     geom_rpy = self.conversion_utils.euler_to_rpy(euler_degrees, eulerseq)
                     # Convert RPY back to quat for storage
                     geom_quat = self.conversion_utils.rpy_to_quat(geom_rpy)

@@ -4,7 +4,7 @@ Description: A Python script for configuring connection points of parts for urdf
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 22, 2026
+Update.     : Jan 24, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -50,8 +50,8 @@ from PySide6.QtWidgets import (
     QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout,
     QTextEdit, QButtonGroup, QRadioButton, QDialog, QMessageBox, QFrame
 )
-from PySide6.QtCore import QTimer, Qt
-from PySide6.QtGui import QTextOption, QColor, QPalette
+from PySide6.QtCore import QTimer, Qt, QRegularExpression
+from PySide6.QtGui import QTextOption, QColor, QPalette, QRegularExpressionValidator
 from PySide6.QtNetwork import QLocalServer, QLocalSocket
 
 # Import URDF Kitchen utilities
@@ -701,6 +701,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             label = QLabel(label_text)
             input_field = QLineEdit("0.000000")
+            input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
             setattr(self, f"{prop_name}_input", input_field)
             if prop_name == "volume":
                 input_field.returnPressed.connect(self.apply_volume_value)
@@ -737,6 +738,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             input_field = QLineEdit("0.000000")
             input_field.setFixedWidth(80)
+            input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
             input_field.returnPressed.connect(self.on_com_input_return)
             h_layout.addWidget(input_field)
 
@@ -770,9 +772,23 @@ class MainWindow(VTKViewerBase, QMainWindow):
         grid_layout.addWidget(pre_calculate_spacer, current_row, 0, 1, 3)
         current_row += 1
 
+        # Zero off-diag checkbox and label (separate like other checkboxes)
+        self.zero_offdiag_checkbox = QCheckBox()
+        grid_layout.addWidget(self.zero_offdiag_checkbox, current_row, 0)
+        
+        zero_offdiag_label = QLabel("Zero off-diag")
+        grid_layout.addWidget(zero_offdiag_label, current_row, 1)
+        
+        # Create horizontal layout for Calculate button with 50px left margin
+        calculate_layout = QHBoxLayout()
+        calculate_layout.setContentsMargins(50, 0, 0, 0)  # 50px left margin
+        calculate_layout.setSpacing(0)
+        
         self.calculate_button = QPushButton("Calculate")
         self.calculate_button.clicked.connect(self.calculate_and_update_properties)
-        grid_layout.addWidget(self.calculate_button, current_row, 1, 1, 2)
+        calculate_layout.addWidget(self.calculate_button)
+        
+        grid_layout.addLayout(calculate_layout, current_row, 2)
         current_row += 1
 
         spacer = QWidget()
@@ -843,6 +859,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.angle_x_input = QLineEdit()
         self.angle_x_input.setFixedWidth(60)
         self.angle_x_input.setText("0.0")
+        self.angle_x_input.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
         self.angle_x_input.setToolTip("Body initial rotation around X axis (degrees)")
         angle_layout.addWidget(self.angle_x_input)
 
@@ -850,6 +867,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.angle_y_input = QLineEdit()
         self.angle_y_input.setFixedWidth(60)
         self.angle_y_input.setText("0.0")
+        self.angle_y_input.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
         self.angle_y_input.setToolTip("Body initial rotation around Y axis (degrees)")
         angle_layout.addWidget(self.angle_y_input)
 
@@ -857,6 +875,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.angle_z_input = QLineEdit()
         self.angle_z_input.setFixedWidth(60)
         self.angle_z_input.setText("0.0")
+        self.angle_z_input.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
         self.angle_z_input.setToolTip("Body initial rotation around Z axis (degrees)")
         angle_layout.addWidget(self.angle_z_input)
 
@@ -907,6 +926,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
                 input_field = QLineEdit(str(self.point_coords[i][j]))
                 input_field.setFixedWidth(80)
+                input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
                 input_field.returnPressed.connect(lambda idx=i: self.set_point(idx))
 
                 h_layout.addWidget(input_field)
@@ -1489,7 +1509,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         # Create COM visualization (red sphere)
         sphere = vtk.vtkSphereSource()
-        sphere.SetCenter(center_of_mass)
+        sphere.SetCenter(0, 0, 0)  # Create at origin
         sphere.SetRadius(self.calculate_sphere_radius() * 0.5)
 
         mapper = vtk.vtkPolyDataMapper()
@@ -1497,6 +1517,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         self.com_sphere_actor = vtk.vtkActor()
         self.com_sphere_actor.SetMapper(mapper)
+        self.com_sphere_actor.SetPosition(center_of_mass)  # Position using SetPosition
         self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)  # Red color
         self.com_sphere_actor.GetProperty().SetOpacity(0.7)
 
@@ -1582,7 +1603,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             self.renderer.RemoveActor(self.com_sphere_actor)
 
         sphere = vtk.vtkSphereSource()
-        sphere.SetCenter(center_of_mass)
+        sphere.SetCenter(0, 0, 0)  # Create at origin
         sphere.SetRadius(self.calculate_sphere_radius() * 0.5)
 
         mapper = vtk.vtkPolyDataMapper()
@@ -1590,6 +1611,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         self.com_sphere_actor = vtk.vtkActor()
         self.com_sphere_actor.SetMapper(mapper)
+        self.com_sphere_actor.SetPosition(center_of_mass)  # Position using SetPosition
         self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)
         self.com_sphere_actor.GetProperty().SetOpacity(0.7)
 
@@ -1645,6 +1667,18 @@ class MainWindow(VTKViewerBase, QMainWindow):
         inertia_tensor = result['inertia_tensor']
         print("\nCalculated Inertia Tensor (about Center of Mass):")
         print(inertia_tensor)
+
+        # Zero out off-diagonal elements if checkbox is checked
+        if hasattr(self, 'zero_offdiag_checkbox') and self.zero_offdiag_checkbox.isChecked():
+            print("Zeroing off-diagonal inertia elements...")
+            inertia_tensor[0, 1] = 0.0  # ixy
+            inertia_tensor[1, 0] = 0.0  # ixy (symmetric)
+            inertia_tensor[0, 2] = 0.0  # ixz
+            inertia_tensor[2, 0] = 0.0  # ixz (symmetric)
+            inertia_tensor[1, 2] = 0.0  # iyz
+            inertia_tensor[2, 1] = 0.0  # iyz (symmetric)
+            print("Off-diagonal elements set to zero:")
+            print(inertia_tensor)
 
         urdf_inertia = self.format_inertia_for_urdf(inertia_tensor)
         if hasattr(self, 'inertia_tensor_input'):
@@ -2048,13 +2082,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.renderer.RemoveActor(self.com_sphere_actor)
 
                 sphere = vtk.vtkSphereSource()
-                sphere.SetCenter(self.com_coords)
+                sphere.SetCenter(0, 0, 0)  # Create at origin
                 sphere.SetRadius(self.calculate_sphere_radius() * 0.5)
 
                 mapper = vtk.vtkPolyDataMapper()
                 mapper.SetInputConnection(sphere.GetOutputPort())
 
                 self.com_sphere_actor.SetMapper(mapper)
+                self.com_sphere_actor.SetPosition(self.com_coords)  # Position using SetPosition
                 self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)
                 self.com_sphere_actor.GetProperty().SetOpacity(0.7)
 
@@ -2224,13 +2259,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
                     # Create red sphere at new position
                     sphere = vtk.vtkSphereSource()
-                    sphere.SetCenter(self.com_coords)
+                    sphere.SetCenter(0, 0, 0)  # Create at origin
                     sphere.SetRadius(self.calculate_sphere_radius() * 0.5)
 
                     mapper = vtk.vtkPolyDataMapper()
                     mapper.SetInputConnection(sphere.GetOutputPort())
 
                     self.com_sphere_actor.SetMapper(mapper)
+                    self.com_sphere_actor.SetPosition(self.com_coords)  # Position using SetPosition
                     self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)  # Red
                     self.com_sphere_actor.GetProperty().SetOpacity(0.7)
 
@@ -2772,9 +2808,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
                                 y = float(position_elem.get('y', '0.0'))
                                 z = float(position_elem.get('z', '0.0'))
                                 mirrored_y = -y  # Flip Y coordinate
+                                print(f"  Found position: x={x:.6f}, y={y:.6f}, z={z:.6f}")
                             else:
                                 x, y, z = 0.0, 0.0, 0.0
                                 mirrored_y = 0.0
+                                print(f"  ⚠ No position element found, using default (0, 0, 0)")
 
                             # Get rotation (flip Roll and Yaw, keep Pitch)
                             rotation_elem = collider_elem.find('rotation')
@@ -2808,6 +2846,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                             new_position_elem.set('x', f"{x:.6f}")
                             new_position_elem.set('y', f"{mirrored_y:.6f}")
                             new_position_elem.set('z', f"{z:.6f}")
+                            print(f"  Mirrored position: Y={y:.6f} -> {mirrored_y:.6f} (X={x:.6f}, Z={z:.6f} unchanged)")
 
                             # Add rotation element (flip Roll and Yaw, keep Pitch)
                             new_rotation_elem = ET.SubElement(new_collider_elem, 'rotation')
@@ -3125,7 +3164,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
                         # Create red sphere at new position
                         sphere = vtk.vtkSphereSource()
-                        sphere.SetCenter(self.com_coords)
+                        sphere.SetCenter(0, 0, 0)  # Create at origin
                         sphere.SetRadius(self.calculate_sphere_radius() * 0.5)
 
                         mapper = vtk.vtkPolyDataMapper()
@@ -3133,6 +3172,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
                         self.com_sphere_actor = vtk.vtkActor()
                         self.com_sphere_actor.SetMapper(mapper)
+                        self.com_sphere_actor.SetPosition(self.com_coords)  # Position using SetPosition
                         self.com_sphere_actor.GetProperty().SetColor(1, 0, 0)  # Red
                         self.com_sphere_actor.GetProperty().SetOpacity(0.7)
 
@@ -3756,9 +3796,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         traceback.print_exc()
                         continue
 
-            # ===== Phase 2: Process standalone XML files (without mesh) =====
-            print("\n=== Searching for standalone collider XML files ===")
-            xml_collider_pattern = re.compile(r'^l_.+_collider\.xml$', re.IGNORECASE)
+            # ===== Phase 2: Process standalone XML files (without mesh, NOT collider XMLs) =====
+            print("\n=== Searching for standalone XML files (non-collider) ===")
+            # Match l_*.xml but NOT l_*_collider.xml
+            xml_standalone_pattern = re.compile(r'^l_.+\.xml$', re.IGNORECASE)
+            xml_collider_exclude_pattern = re.compile(r'^l_.+_collider\.xml$', re.IGNORECASE)
             xml_only_count = 0
 
             # List of already processed XMLs (processed with mesh)
@@ -3768,7 +3810,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     processed_xml_names.add(os.path.basename(item['xml']))
 
             for file_name in os.listdir(folder_path):
-                if xml_collider_pattern.match(file_name.lower()):
+                # Match l_*.xml but exclude l_*_collider.xml (handled in Phase 3)
+                if xml_standalone_pattern.match(file_name.lower()) and not xml_collider_exclude_pattern.match(file_name.lower()):
                     # Check if already processed with mesh
                     output_xml_name = 'R_' + file_name[2:] if file_name.startswith('L_') else 'r_' + file_name[2:]
                     if output_xml_name in processed_xml_names:
@@ -3944,9 +3987,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
                             y = float(position_elem.get('y', '0.0'))
                             z = float(position_elem.get('z', '0.0'))
                             mirrored_y = -y  # Flip Y coordinate
+                            print(f"  Found position: x={x:.6f}, y={y:.6f}, z={z:.6f}")
                         else:
                             x, y, z = 0.0, 0.0, 0.0
                             mirrored_y = 0.0
+                            print(f"  ⚠ No position element found, using default (0, 0, 0)")
 
                         # Get rotation and flip on XZ plane
                         # For XZ plane flip, keep roll and yaw, flip pitch
@@ -3981,6 +4026,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         new_position_elem.set('x', f"{x:.6f}")
                         new_position_elem.set('y', f"{mirrored_y:.6f}")
                         new_position_elem.set('z', f"{z:.6f}")
+                        print(f"  Mirrored position: Y={y:.6f} -> {mirrored_y:.6f} (X={x:.6f}, Z={z:.6f} unchanged)")
 
                         # Add rotation element (flip Roll and Yaw, keep Pitch)
                         new_rotation_elem = ET.SubElement(new_collider_elem, 'rotation')
@@ -4068,6 +4114,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.original_point_positions.append(list(self.point_actors[i].GetPosition()))
             else:
                 self.original_point_positions.append(list(self.point_coords[i]))
+
+        # Update com_coords from input fields to ensure it reflects current values
+        try:
+            self.com_coords = [float(self.com_inputs[i].text()) for i in range(3)]
+        except (ValueError, IndexError):
+            pass  # Keep existing com_coords if parsing fails
+
         self.original_com_position = list(self.com_coords)
 
         self.test_rotation_angle = 0

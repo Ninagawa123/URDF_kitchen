@@ -4,7 +4,7 @@ Description: A Python script to assembling files configured with urdf_kitchen_Pa
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 19, 2026
+Update.     : Jan 24, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -53,7 +53,8 @@ from urdf_kitchen_utils import (
     euler_to_quaternion, quaternion_to_euler, quaternion_to_matrix, format_float_no_exp,
     KitchenColorPicker, CustomColorDialog,
     ConversionUtils,
-    validate_inertia_tensor
+    validate_inertia_tensor,
+    is_mesh_reversed_check, create_cumulative_coord
 )
 
 # Import parser classes and import functions from Importer module
@@ -63,7 +64,7 @@ from urdf_kitchen_Importer import ImporterWindow
 import platform
 IS_APPLE_SILICON = platform.machine() == 'arm64' and platform.system() == 'Darwin'
 
-# デフォルト値の定数定義
+# Default value constants
 DEFAULT_JOINT_EFFORT = 1.37  # N*m
 DEFAULT_MAX_EFFORT = 1.37  # N*m
 DEFAULT_JOINT_VELOCITY = 7.0  # rad/s
@@ -74,10 +75,10 @@ DEFAULT_FRICTIONLOSS = 0.01  # N*m
 DEFAULT_STIFFNESS_KP = 100.0  # N*m/rad
 DEFAULT_DAMPING_KV = 1.0  # N*m*s/rad
 DEFAULT_ANGLE_RANGE = 3.14159  # rad (+/- π)
-DEFAULT_BASE_LINK_HEIGHT = 0.5  # MJCF base_linkのデフォルトz座標 (m)
-DEFAULT_NODE_GRID_ENABLED = True  # ノードグリッドスナップの有効/無効
-DEFAULT_NODE_GRID_SIZE = 50  # ノードグリッドのサイズ (pixels)
-# 後方互換性のための古い定数（削除予定）
+DEFAULT_BASE_LINK_HEIGHT = 0.5  # Default z coordinate for MJCF base_link (m)
+DEFAULT_NODE_GRID_ENABLED = True  # Enable/disable node grid snapping
+DEFAULT_NODE_GRID_SIZE = 50  # Node grid size (pixels)
+# Legacy constants for backward compatibility (to be removed)
 DEFAULT_JOINT_LOWER = -180.0
 DEFAULT_JOINT_UPPER = 180.0
 DEFAULT_JOINT_FRICTION = 0.05
@@ -85,8 +86,8 @@ DEFAULT_JOINT_ACTUATION_LAG = 0.05
 DEFAULT_JOINT_DAMPING = 0.18
 DEFAULT_JOINT_STIFFNESS = 50.0
 DEFAULT_COLOR_WHITE = [1.0, 1.0, 1.0]
-DEFAULT_HIGHLIGHT_COLOR = "#80CCFF"  # ライトブルー (0.5, 0.8, 1.0)
-DEFAULT_COLLISION_COLOR = [1.0, 0.0, 0.0, 0.5]  # 赤色 50%透明 (R, G, B, A)
+DEFAULT_HIGHLIGHT_COLOR = "#80CCFF"  # Light blue (0.5, 0.8, 1.0)
+DEFAULT_COLLISION_COLOR = [1.0, 0.0, 0.0, 0.5]  # Red 50% transparent (R, G, B, A)
 DEFAULT_COORDS_ZERO = [0.0, 0.0, 0.0]
 DEFAULT_INERTIA_ZERO = {
     'ixx': 0.0, 'ixy': 0.0, 'ixz': 0.0,
@@ -97,7 +98,7 @@ DEFAULT_ORIGIN_ZERO = {
     'rpy': [0.0, 0.0, 0.0]
 }
 
-# 統一されたボタンスタイル（全体で共通使用）
+# Unified button style (common across all UI)
 UNIFIED_BUTTON_STYLE = """
     QPushButton {
         background-color: #ffffff;
@@ -127,12 +128,12 @@ UNIFIED_BUTTON_STYLE = """
 # format_float_no_exp() is now imported from urdf_kitchen_utils
 
 def init_node_properties(node, graph=None):
-    """ノードの共通プロパティを初期化
-    
+    """Initialize common properties for a node
+
     Args:
-        node: 初期化するノード
-        graph: CustomNodeGraphインスタンス（Settingsのデフォルト値を取得するため）
-               Noneの場合は定数を使用
+        node: Node to initialize
+        graph: CustomNodeGraph instance (to get Settings default values)
+               If None, constants are used
     """
     node.volume_value = 0.0
     node.mass_value = 0.0
@@ -146,24 +147,19 @@ def init_node_properties(node, graph=None):
         'rpy': DEFAULT_ORIGIN_ZERO['rpy'].copy()
     }
     node.stl_file = None
-    node.collider_mesh = None  # Separate collision mesh file (relative path) - deprecated, use colliders list
-    node.collider_mesh_scale = [1.0, 1.0, 1.0]  # Separate collision mesh scale [x,y,z] - deprecated, use colliders list
-    node.collider_enabled = False  # Collider checkbox state - deprecated, use colliders list
-    node.collider_type = None  # 'primitive' or 'mesh' - deprecated, use colliders list
-    node.collider_data = None  # Primitive collider data - deprecated, use colliders list
     # Multiple colliders support: list of collider dictionaries
-    # Each collider dict has: {'type': 'primitive'|'mesh', 'enabled': bool, 'data': dict, 'mesh': str, 'mesh_scale': [x,y,z]}
-    node.colliders = []  # List of collider dictionaries
+    # Each collider dict has: {'type': 'primitive'|'mesh', 'enabled': bool, 'data': dict, 'mesh': str, 'mesh_scale': [x,y,z], 'position': [x,y,z], 'rotation': [rx,ry,rz]}
+    node.colliders = []
     node.is_mesh_reversed = False  # Flag for reversed/mirrored mesh (for MJCF export)
     node.node_color = DEFAULT_COLOR_WHITE.copy()
     node.mesh_original_color = None  # Original color extracted from mesh file (DAE/OBJ/STL)
     node.rotation_axis = 0  # 0: X, 1: Y, 2: Z
     node.body_angle = [0.0, 0.0, 0.0]  # Body initial rotation in radians [X, Y, Z]
     node.current_joint_angle = 0.0  # Current joint angle in radians (for rotation test)
-    node.joint_lower = math.radians(DEFAULT_JOINT_LOWER)  # DegreeからRadianに変換して保存
-    node.joint_upper = math.radians(DEFAULT_JOINT_UPPER)  # DegreeからRadianに変換して保存
-    
-    # Settingsのデフォルト値を使用（graphが指定されている場合）
+    node.joint_lower = math.radians(DEFAULT_JOINT_LOWER)  # Convert from Degree to Radian and store
+    node.joint_upper = math.radians(DEFAULT_JOINT_UPPER)  # Convert from Degree to Radian and store
+
+    # Use Settings default values (when graph is specified)
     if graph is not None:
         node.joint_effort = getattr(graph, 'default_joint_effort', DEFAULT_JOINT_EFFORT)
         node.joint_damping = getattr(graph, 'default_damping_kv', DEFAULT_DAMPING_KV)
@@ -173,7 +169,7 @@ def init_node_properties(node, graph=None):
         node.joint_armature = getattr(graph, 'default_armature', DEFAULT_ARMATURE)
         node.joint_frictionloss = getattr(graph, 'default_frictionloss', DEFAULT_FRICTIONLOSS)
     else:
-        # 定数を使用（後方互換性のため）
+        # Use constants (for backward compatibility)
         node.joint_effort = DEFAULT_JOINT_EFFORT
         node.joint_damping = DEFAULT_DAMPING_KV
         node.joint_stiffness = DEFAULT_STIFFNESS_KP
@@ -183,55 +179,19 @@ def init_node_properties(node, graph=None):
         node.joint_frictionloss = DEFAULT_FRICTIONLOSS
     
     node.massless_decoration = False
-    node.hide_mesh = False  # デフォルトはメッシュ表示
-
-def is_mesh_reversed_check(visual_origin, mesh_scale):
-    """
-    メッシュが反転（ミラーリング）されているかを判定する関数
-
-    Args:
-        visual_origin: visual_origin辞書 {'xyz': [...], 'rpy': [...]}
-        mesh_scale: mesh_scaleリスト [x, y, z]
-
-    Returns:
-        bool: 反転している場合True
-    """
-    import math
-    PI = math.pi
-    PI_TOLERANCE = 0.01
-
-    # RPYのいずれかの軸がπ（PI）に近い場合は反転とみなす
-    if visual_origin:
-        rpy = visual_origin.get('rpy', [0.0, 0.0, 0.0])
-        for angle in rpy:
-            if abs(abs(angle) - PI) < PI_TOLERANCE:
-                return True
-
-    # mesh_scaleのいずれかの軸が負の場合は反転とみなす
-    if mesh_scale:
-        for scale in mesh_scale:
-            if scale < 0:
-                return True
-
-    return False
+    node.hide_mesh = False  # Default is mesh visible
 
 def create_point_data(index):
-    """ポイントデータを作成"""
+    """Create point data"""
     return {
         'name': f'point_{index}',
         'type': 'fixed',
         'xyz': DEFAULT_COORDS_ZERO.copy(),
-        'rpy': [0.0, 0.0, 0.0],  # ジョイントの回転（ラジアン）
-        'angle': [0.0, 0.0, 0.0]  # デフォルトの角度（ラジアン）
+        'rpy': [0.0, 0.0, 0.0],  # Joint rotation (radians)
+        'angle': [0.0, 0.0, 0.0]  # Default angle (radians)
     }
 
-def create_cumulative_coord(index):
-    """累積座標データを作成"""
-    return {
-        'point_index': index,
-        'xyz': DEFAULT_COORDS_ZERO.copy()
-    }
-
+# is_mesh_reversed_check and create_cumulative_coord moved to urdf_kitchen_utils.py
 # apply_dark_theme moved to urdf_kitchen_utils.py
 # Now using: setup_dark_theme(app, theme='assembler')
 
@@ -244,40 +204,40 @@ class BaseLinkNode(BaseNode):
         super(BaseLinkNode, self).__init__()
         self.add_output('out')
 
-        self.output_count = 1  # 出力ポートは常に1つ（固定）
+        self.output_count = 1  # Output port is always 1 (fixed)
 
-        # BaseLinkNodeはパラメータを持たない特殊リンク
-        # ポイントと累積座標のみ初期化
+        # BaseLinkNode is a special link with no parameters
+        # Initialize only points and cumulative coordinates
         base_point = create_point_data(1)
         base_point['name'] = 'base_link_point1'
         self.points = [base_point]
         self.cumulative_coords = [create_cumulative_coord(0)]
 
-        # ダブルクリックイベントを設定（インスペクターは開かない）
+        # Set up double click event (does not open inspector)
         self._original_double_click = self.view.mouseDoubleClickEvent
         self.view.mouseDoubleClickEvent = self.node_double_clicked
 
     def add_input(self, name='', **kwargs):
-        """入力ポートの追加を禁止"""
+        """Prohibit adding input ports"""
         return None
 
     def add_output(self, name='out_1', **kwargs):
-        """出力ポートが既に存在する場合は追加しない"""
+        """Do not add if output port already exists"""
         if not self.has_output(name):
             return super(BaseLinkNode, self).add_output(name, **kwargs)
         return None
 
     def remove_output(self):
-        """出力ポートの削除を禁止（base_linkは常に1ポート）"""
+        """Prohibit removing output port (base_link always has 1 port)"""
         return None
 
     def has_output(self, name):
-        """指定した名前の出力ポートが存在するかチェック"""
+        """Check if output port with specified name exists"""
         return name in [p.name() for p in self.output_ports()]
 
     def node_double_clicked(self, event):
-        """BaseLinkNodeがダブルクリックされたときの処理（インスペクターは開かない）"""
-        # base_linkは特殊リンクなのでインスペクターを開かない
+        """Handle double click on BaseLinkNode (does not open inspector)"""
+        # base_link is a special link so do not open inspector
         pass
 
 class FooNode(BaseNode):
@@ -291,70 +251,70 @@ class FooNode(BaseNode):
 
         self.output_count = 0
 
-        # 共通プロパティの初期化
-        # graphは後で設定される可能性があるため、ここではNoneを渡す
-        # create_nodeでSettingsの値を適用する
+        # Initialize common properties
+        # Pass None here as graph may be set later
+        # Settings values are applied in create_node
         init_node_properties(self, graph=None)
 
-        # FooNode固有のポイントと累積座標（空で開始）
+        # FooNode-specific points and cumulative coordinates (start empty)
         self.points = []
         self.cumulative_coords = []
 
-        # 出力ポートを追加
+        # Add output port
         self._add_output()
 
         self.set_port_deletion_allowed(True)
         self._original_double_click = self.view.mouseDoubleClickEvent
         self.view.mouseDoubleClickEvent = self.node_double_clicked
 
-        # 初期状態（入力接続なし）は明るめのグレー
+        # Initial state (no input connection) is light gray
         self.set_color(74, 84, 85)
 
     def _add_output(self):
-        """出力ポートの追加
+        """Add output port
 
         Returns:
-            str: 追加されたポート名
+            str: Name of added port
         """
         self.output_count += 1
         port_name = f'out_{self.output_count}'
 
-        # 出力ポートを追加
+        # Add output port
         self.add_output(port_name, color=(180, 80, 0))
 
-        # 対応するポイントデータを追加
+        # Add corresponding point data
         point_data = create_point_data(self.output_count)
         self.points.append(point_data)
 
-        # 累積座標を追加
+        # Add cumulative coordinate
         cumulative_coord = create_cumulative_coord(self.output_count - 1)
         self.cumulative_coords.append(cumulative_coord)
 
         return port_name
 
     def remove_output(self):
-        """出力ポートの削除（0個まで削除可能）"""
+        """Remove output port (can be reduced to 0)"""
         if self.output_count > 0:
             port_name = f'out_{self.output_count}'
             output_port = self.get_output(port_name)
             if output_port:
                 try:
-                    # すべての接続をクリア
+                    # Clear all connections
                     output_port.clear_connections()
 
-                    # 対応するポイントデータを削除
+                    # Remove corresponding point data
                     if len(self.points) >= self.output_count:
                         self.points.pop()
 
-                    # 累積座標を削除
+                    # Remove cumulative coordinate
                     if len(self.cumulative_coords) >= self.output_count:
                         self.cumulative_coords.pop()
 
-                    # ポートの削除
+                    # Delete port
                     self.delete_output(output_port)
                     self.output_count -= 1
 
-                    # ビューの更新
+                    # Update view
                     self.view.update()
 
                 except Exception as e:
@@ -367,19 +327,19 @@ class FooNode(BaseNode):
     def node_double_clicked(self, event):
         if hasattr(self.graph, 'show_inspector'):
             try:
-                # グラフのビューを正しく取得
-                graph_view = self.graph.viewer()  # NodeGraphQtではviewer()メソッドを使用
-                
-                # シーン座標をビュー座標に変換
+                # Get graph view correctly
+                graph_view = self.graph.viewer()  # Use viewer() method in NodeGraphQt
+
+                # Convert scene coordinates to view coordinates
                 scene_pos = event.scenePos()
                 view_pos = graph_view.mapFromScene(scene_pos)
                 screen_pos = graph_view.mapToGlobal(view_pos)
-                
+
                 self.graph.show_inspector(self, screen_pos)
-                
+
             except Exception as e:
                 traceback.print_exc()
-                # フォールバック：位置指定なしでインスペクタを表示
+                # Fallback: show inspector without position
                 self.graph.show_inspector(self)
         else:
             pass
@@ -392,13 +352,13 @@ class ClosedLoopJointNode(BaseNode):
     def __init__(self):
         super(ClosedLoopJointNode, self).__init__()
 
-        # 入力ポート1つ（親リンクから）- 暗めの青緑
+        # Input port (from parent link) - dark cyan
         self.add_input('in', color=(0, 180, 180))
 
-        # 出力ポート1つ（子リンクへ）- 暗めの青緑
+        # Output port (to child link) - dark cyan
         self.add_output('out', color=(0, 180, 180))
 
-        # 閉リンクジョイントのメタデータ
+        # Closed-loop joint metadata
         self.joint_name = ""
         self.joint_type = "ball"  # ball, gearbox, screw
         self.parent_link = ""
@@ -408,21 +368,21 @@ class ClosedLoopJointNode(BaseNode):
         self.gearbox_ratio = 1.0
         self.gearbox_reference_body = None
 
-        # 閉リンクノードは特別な色で表示（紫系）
+        # Closed-loop node displayed in special color (purple)
         self.set_color(120, 80, 140)
 
-        # ダブルクリックイベントを設定
+        # Set up double click event
         self._original_double_click = self.view.mouseDoubleClickEvent
         self.view.mouseDoubleClickEvent = self.node_double_clicked
 
     def node_double_clicked(self, event):
-        """ノードがダブルクリックされたときの処理"""
+        """Handle double click on node"""
         if hasattr(self.graph, 'show_closed_loop_inspector'):
             try:
-                # グラフのビューを正しく取得
+                # Get graph view correctly
                 graph_view = self.graph.viewer()
 
-                # シーン座標をビュー座標に変換
+                # Convert scene coordinates to view coordinates
                 scene_pos = event.scenePos()
                 view_pos = graph_view.mapFromScene(scene_pos)
                 screen_pos = graph_view.mapToGlobal(view_pos)
@@ -431,7 +391,7 @@ class ClosedLoopJointNode(BaseNode):
 
             except Exception as e:
                 traceback.print_exc()
-                # フォールバック：位置指定なしでインスペクタを表示
+                # Fallback: show inspector without position
                 self.graph.show_closed_loop_inspector(self)
         else:
             pass
@@ -443,7 +403,7 @@ class InspectorWindow(QtWidgets.QWidget):
         self.setWindowTitle("Node Inspector")
         self.setMinimumWidth(450)
         self.setMinimumHeight(450)
-        self.resize(600, 700)  # デフォルトサイズ (50px増)
+        self.resize(600, 700)  # Default size (50px increased)
 
         self.setWindowFlags(self.windowFlags() |
                             QtCore.Qt.WindowStaysOnTopHint)
@@ -452,40 +412,40 @@ class InspectorWindow(QtWidgets.QWidget):
         self.current_node = None
         self.stl_viewer = stl_viewer
         self.port_widgets = []
-        
-        # 色入力フィールドのデバウンス用タイマー
+
+        # Debounce timer for color input fields
         self.color_update_timer = QTimer()
         self.color_update_timer.setSingleShot(True)
         self.color_update_timer.timeout.connect(self._apply_color_from_inputs)
 
-        # UIの初期化
+        # Initialize UI
         self.setup_ui()
 
-        # キーボードフォーカスを受け取れるように設定
+        # Set to receive keyboard focus
         self.setFocusPolicy(QtCore.Qt.StrongFocus)
 
     def setup_ui(self):
-        """UIの初期化"""
+        """Initialize UI"""
         main_layout = QtWidgets.QVBoxLayout(self)
-        main_layout.setSpacing(10)  # 全体の余白を小さく
-        main_layout.setContentsMargins(10, 5, 10, 5)  # 上下の余白も調整
+        main_layout.setSpacing(10)  # Reduce overall margin
+        main_layout.setContentsMargins(10, 5, 10, 5)  # Adjust top/bottom margins
 
-        # 統一されたボタンスタイル（グローバル定数を使用）
+        # Unified button style (use global constant)
         self.button_style = UNIFIED_BUTTON_STYLE
 
-        # スクロールエリアの設定
+        # Scroll area settings
         scroll_area = QtWidgets.QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
 
-        # スクロールの中身となるウィジェット
+        # Widget for scroll content
         scroll_content = QtWidgets.QWidget()
         content_layout = QtWidgets.QVBoxLayout(scroll_content)
-        content_layout.setSpacing(6)  # セクション間の間隔をコンパクトに
-        content_layout.setContentsMargins(5, 5, 5, 5)  # 余白を小さく
+        content_layout.setSpacing(6)  # Compact section spacing
+        content_layout.setContentsMargins(5, 5, 5, 5)  # Reduce margins
 
-        # File Controls セクション（一番上に配置）
+        # File Controls section (placed at top)
         file_layout = QtWidgets.QHBoxLayout()
         self.import_mesh_btn = QtWidgets.QPushButton("Import Mesh")
         self.import_mesh_btn.setStyleSheet(self.button_style)
@@ -505,7 +465,7 @@ class InspectorWindow(QtWidgets.QWidget):
         self.reload_btn.clicked.connect(self.reload_node_files)
         content_layout.addLayout(file_layout)
 
-        # Node Name セクション（横一列）
+        # Node Name section (horizontal)
         name_layout = QtWidgets.QHBoxLayout()
         name_layout.addWidget(QtWidgets.QLabel("Node Name:"))
         self.name_edit = QtWidgets.QLineEdit()
@@ -515,27 +475,27 @@ class InspectorWindow(QtWidgets.QWidget):
 
         content_layout.addLayout(name_layout)
 
-        # Massless Decorationチェックボックス と Hide Meshチェックボックス
+        # Massless Decoration checkbox and Hide Mesh checkbox
         massless_layout = QtWidgets.QHBoxLayout()
         self.massless_checkbox = QtWidgets.QCheckBox("Massless Decoration")
-        self.massless_checkbox.setChecked(False)  # デフォルトはオフ
+        self.massless_checkbox.setChecked(False)  # Default is off
         massless_layout.addWidget(self.massless_checkbox)
 
-        massless_layout.addSpacing(20)  # 固定スペース
+        massless_layout.addSpacing(20)  # Fixed space
 
-        # Hide Meshチェックボックス
+        # Hide Mesh checkbox
         self.hide_mesh_checkbox = QtWidgets.QCheckBox("Hide Mesh")
-        self.hide_mesh_checkbox.setChecked(False)  # デフォルトはオフ（表示）
+        self.hide_mesh_checkbox.setChecked(False)  # Default is off (visible)
         massless_layout.addWidget(self.hide_mesh_checkbox)
 
-        massless_layout.addStretch()  # 右側に余白を追加
+        massless_layout.addStretch()  # Add margin on right
         content_layout.addLayout(massless_layout)
 
-        # チェックボックスの状態変更時のハンドラを接続
+        # Connect checkbox state change handlers
         self.massless_checkbox.stateChanged.connect(self.update_massless_decoration)
         self.hide_mesh_checkbox.stateChanged.connect(self.update_hide_mesh)
 
-        # Physical Properties セクション（VolumeとMassを1行に）
+        # Physical Properties section (Volume and Mass in one row)
         physics_layout = QtWidgets.QHBoxLayout()
         physics_layout.addWidget(QtWidgets.QLabel("Volume(m^3):"))
         self.volume_input = QtWidgets.QLineEdit()
@@ -543,7 +503,7 @@ class InspectorWindow(QtWidgets.QWidget):
         self.volume_input.setFixedWidth(100)
         physics_layout.addWidget(self.volume_input)
 
-        physics_layout.addSpacing(10)  # 固定スペース
+        physics_layout.addSpacing(10)  # Fixed space
 
         physics_layout.addWidget(QtWidgets.QLabel("Mass(kg):"))
         self.mass_input = QtWidgets.QLineEdit()
@@ -553,9 +513,9 @@ class InspectorWindow(QtWidgets.QWidget):
         self.mass_input.returnPressed.connect(self.update_mass)
         physics_layout.addWidget(self.mass_input)
 
-        physics_layout.addStretch()  # 右側に余白
+        physics_layout.addStretch()  # Right margin
 
-        # Parts Editorボタン（右寄せ）
+        # Parts Editor button (right aligned)
         self.parts_editor_button = QtWidgets.QPushButton("Parts Editor")
         self.parts_editor_button.setStyleSheet(self.button_style)
         self.parts_editor_button.clicked.connect(self.open_parts_editor)
@@ -564,13 +524,13 @@ class InspectorWindow(QtWidgets.QWidget):
 
         content_layout.addLayout(physics_layout)
 
-        # Inertial タイトル
+        # Inertial title
         inertial_title = QtWidgets.QLabel("Inertial")
         inertial_title.setStyleSheet("font-weight: bold;")
         content_layout.addWidget(inertial_title)
         content_layout.addSpacing(3)
 
-        # Inertial Origin セクション（x, y, z, r, p, yを1行に）
+        # Inertial Origin section (x, y, z, r, p, y in one row)
         origin_layout = QtWidgets.QHBoxLayout()
 
         # x
@@ -656,14 +616,14 @@ class InspectorWindow(QtWidgets.QWidget):
         self.inertial_y_rpy_input.returnPressed.connect(self.update_inertial_origin)
         origin_layout.addWidget(self.inertial_y_rpy_input)
 
-        origin_layout.addStretch()  # 右側に余白
+        origin_layout.addStretch()  # Right margin
         content_layout.addLayout(origin_layout)
         content_layout.addSpacing(3)
 
-        # Inertia Tensor セクション（ixx, ixy, ixzを1行目、iyy, iyz, izzを2行目に）
+        # Inertia Tensor section (ixx, ixy, ixz in row 1, iyy, iyz, izz in row 2)
         inertia_layout = QtWidgets.QVBoxLayout()
-        
-        # 1行目: ixx, ixy, ixz
+
+        # Row 1: ixx, ixy, ixz
         inertia_row1 = QtWidgets.QHBoxLayout()
 
         # ixx
@@ -706,10 +666,10 @@ class InspectorWindow(QtWidgets.QWidget):
         self.ixz_input.textChanged.connect(self.update_inertia)
         self.ixz_input.returnPressed.connect(self.update_inertia)
         inertia_row1.addWidget(self.ixz_input)
-        inertia_row1.addStretch()  # 右側に余白
+        inertia_row1.addStretch()  # Right margin
         inertia_layout.addLayout(inertia_row1)
-        
-        # 2行目: iyy, iyz, izz
+
+        # Row 2: iyy, iyz, izz
         inertia_row2 = QtWidgets.QHBoxLayout()
 
         # iyy
@@ -752,17 +712,17 @@ class InspectorWindow(QtWidgets.QWidget):
         self.izz_input.textChanged.connect(self.update_inertia)
         self.izz_input.returnPressed.connect(self.update_inertia)
         inertia_row2.addWidget(self.izz_input)
-        inertia_row2.addStretch()  # 右側に余白
+        inertia_row2.addStretch()  # Right margin
         inertia_layout.addLayout(inertia_row2)
 
         content_layout.addLayout(inertia_layout)
         content_layout.addSpacing(5)
 
-        # Inertia関連ボタン
+        # Inertia related buttons
         inertia_button_layout = QtWidgets.QHBoxLayout()
         inertia_button_layout.addStretch()
 
-        # Look COM スイッチ（左側）
+        # Show CoM toggle (left side)
         self.look_inertial_origin_toggle = QtWidgets.QPushButton("Show CoM")
         self.look_inertial_origin_toggle.setCheckable(True)
         self.look_inertial_origin_toggle.setStyleSheet(self.button_style)
@@ -770,39 +730,46 @@ class InspectorWindow(QtWidgets.QWidget):
         self.look_inertial_origin_toggle.toggled.connect(self.toggle_inertial_origin_view)
         inertia_button_layout.addWidget(self.look_inertial_origin_toggle)
 
-        # Recalc COM ボタン（左中央）
+        # Recalc CoM button (left center)
         recalc_com_button = QtWidgets.QPushButton("Recalc CoM")
         recalc_com_button.setStyleSheet(self.button_style)
         recalc_com_button.setFixedWidth(100)
         recalc_com_button.clicked.connect(self.recalculate_com)
         inertia_button_layout.addWidget(recalc_com_button)
 
-        # Recalc Inertia ボタン（右中央）
+        # Recalc Inertia button (right center)
         recalc_inertia_button = QtWidgets.QPushButton("Recalc Inertia")
         recalc_inertia_button.setStyleSheet(self.button_style)
         recalc_inertia_button.setFixedWidth(110)
         recalc_inertia_button.clicked.connect(self.recalculate_inertia)
         inertia_button_layout.addWidget(recalc_inertia_button)
 
+        # Zero off-diag button (right of Recalc Inertia)
+        zero_offdiag_button = QtWidgets.QPushButton("Zero off-diag")
+        zero_offdiag_button.setStyleSheet(self.button_style)
+        zero_offdiag_button.setFixedWidth(110)
+        zero_offdiag_button.clicked.connect(self.zero_off_diagonal_inertia)
+        inertia_button_layout.addWidget(zero_offdiag_button)
+
         content_layout.addLayout(inertia_button_layout)
 
-        # Rotation Axis セクション（横一列）
+        # Rotation Axis section (horizontal)
         rotation_layout = QtWidgets.QHBoxLayout()
         rotation_layout.addWidget(QtWidgets.QLabel("Rotation Axis:   "))
         self.axis_group = QtWidgets.QButtonGroup(self)
-        for i, axis in enumerate(['X (Roll)', 'Y (Pitch)', 'Z (Yaw)', 'Fixed']):  # Fixedを追加
+        for i, axis in enumerate(['X (Roll)', 'Y (Pitch)', 'Z (Yaw)', 'Fixed']):  # Fixed added
             radio = QtWidgets.QRadioButton(axis)
-            self.axis_group.addButton(radio, i)  # iは0,1,2,3となる（3がFixed）
+            self.axis_group.addButton(radio, i)  # i is 0,1,2,3 (3 is Fixed)
             rotation_layout.addWidget(radio)
-        rotation_layout.addStretch()  # 右側に余白を追加
+        rotation_layout.addStretch()  # Add margin on right
         content_layout.addLayout(rotation_layout)
 
-        # Angle セクション（Body初期回転角度、度数法）
+        # Angle section (Body initial rotation angle, in degrees)
         angle_layout = QtWidgets.QHBoxLayout()
         angle_layout.addWidget(QtWidgets.QLabel("Angle offset (deg):"))
         angle_layout.addSpacing(10)
 
-        # X軸回転
+        # X axis rotation
         angle_layout.addWidget(QtWidgets.QLabel("X:"))
         self.angle_x_input = QtWidgets.QLineEdit()
         self.angle_x_input.setFixedWidth(60)
@@ -811,7 +778,7 @@ class InspectorWindow(QtWidgets.QWidget):
         self.angle_x_input.textChanged.connect(self.update_body_angle)
         angle_layout.addWidget(self.angle_x_input)
 
-        # Y軸回転
+        # Y axis rotation
         angle_layout.addSpacing(5)
         angle_layout.addWidget(QtWidgets.QLabel("Y:"))
         self.angle_y_input = QtWidgets.QLineEdit()
@@ -821,7 +788,7 @@ class InspectorWindow(QtWidgets.QWidget):
         self.angle_y_input.textChanged.connect(self.update_body_angle)
         angle_layout.addWidget(self.angle_y_input)
 
-        # Z軸回転
+        # Z axis rotation
         angle_layout.addSpacing(5)
         angle_layout.addWidget(QtWidgets.QLabel("Z:"))
         self.angle_z_input = QtWidgets.QLineEdit()
@@ -834,7 +801,7 @@ class InspectorWindow(QtWidgets.QWidget):
         angle_layout.addStretch()
         content_layout.addLayout(angle_layout)
 
-        # Min Angle と Max Angle（左寄せ）
+        # Min Angle and Max Angle (left aligned)
         angle_limits_layout = QtWidgets.QHBoxLayout()
 
         angle_limits_layout.addWidget(QtWidgets.QLabel("Min Angle (deg):"))
@@ -847,7 +814,7 @@ class InspectorWindow(QtWidgets.QWidget):
         self.lower_limit_input.returnPressed.connect(self.look_lower_limit)
         angle_limits_layout.addWidget(self.lower_limit_input)
 
-        angle_limits_layout.addSpacing(10)  # 固定スペース
+        angle_limits_layout.addSpacing(10)  # Fixed space
 
         angle_limits_layout.addWidget(QtWidgets.QLabel("Max Angle (deg):"))
         self.upper_limit_input = QtWidgets.QLineEdit()
@@ -859,10 +826,10 @@ class InspectorWindow(QtWidgets.QWidget):
         self.upper_limit_input.returnPressed.connect(self.look_upper_limit)
         angle_limits_layout.addWidget(self.upper_limit_input)
 
-        angle_limits_layout.addStretch()  # 右側に余白
+        angle_limits_layout.addStretch()  # Right margin
         content_layout.addLayout(angle_limits_layout)
 
-        # ボタン（右寄せ）
+        # Buttons (right aligned)
         joint_buttons_layout = QtWidgets.QHBoxLayout()
         joint_buttons_layout.addStretch()
 
@@ -886,7 +853,7 @@ class InspectorWindow(QtWidgets.QWidget):
 
         content_layout.addLayout(joint_buttons_layout)
 
-        # Inherit to SubnodesチェックボックスとRotation Testボタン（右寄せ）
+        # Inherit to Subnodes checkbox and Rotation Test button (right aligned)
         inherit_rotation_layout = QtWidgets.QHBoxLayout()
         inherit_rotation_layout.addStretch()
 
@@ -907,7 +874,7 @@ class InspectorWindow(QtWidgets.QWidget):
 
         inherit_rotation_layout.addWidget(checkbox_container)
 
-        # Rotation Testボタン
+        # Rotation Test button
         self.rotation_test_button = QtWidgets.QPushButton("Rotation Test")
         self.rotation_test_button.setStyleSheet(self.button_style)
         self.rotation_test_button.setFixedWidth(120)
@@ -917,7 +884,7 @@ class InspectorWindow(QtWidgets.QWidget):
 
         content_layout.addLayout(inherit_rotation_layout)
 
-        # Effort, Damping(kv), Stiffness(kp)（左寄せ）
+        # Effort, Damping(kv), Stiffness(kp) (left aligned)
         joint_params_row1 = QtWidgets.QHBoxLayout()
         joint_params_row1.setSpacing(5)
 
@@ -952,7 +919,7 @@ class InspectorWindow(QtWidgets.QWidget):
 
         content_layout.addLayout(joint_params_row1)
 
-        # Velocity, Margin, Armature, Frictionloss（左寄せ）
+        # Velocity, Margin, Armature, Frictionloss (left aligned)
         joint_params_row2 = QtWidgets.QHBoxLayout()
         joint_params_row2.setSpacing(5)
 
@@ -996,7 +963,7 @@ class InspectorWindow(QtWidgets.QWidget):
 
         content_layout.addLayout(joint_params_row2)
 
-        # Color セクション
+        # Color section
         color_layout = QtWidgets.QHBoxLayout()
         color_layout.addWidget(QtWidgets.QLabel("Color:"))
 
@@ -1023,29 +990,29 @@ class InspectorWindow(QtWidgets.QWidget):
         # Connect Enter key to apply color
         for color_input in self.color_inputs:
             color_input.returnPressed.connect(self.apply_color_to_stl)
-            # 色入力フィールドの変更時にも即座に反映（デバウンス処理付き）
+            # Also apply immediately when color input field changes (with debounce)
             color_input.textChanged.connect(self._on_color_input_changed)
 
-        # Originalボタンを追加（pickボタンの右）
+        # Add Original button (right of Pick button)
         self.original_color_button = QtWidgets.QPushButton("Original")
         self.original_color_button.setStyleSheet(self.button_style)
-        self.original_color_button.setAutoDefault(False)  # Returnキーで誤って起動されないように
+        self.original_color_button.setAutoDefault(False)  # Prevent accidental triggering with Return key
         self.original_color_button.clicked.connect(self.apply_original_mesh_color)
         self.original_color_button.setFixedWidth(70)
         color_layout.addWidget(self.original_color_button)
 
-        color_layout.addStretch()  # 右側の余白を埋める
+        color_layout.addStretch()  # Fill right margin
         content_layout.addLayout(color_layout)
 
-        # 罫線（Colliders の前）
+        # Separator line (before Colliders)
         separator_colliders = QtWidgets.QFrame()
         separator_colliders.setFrameShape(QtWidgets.QFrame.HLine)
         separator_colliders.setFrameShadow(QtWidgets.QFrame.Sunken)
         content_layout.addWidget(separator_colliders)
 
-        # Collider Mesh セクション（複数コライダー対応）
+        # Collider Mesh section (multiple colliders support)
         collider_section_layout = QtWidgets.QVBoxLayout()
-        # タイトル行（Colliders: と Mesh Sourcer ボタンを同じ行に）
+        # Title row (Colliders: and Mesh Sourcer button on same line)
         collider_title_layout = QtWidgets.QHBoxLayout()
         collider_section_label = QtWidgets.QLabel("Colliders:")
         collider_title_layout.addWidget(collider_section_label)
@@ -1058,42 +1025,42 @@ class InspectorWindow(QtWidgets.QWidget):
         collider_title_layout.addWidget(self.collider_mesh_sourcer_button)
 
         collider_section_layout.addLayout(collider_title_layout)
-        
-        # コライダー行を格納するコンテナ（スクロール可能）
+
+        # Container for collider rows (scrollable)
         self.collider_rows_container = QtWidgets.QWidget()
         self.collider_rows_layout = QtWidgets.QVBoxLayout()
         self.collider_rows_layout.setContentsMargins(0, 0, 0, 0)
         self.collider_rows_layout.setSpacing(5)
         self.collider_rows_container.setLayout(self.collider_rows_layout)
-        
-        # コライダー行のリストを初期化
+
+        # Initialize collider rows list
         self.collider_rows = []
-        
-        # Collidersは個別スクロールにせず、行数に応じてそのまま伸ばす
-        # （Inspector全体のスクロールに任せる。Add outport と同じ挙動）
+
+        # Colliders do not have individual scroll, extend based on row count
+        # (Delegate to Inspector-wide scroll. Same behavior as Add outport)
         collider_section_layout.addWidget(self.collider_rows_container)
 
-        # 追加/削除ボタンは各コライダー行に配置（Attach の右隣）
+        # Add/Remove buttons are placed on each collider row (right of Attach)
         content_layout.addLayout(collider_section_layout)
 
-        # 罫線（Output Portsの前）
+        # Separator line (before Output Ports)
         separator = QtWidgets.QFrame()
         separator.setFrameShape(QtWidgets.QFrame.HLine)
         separator.setFrameShadow(QtWidgets.QFrame.Sunken)
         content_layout.addWidget(separator)
 
-        # Output Ports セクション
+        # Output Ports section
         ports_layout = QtWidgets.QVBoxLayout()
-        self.ports_layout = QtWidgets.QVBoxLayout()  # 動的に追加されるポートのための親レイアウト
+        self.ports_layout = QtWidgets.QVBoxLayout()  # Parent layout for dynamically added ports
         ports_layout.addLayout(self.ports_layout)
         content_layout.addLayout(ports_layout)
 
-        # ポートウィジェットを格納するリストを初期化
+        # Initialize port widgets list
         self.port_widgets = []
 
-        # Point Controls セクション（ボタンのみ右寄せ）
+        # Point Controls section (buttons right aligned)
         point_layout = QtWidgets.QHBoxLayout()
-        point_layout.addStretch()  # 左側に余白を追加して右寄せ
+        point_layout.addStretch()  # Add margin on left for right alignment
         self.add_point_btn = QtWidgets.QPushButton("Add outport")
         self.add_point_btn.setStyleSheet(self.button_style)
         self.remove_point_btn = QtWidgets.QPushButton("Remove outport")
@@ -1104,48 +1071,48 @@ class InspectorWindow(QtWidgets.QWidget):
         self.remove_point_btn.clicked.connect(self.remove_point)
         content_layout.addLayout(point_layout)
 
-        # 罫線（File Controlsの前）
+        # Separator line (before File Controls)
         separator2 = QtWidgets.QFrame()
         separator2.setFrameShape(QtWidgets.QFrame.HLine)
         separator2.setFrameShadow(QtWidgets.QFrame.Sunken)
         content_layout.addWidget(separator2)
 
-        # Clear All と Save XMLボタンレイアウト
+        # Clear All and Save XML button layout
         set_button_layout = QtWidgets.QHBoxLayout()
         set_button_layout.addStretch()
 
-        # Clear Allボタン（BaseLinkNode専用）
+        # Clear All button (for BaseLinkNode only)
         self.clear_all_button = QtWidgets.QPushButton("Clear All")
         self.clear_all_button.setStyleSheet(self.button_style)
         self.clear_all_button.clicked.connect(self.clear_all_parameters)
         self.clear_all_button.setFixedWidth(110)
-        self.clear_all_button.setVisible(False)  # デフォルトは非表示
+        self.clear_all_button.setVisible(False)  # Hidden by default
         set_button_layout.addWidget(self.clear_all_button)
 
         save_xml_button = QtWidgets.QPushButton("Save XML")
         save_xml_button.setStyleSheet(self.button_style)
         save_xml_button.clicked.connect(self.save_xml)
-        # Save XMLボタンの横幅を倍に（通常のボタン幅の約2倍、220px）
+        # Save XML button width doubled (about 2x normal button width, 220px)
         save_xml_button.setFixedWidth(220)
         set_button_layout.addWidget(save_xml_button)
         content_layout.addLayout(set_button_layout)
 
-        # ウィンドウリサイズ時の余白を最下部に集約
+        # Consolidate window resize margin at bottom
         content_layout.addStretch()
 
-        # スクロールエリアにコンテンツをセット
+        # Set content to scroll area
         scroll_area.setWidget(scroll_content)
         main_layout.addWidget(scroll_area)
 
-        # Node Inspector内のボタン見た目を「Pickボタン」と同じ（UNIFIED_BUTTON_STYLE）に揃える
-        # （sizeHintが変わるので、先にスタイルを当ててから高さ/幅を調整する）
+        # Make Node Inspector buttons look like Pick button (UNIFIED_BUTTON_STYLE)
+        # (sizeHint changes, so apply style first then adjust height/width)
         self._apply_pick_like_button_style()
-        # Node Inspector内のボタン高さを比率で縮める
+        # Reduce button height ratio in Node Inspector
         self._apply_compact_button_heights()
-        # スタイル変更後、固定幅が小さすぎて潰れるボタンを救済
+        # After style change, rescue buttons that are too narrow
         self._ensure_buttons_not_squeezed()
 
-        # 既存のレイアウトにも spacing を設定
+        # Set spacing on existing layouts
         name_layout.setSpacing(2)
         physics_layout.setSpacing(2)
         rotation_layout.setSpacing(2)
@@ -1158,13 +1125,13 @@ class InspectorWindow(QtWidgets.QWidget):
             line_edit.setStyleSheet("QLineEdit { padding-left: 2px; padding-top: 0px; padding-bottom: 0px; }")
 
     def _apply_compact_button_heights(self, ratio: float = 0.9, min_px: int = 18):
-        """InspectorWindow配下のボタンだけ高さを縮める（幅は既存設定を尊重）"""
+        """Reduce button height only for buttons under InspectorWindow (width respects existing settings)"""
         try:
             for btn in self.findChildren(QtWidgets.QPushButton):
-                # Pickボタンは形状が崩れやすいので除外（元の見た目を維持）
+                # Exclude Pick button as its shape is easily broken (keep original appearance)
                 if btn.text().strip() == "Pick":
                     continue
-                # 既に高さが固定されている場合も、現状値を基準に縮める
+                # Also shrink buttons with fixed height based on current value
                 h = btn.sizeHint().height()
                 target_h = max(min_px, int(round(h * ratio)))
                 btn.setFixedHeight(target_h)
@@ -1172,7 +1139,7 @@ class InspectorWindow(QtWidgets.QWidget):
             print(f"Warning: Failed to apply compact button heights: {e}")
 
     def _apply_pick_like_button_style(self):
-        """InspectorWindow配下のボタンをPickボタンと同じ（UNIFIED_BUTTON_STYLE）見た目にする"""
+        """Make buttons under InspectorWindow look like Pick button (UNIFIED_BUTTON_STYLE)"""
         try:
             for btn in self.findChildren(QtWidgets.QPushButton):
                 btn.setStyleSheet(self.button_style)
@@ -1180,49 +1147,49 @@ class InspectorWindow(QtWidgets.QWidget):
             print(f"Warning: Failed to apply pick-like button style: {e}")
 
     def _ensure_buttons_not_squeezed(self):
-        """固定幅が狭すぎてボタン形状が潰れるのを防ぐ（Qtデフォルト時のsizeHintに合わせる）"""
+        """Prevent button shape from being crushed when fixed width is too narrow (match Qt default sizeHint)"""
         try:
             for btn in self.findChildren(QtWidgets.QPushButton):
-                # Pickはそのまま
+                # Keep Pick button as is
                 if btn.text().strip() == "Pick":
                     continue
                 hint_w = btn.sizeHint().width()
                 if hint_w <= 0:
                     continue
 
-                # setFixedWidth() されている場合（min==max）で、hintより小さいなら広げる
+                # If setFixedWidth() is used (min==max) and smaller than hint, expand it
                 min_w = btn.minimumWidth()
                 max_w = btn.maximumWidth()
                 if min_w > 0 and max_w > 0 and min_w == max_w:
                     if min_w < hint_w:
                         btn.setFixedWidth(hint_w)
                 else:
-                    # 固定幅でない場合でも、極端に小さいなら最低幅を保証
+                    # Even without fixed width, guarantee minimum width if too small
                     if min_w < hint_w:
                         btn.setMinimumWidth(hint_w)
         except Exception as e:
             print(f"Warning: Failed to ensure button widths: {e}")
 
     def setup_validators(self):
-        """数値入力フィールドにバリデータを設定"""
+        """Set validators for numeric input fields"""
         try:
-            # Mass入力フィールド用のバリデータ
+            # Validator for Mass input field
             mass_validator = QtGui.QDoubleValidator()
-            mass_validator.setBottom(0.0)  # 負の値を禁止
+            mass_validator.setBottom(0.0)  # Prohibit negative values
             self.mass_input.setValidator(mass_validator)
 
-            # Volume入力フィールド用のバリデータ
+            # Validator for Volume input field
             volume_validator = QtGui.QDoubleValidator()
-            volume_validator.setBottom(0.0)  # 負の値を禁止
+            volume_validator.setBottom(0.0)  # Prohibit negative values
             self.volume_input.setValidator(volume_validator)
 
-            # RGB入力フィールド用のバリデータ
+            # Validator for RGB input fields
             rgb_validator = QtGui.QDoubleValidator(
-                0.0, 1.0, 3)  # 0.0から1.0まで、小数点以下3桁
+                0.0, 1.0, 3)  # 0.0 to 1.0, 3 decimal places
             for color_input in self.color_inputs:
                 color_input.setValidator(rgb_validator)
 
-            # Output Ports用のバリデータ
+            # Validator for Output Ports
             coord_validator = QtGui.QDoubleValidator()
             for port_widget in self.port_widgets:
                 for input_field in port_widget.findChildren(QtWidgets.QLineEdit):
@@ -1244,8 +1211,8 @@ class InspectorWindow(QtWidgets.QWidget):
             if self.current_node:
                 # Update node color with RGBA values
                 self.current_node.node_color = rgba_color
-                
-                # 即座に3Dビューに色を反映
+
+                # Immediately apply color to 3D view
                 if self.stl_viewer and hasattr(self.stl_viewer, 'apply_color_to_node'):
                     self.stl_viewer.apply_color_to_node(self.current_node)
         except Exception as e:
@@ -1253,39 +1220,39 @@ class InspectorWindow(QtWidgets.QWidget):
             traceback.print_exc()
     
     def _on_color_input_changed(self):
-        """色入力フィールドが変更されたときのコールバック（デバウンス処理付き）"""
-        # タイマーをリセット（300ms後に適用）
+        """Callback when color input field changes (with debounce)"""
+        # Reset timer (apply after 300ms)
         self.color_update_timer.stop()
         self.color_update_timer.start(300)
-    
+
     def _apply_color_from_inputs(self):
-        """色入力フィールドから値を取得して色を適用（デバウンス処理後の実行）"""
+        """Get values from color input fields and apply color (executed after debounce)"""
         if not self.current_node:
             return
-        
+
         try:
-            # RGB値の取得（0-1の範囲）
+            # Get RGB values (0-1 range)
             rgb_values = []
             for input_field in self.color_inputs:
                 text = input_field.text().strip()
                 if not text:
-                    return  # 空の場合は適用しない
+                    return  # Do not apply if empty
                 try:
                     value = float(text)
                     rgb_values.append(max(0.0, min(1.0, value)))
                 except ValueError:
-                    return  # 無効な値の場合は適用しない
-            
+                    return  # Do not apply if invalid value
+
             if len(rgb_values) < 3:
-                return  # 最低3つの値が必要
-            
-            # ノードの色情報を更新
+                return  # At least 3 values required
+
+            # Update node color information
             if len(rgb_values) == 3:
-                self.current_node.node_color = rgb_values + [1.0]  # Alpha=1.0を追加
+                self.current_node.node_color = rgb_values + [1.0]  # Add Alpha=1.0
             else:
-                self.current_node.node_color = rgb_values[:4]  # 最大4要素まで
-            
-            # 即座に3Dビューに色を反映
+                self.current_node.node_color = rgb_values[:4]  # Maximum 4 elements
+
+            # Immediately apply color to 3D view
             if self.stl_viewer and hasattr(self.stl_viewer, 'apply_color_to_node'):
                 self.stl_viewer.apply_color_to_node(self.current_node)
         except Exception as e:
@@ -1322,18 +1289,27 @@ class InspectorWindow(QtWidgets.QWidget):
                 # Parse XML collider
                 collider_data = self.parse_collider_xml(file_path)
                 if collider_data:
-                    self.current_node.collider_type = 'primitive'
-                    self.current_node.collider_data = collider_data
                     self.collider_mesh_input.setText(f"Primitive {collider_data['type'].capitalize()}")
                     print(f"  Type: {collider_data['type']}")
                     print(f"  Position: {collider_data['position']}")
                     print(f"  Rotation: {collider_data['rotation']}")
 
-                    # チェックボックスを自動的にON
+                    # Automatically enable checkbox
                     self.collider_enabled_checkbox.setChecked(True)
-                    self.current_node.collider_enabled = True
+
+                    # Update colliders list
+                    if not hasattr(self.current_node, 'colliders'):
+                        self.current_node.colliders = []
+                    self.current_node.colliders = [{
+                        'type': 'primitive',
+                        'enabled': True,
+                        'data': collider_data,
+                        'position': collider_data.get('position', [0.0, 0.0, 0.0]),
+                        'rotation': collider_data.get('rotation', [0.0, 0.0, 0.0]),
+                        'mesh': None,
+                        'mesh_scale': [1.0, 1.0, 1.0]
+                    }]
                     print(f"  Collider enabled: True")
-                    print(f"  Collider type: primitive")
 
                     # Refresh collider display
                     if self.stl_viewer:
@@ -1344,19 +1320,15 @@ class InspectorWindow(QtWidgets.QWidget):
                 return
 
             # Mesh file collider
-            self.current_node.collider_type = 'mesh'
-
-            # ファイル名を取得（表示用）
             filename = os.path.basename(file_path)
 
-            # パスの保存と表示
+            # Determine path
+            mesh_path = file_path
             if visual_mesh:
                 visual_dir = os.path.dirname(visual_mesh)
                 try:
-                    # 相対パスを試みる
                     relative_path = os.path.relpath(file_path, visual_dir)
-                    self.current_node.collider_mesh = relative_path
-                    # フィールドにはファイル名のみ表示（相対パスの場合）
+                    mesh_path = relative_path
                     if relative_path == filename:
                         self.collider_mesh_input.setText(filename)
                     else:
@@ -1364,23 +1336,30 @@ class InspectorWindow(QtWidgets.QWidget):
                     print(f"✓ Attached collider mesh: {filename}")
                     print(f"  Path: {relative_path}")
                 except ValueError:
-                    # 異なるドライブの場合は絶対パス
-                    self.current_node.collider_mesh = file_path
                     self.collider_mesh_input.setText(filename)
                     print(f"✓ Attached collider mesh: {filename}")
                     print(f"  Path (absolute): {file_path}")
             else:
-                # ビジュアルメッシュがない場合は絶対パス
-                self.current_node.collider_mesh = file_path
                 self.collider_mesh_input.setText(filename)
                 print(f"✓ Attached collider mesh: {filename}")
                 print(f"  Path (absolute): {file_path}")
 
-            # チェックボックスを自動的にON
+            # Automatically enable checkbox
             self.collider_enabled_checkbox.setChecked(True)
-            self.current_node.collider_enabled = True
+
+            # Update colliders list
+            if not hasattr(self.current_node, 'colliders'):
+                self.current_node.colliders = []
+            self.current_node.colliders = [{
+                'type': 'mesh',
+                'enabled': True,
+                'data': None,
+                'position': [0.0, 0.0, 0.0],
+                'rotation': [0.0, 0.0, 0.0],
+                'mesh': mesh_path,
+                'mesh_scale': [1.0, 1.0, 1.0]
+            }]
             print(f"  Collider enabled: True")
-            print(f"  Collider type: mesh")
 
             # Refresh collider display
             if self.stl_viewer:
@@ -1400,13 +1379,24 @@ class InspectorWindow(QtWidgets.QWidget):
         if os.path.exists(collider_xml_path):
             collider_data = self.parse_collider_xml(collider_xml_path)
             if collider_data:
-                self.current_node.collider_type = 'primitive'
-                self.current_node.collider_data = collider_data
                 self.collider_mesh_input.setText(f"Primitive {collider_data['type'].capitalize()}")
                 self.collider_enabled_checkbox.setChecked(True)
-                self.current_node.collider_enabled = True
                 print(f"Auto-loaded collider XML: {collider_xml_path}")
                 print(f"  Type: {collider_data['type']}")
+
+                # Update colliders list
+                if not hasattr(self.current_node, 'colliders'):
+                    self.current_node.colliders = []
+                self.current_node.colliders = [{
+                    'type': 'primitive',
+                    'enabled': True,
+                    'data': collider_data,
+                    'position': collider_data.get('position', [0.0, 0.0, 0.0]),
+                    'rotation': collider_data.get('rotation', [0.0, 0.0, 0.0]),
+                    'mesh': None,
+                    'mesh_scale': [1.0, 1.0, 1.0]
+                }]
+
                 # Refresh collider display if enabled
                 if self.stl_viewer:
                     self.stl_viewer.refresh_collider_display()
@@ -1481,13 +1471,13 @@ class InspectorWindow(QtWidgets.QWidget):
         enabled_checkbox.setChecked(collider_data.get('enabled', False) if collider_data else False)
         enabled_checkbox.stateChanged.connect(lambda: self.update_collider_from_row(collider_index))
         row_layout.addWidget(enabled_checkbox)
-        # Checkbox と input の間だけ 10px 空ける
+        # Add 10px spacing between checkbox and input
         row_layout.addSpacing(10)
-        
+
         # Input field
         mesh_input = QtWidgets.QLineEdit()
         mesh_input.setReadOnly(True)
-        # 枠（ボーダー）を削除
+        # Remove border
         mesh_input.setStyleSheet("QLineEdit { border: none; }")
         
         # Set palette for placeholder text
@@ -1511,13 +1501,13 @@ class InspectorWindow(QtWidgets.QWidget):
                     else:
                         mesh_input.setText(mesh)
                 else:
-                    # Collider未設定の場合でも入力欄は表示し、"Not set" を表示する
+                    # Show input field with "Not set" even when collider is not set
                     mesh_input.setText("Not set")
         else:
-            # Collider未設定の場合でも入力欄は表示し、"Not set" を表示する
+            # Show input field with "Not set" even when collider is not set
             mesh_input.setText("Not set")
 
-        # enabled=false のときは入力欄を無効化（見た目も薄く）
+        # Disable input field when enabled=false (also dim appearance)
         is_enabled = collider_data.get('enabled', False) if collider_data else False
         mesh_input.setEnabled(is_enabled)
         
@@ -1556,8 +1546,8 @@ class InspectorWindow(QtWidgets.QWidget):
         }
 
     def open_mesh_sourcer_for_current_collider_row(self):
-        """CollidersセクションのMesh Sourcerボタン（タイトル行）から呼ぶ"""
-        # いまのUI的には「選択中の行」が無いので、先頭行を対象にする（将来: 行選択UIを追加可能）
+        """Called from Mesh Sourcer button in Colliders section title row"""
+        # Since there is no "selected row" in current UI, target the first row (future: row selection UI can be added)
         idx = 0
         try:
             if self.collider_rows:
@@ -1567,7 +1557,7 @@ class InspectorWindow(QtWidgets.QWidget):
         self.open_mesh_sourcer_for_row(idx)
 
     def add_collider_row_at(self, after_index: int):
-        """指定行の次にコライダー行を追加"""
+        """Add collider row after specified row"""
         if not self.current_node:
             return
         if not hasattr(self.current_node, 'colliders'):
@@ -1579,17 +1569,19 @@ class InspectorWindow(QtWidgets.QWidget):
             'enabled': False,
             'data': None,
             'mesh': None,
-            'mesh_scale': [1.0, 1.0, 1.0]
+            'mesh_scale': [1.0, 1.0, 1.0],
+            'position': [0.0, 0.0, 0.0],
+            'rotation': [0.0, 0.0, 0.0]
         }
         self.current_node.colliders.insert(insert_index, new_collider)
         self.update_collider_rows(self.current_node)
 
     def remove_collider_row_at(self, index: int):
-        """指定行のコライダー行を削除（最低1行は残す）"""
+        """Remove collider row at specified index (keep at least 1 row)"""
         if not self.current_node or not hasattr(self.current_node, 'colliders'):
             return
         if len(self.current_node.colliders) <= 1:
-            # 1行は必ず残す（Not set 行のため）
+            # Always keep at least 1 row (for "Not set" row)
             self.current_node.colliders[0] = {
                 'type': None,
                 'enabled': False,
@@ -1618,7 +1610,9 @@ class InspectorWindow(QtWidgets.QWidget):
             'enabled': False,
             'data': None,
             'mesh': None,
-            'mesh_scale': [1.0, 1.0, 1.0]
+            'mesh_scale': [1.0, 1.0, 1.0],
+            'position': [0.0, 0.0, 0.0],
+            'rotation': [0.0, 0.0, 0.0]
         }
         self.current_node.colliders.append(new_collider)
         
@@ -1669,7 +1663,7 @@ class InspectorWindow(QtWidgets.QWidget):
         is_enabled = row_data['enabled_checkbox'].isChecked()
         self.current_node.colliders[collider_index]['enabled'] = is_enabled
 
-        # UI: チェックOFFでも入力欄は残すが、無効化して "Not set" 表示
+        # UI: Keep input field even when unchecked, but disable and show "Not set"
         mesh_input = row_data.get('mesh_input')
         if mesh_input is not None:
             mesh_input.setEnabled(is_enabled)
@@ -1679,7 +1673,7 @@ class InspectorWindow(QtWidgets.QWidget):
                 if not has_any_value:
                     mesh_input.setText("Not set")
             else:
-                # ONにしたときに "Not set" だったらクリアして視覚メッシュ扱いに戻す
+                # Clear "Not set" text when enabled to treat as visual mesh
                 if mesh_input.text().strip() == "Not set":
                     mesh_input.setText("")
         
@@ -1703,7 +1697,9 @@ class InspectorWindow(QtWidgets.QWidget):
                 'enabled': False,
                 'data': None,
                 'mesh': None,
-                'mesh_scale': [1.0, 1.0, 1.0]
+                'mesh_scale': [1.0, 1.0, 1.0],
+                'position': [0.0, 0.0, 0.0],
+                'rotation': [0.0, 0.0, 0.0]
             })
         
         # Get the directory of the visual mesh
@@ -1737,11 +1733,14 @@ class InspectorWindow(QtWidgets.QWidget):
                     collider['type'] = 'primitive'
                     collider['data'] = collider_data
                     collider['enabled'] = True
+                    # Set position and rotation directly under collider (for display and export)
+                    collider['position'] = collider_data.get('position', [0.0, 0.0, 0.0])
+                    collider['rotation'] = collider_data.get('rotation', [0.0, 0.0, 0.0])
                     row_data['mesh_input'].setText(f"Primitive {collider_data['type'].capitalize()}")
                     row_data['enabled_checkbox'].setChecked(True)
                     print(f"  Type: {collider_data['type']}")
-                    print(f"  Position: {collider_data['position']}")
-                    print(f"  Rotation: {collider_data['rotation']}")
+                    print(f"  Position: {collider['position']}")
+                    print(f"  Rotation: {collider['rotation']}")
                     
                     # Refresh collider display
                     if self.stl_viewer:
@@ -1754,11 +1753,17 @@ class InspectorWindow(QtWidgets.QWidget):
             collider['type'] = 'mesh'
             filename = os.path.basename(file_path)
             
-            # パスの保存と表示
+            # Initialize position and rotation for mesh collider (default to origin)
+            if 'position' not in collider:
+                collider['position'] = [0.0, 0.0, 0.0]
+            if 'rotation' not in collider:
+                collider['rotation'] = [0.0, 0.0, 0.0]
+            
+            # Save and display path
             if visual_mesh:
                 visual_dir = os.path.dirname(visual_mesh)
                 try:
-                    # 相対パスを試みる
+                    # Try relative path
                     relative_path = os.path.relpath(file_path, visual_dir)
                     collider['mesh'] = relative_path
                     if relative_path == filename:
@@ -1768,13 +1773,13 @@ class InspectorWindow(QtWidgets.QWidget):
                     print(f"✓ Attached collider mesh to row {collider_index}: {filename}")
                     print(f"  Path: {relative_path}")
                 except ValueError:
-                    # 異なるドライブの場合は絶対パス
+                    # Use absolute path for different drives
                     collider['mesh'] = file_path
                     row_data['mesh_input'].setText(filename)
                     print(f"✓ Attached collider mesh to row {collider_index}: {filename}")
                     print(f"  Path (absolute): {file_path}")
             else:
-                # ビジュアルメッシュがない場合は絶対パス
+                # Use absolute path if no visual mesh
                 collider['mesh'] = file_path
                 row_data['mesh_input'].setText(filename)
                 print(f"✓ Attached collider mesh to row {collider_index}: {filename}")
@@ -1784,6 +1789,8 @@ class InspectorWindow(QtWidgets.QWidget):
             row_data['enabled_checkbox'].setChecked(True)
             print(f"  Collider enabled: True")
             print(f"  Collider type: mesh")
+            print(f"  Position: {collider['position']}")
+            print(f"  Rotation: {collider['rotation']}")
             
             # Refresh collider display
             if self.stl_viewer:
@@ -1805,49 +1812,17 @@ class InspectorWindow(QtWidgets.QWidget):
         # Initialize colliders list if not exists
         if not hasattr(node, 'colliders'):
             node.colliders = []
-        
-        # Migrate old collider data to new format (backward compatibility)
-        if len(node.colliders) == 0:
-            # Check for old format collider data
-            collider_type = getattr(node, 'collider_type', None)
-            collider_enabled = getattr(node, 'collider_enabled', False)
-            
-            if collider_type == 'primitive' and hasattr(node, 'collider_data') and node.collider_data:
-                # Migrate primitive collider
-                node.colliders.append({
-                    'type': 'primitive',
-                    'enabled': collider_enabled,
-                    'data': node.collider_data,
-                    'mesh': None,
-                    'mesh_scale': [1.0, 1.0, 1.0]
-                })
-            elif collider_type == 'mesh' and hasattr(node, 'collider_mesh') and node.collider_mesh:
-                # Migrate mesh collider
-                node.colliders.append({
-                    'type': 'mesh',
-                    'enabled': collider_enabled,
-                    'data': None,
-                    'mesh': node.collider_mesh,
-                    'mesh_scale': getattr(node, 'collider_mesh_scale', [1.0, 1.0, 1.0])
-                })
-            elif collider_enabled:
-                # Enabled but no specific collider - use visual mesh
-                node.colliders.append({
-                    'type': 'mesh',
-                    'enabled': True,
-                    'data': None,
-                    'mesh': None,  # Use visual mesh
-                    'mesh_scale': [1.0, 1.0, 1.0]
-                })
 
-        # Colliderが1つも無い場合でも、UI上は「Not set」の行を1つ表示する
+        # Show at least one "Not set" row in UI even when there are no colliders
         if len(node.colliders) == 0:
             node.colliders.append({
                 'type': None,
                 'enabled': False,
                 'data': None,
                 'mesh': None,
-                'mesh_scale': [1.0, 1.0, 1.0]
+                'mesh_scale': [1.0, 1.0, 1.0],
+                'position': [0.0, 0.0, 0.0],
+                'rotation': [0.0, 0.0, 0.0]
             })
         
         # Create UI rows for each collider
@@ -1856,68 +1831,6 @@ class InspectorWindow(QtWidgets.QWidget):
             self.collider_rows.append(row_data)
             self.collider_rows_layout.addWidget(row_data['widget'])
     
-    def on_collider_enabled_changed(self, state):
-        """Handle collider enabled checkbox state change (deprecated, kept for backward compatibility)"""
-        if self.current_node:
-            # Use checkbox.isChecked() instead of comparing state with enum
-            is_enabled = self.collider_enabled_checkbox.isChecked()
-            self.current_node.collider_enabled = is_enabled
-
-            # チェックON時: コライダー設定を確認・適用
-            if is_enabled:
-                # 既存のcollider設定を確認
-                collider_type = getattr(self.current_node, 'collider_type', None)
-
-                if collider_type == 'primitive':
-                    # プリミティブコライダー（XML）が既に設定されている
-                    collider_data = getattr(self.current_node, 'collider_data', None)
-                    if collider_data:
-                        shape_type = collider_data.get('type', 'unknown').capitalize()
-                        self.collider_mesh_input.setText(f"Primitive {shape_type}")
-                        print(f"Collider enabled: Applying primitive collider - {shape_type}")
-                    else:
-                        print(f"Collider enabled: Primitive type but no data")
-
-                elif collider_type == 'mesh':
-                    # メッシュコライダーが既に設定されている
-                    collider_mesh = getattr(self.current_node, 'collider_mesh', None)
-                    if collider_mesh:
-                        # 既存のメッシュコライダーを使用
-                        mesh_name = os.path.basename(collider_mesh)
-                        # ビジュアルメッシュと同じか確認
-                        if hasattr(self.current_node, 'stl_file') and collider_mesh == self.current_node.stl_file:
-                            self.collider_mesh_input.setText(f"(Visual) {mesh_name}")
-                        else:
-                            self.collider_mesh_input.setText(mesh_name)
-                        print(f"Collider enabled: Applying mesh collider - {mesh_name}")
-                    else:
-                        # collider_meshが未設定の場合、ビジュアルメッシュを使用
-                        if hasattr(self.current_node, 'stl_file') and self.current_node.stl_file:
-                            self.current_node.collider_mesh = self.current_node.stl_file
-                            visual_mesh_name = os.path.basename(self.current_node.stl_file)
-                            self.collider_mesh_input.setText(f"(Visual) {visual_mesh_name}")
-                            print(f"Collider enabled: Using visual mesh as collider - {visual_mesh_name}")
-                        else:
-                            print(f"Collider enabled: No mesh available")
-
-                else:
-                    # collider_typeが未設定の場合、ビジュアルメッシュを使用
-                    if hasattr(self.current_node, 'stl_file') and self.current_node.stl_file:
-                        self.current_node.collider_type = 'mesh'
-                        self.current_node.collider_mesh = self.current_node.stl_file
-                        visual_mesh_name = os.path.basename(self.current_node.stl_file)
-                        self.collider_mesh_input.setText(f"(Visual) {visual_mesh_name}")
-                        print(f"Collider enabled: Using visual mesh as collider - {visual_mesh_name}")
-                    else:
-                        print(f"Collider enabled: No collider available")
-
-            else:
-                print(f"Collider disabled: Display hidden (collider_mesh setting preserved)")
-
-            # Refresh collider display
-            if self.stl_viewer:
-                self.stl_viewer.refresh_collider_display()
-
     def open_mesh_sourcer(self):
         """Open MeshSourcer with the current node's mesh file and collider information"""
         if not self.current_node:
@@ -1948,19 +1861,19 @@ class InspectorWindow(QtWidgets.QWidget):
             # Prepare command arguments
             cmd_args = [sys.executable, mesh_sourcer_path, mesh_file]
 
-            # Check if node has collider primitive information
-            collider_type = getattr(self.current_node, 'collider_type', None)
-            collider_data = getattr(self.current_node, 'collider_data', None)
-            
-            if collider_type == 'primitive' and collider_data:
-                # Serialize collider data to JSON and pass as command line argument
-                import json
-                collider_json = json.dumps({
-                    'type': collider_type,
-                    'data': collider_data
-                })
-                cmd_args.append(collider_json)
-                print(f"Passing collider information: type={collider_data.get('type', 'unknown')}")
+            # Check if node has collider primitive information from colliders list
+            if hasattr(self.current_node, 'colliders') and self.current_node.colliders:
+                for collider in self.current_node.colliders:
+                    if collider.get('type') == 'primitive' and collider.get('data'):
+                        # Serialize collider data to JSON and pass as command line argument
+                        import json
+                        collider_json = json.dumps({
+                            'type': 'primitive',
+                            'data': collider['data']
+                        })
+                        cmd_args.append(collider_json)
+                        print(f"Passing collider information: type={collider['data'].get('type', 'unknown')}")
+                        break  # Only pass the first primitive collider
 
             # Launch MeshSourcer as a separate process with the mesh file path and optional collider info
             subprocess.Popen(cmd_args)
@@ -1972,7 +1885,7 @@ class InspectorWindow(QtWidgets.QWidget):
             traceback.print_exc()
 
     def update_port_coordinate(self, port_index, coord_index, value):
-        """ポート座標の更新"""
+        """Update port coordinate"""
         try:
             if self.current_node and hasattr(self.current_node, 'points'):
                 if 0 <= port_index < len(self.current_node.points):
@@ -1987,26 +1900,26 @@ class InspectorWindow(QtWidgets.QWidget):
             print(f"Error updating coordinate: {str(e)}")
 
     def update_port_angle(self, port_index, angle_index, value):
-        """ポート角度の更新（UIは度、内部はラジアンで保存）"""
+        """Update port angle (UI in degrees, stored internally in radians)"""
         try:
             if self.current_node and hasattr(self.current_node, 'points'):
                 if 0 <= port_index < len(self.current_node.points):
                     try:
                         new_value_deg = float(value)
-                        # 度からラジアンに変換して保存
+                        # Convert from degrees to radians and store
                         new_value_rad = math.radians(new_value_deg)
-                        # angleキーが存在しない場合は初期化
+                        # Initialize angle key if not exists
                         if 'angle' not in self.current_node.points[port_index]:
                             self.current_node.points[port_index]['angle'] = [0.0, 0.0, 0.0]
                         self.current_node.points[port_index]['angle'][angle_index] = new_value_rad
                         print(f"Updated port {port_index+1} angle {angle_index} to {new_value_deg} degrees ({new_value_rad} rad)")
 
-                        # NOTE: body_angleは同期しない
-                        # body_angleはMJCFのref属性（参照角度）専用
-                        # point['angle']はジョイント原点の回転（origin rpy）
-                        # これらは異なる意味を持つため、別々に管理する
+                        # NOTE: Do not sync with body_angle
+                        # body_angle is for MJCF ref attribute (reference angle) only
+                        # point['angle'] is for joint origin rotation (origin rpy)
+                        # These have different meanings, so manage them separately
 
-                        # 3Dビューを更新（子ノードの回転を更新）
+                        # Update 3D view (update child node rotations)
                         if self.stl_viewer:
                             self.stl_viewer.update_3d_view()
                     except ValueError:
@@ -2015,7 +1928,7 @@ class InspectorWindow(QtWidgets.QWidget):
             print(f"Error updating angle: {str(e)}")
 
     def _set_inertial_origin_ui(self, xyz, rpy):
-        """Inertial OriginのUI入力フィールドに値を設定（指数表記を使用せず、高精度で表示）"""
+        """Set values to Inertial Origin UI input fields (display with high precision, no exponential notation)"""
         self.inertial_x_input.setText(format_float_no_exp(xyz[0]))
         self.inertial_y_input.setText(format_float_no_exp(xyz[1]))
         self.inertial_z_input.setText(format_float_no_exp(xyz[2]))
@@ -2024,7 +1937,7 @@ class InspectorWindow(QtWidgets.QWidget):
         self.inertial_y_rpy_input.setText(format_float_no_exp(rpy[2]))
 
     def _set_inertia_ui(self, inertia_dict):
-        """Inertia TensorのUI入力フィールドに値を設定（指数表記を使用せず、高精度で表示）"""
+        """Set values to Inertia Tensor UI input fields (display with high precision, no exponential notation)"""
         self.ixx_input.setText(format_float_no_exp(inertia_dict.get('ixx', 0.0)))
         self.ixy_input.setText(format_float_no_exp(inertia_dict.get('ixy', 0.0)))
         self.ixz_input.setText(format_float_no_exp(inertia_dict.get('ixz', 0.0)))
@@ -2033,76 +1946,76 @@ class InspectorWindow(QtWidgets.QWidget):
         self.izz_input.setText(format_float_no_exp(inertia_dict.get('izz', 0.0)))
 
     def _set_color_ui(self, color_values):
-        """色のUI入力フィールドに値を設定（RGB or RGBA）"""
-        # RGB (3 elements) or RGBA (4 elements) を受け入れる
+        """Set values to color UI input fields (RGB or RGBA)"""
+        # Accept RGB (3 elements) or RGBA (4 elements)
         num_values = min(len(color_values), len(self.color_inputs))
         for i in range(num_values):
             self.color_inputs[i].setText(f"{color_values[i]:.3f}")
 
-        # RGBの場合、Alpha=1.0を設定
+        # Set Alpha=1.0 for RGB
         if len(color_values) == 3 and len(self.color_inputs) >= 4:
             self.color_inputs[3].setText("1.0")
 
     def update_info(self, node):
-        """ノード情報の更新"""
+        """Update node information"""
         self.current_node = node
 
         try:
             # Node Name
             self.name_edit.setText(node.name())
 
-            # Volume & Mass（高精度、指数表記なし）
+            # Volume & Mass (high precision, no exponential notation)
             if hasattr(node, 'volume_value'):
                 self.volume_input.setText(format_float_no_exp(node.volume_value))
 
             if hasattr(node, 'mass_value'):
                 self.mass_input.setText(format_float_no_exp(node.mass_value))
 
-            # Inertia の設定
+            # Set Inertia
             if hasattr(node, 'inertia') and isinstance(node.inertia, dict):
                 self._set_inertia_ui(node.inertia)
             else:
-                # デフォルト値を設定
+                # Set default values
                 node.inertia = DEFAULT_INERTIA_ZERO.copy()
                 self._set_inertia_ui(node.inertia)
 
-            # Inertial Origin の設定
+            # Set Inertial Origin
             if hasattr(node, 'inertial_origin') and isinstance(node.inertial_origin, dict):
                 xyz = node.inertial_origin.get('xyz', DEFAULT_COORDS_ZERO)
                 rpy = node.inertial_origin.get('rpy', DEFAULT_COORDS_ZERO)
                 self._set_inertial_origin_ui(xyz, rpy)
             else:
-                # デフォルト値を設定
+                # Set default values
                 node.inertial_origin = DEFAULT_ORIGIN_ZERO.copy()
                 node.inertial_origin['xyz'] = DEFAULT_COORDS_ZERO.copy()
                 node.inertial_origin['rpy'] = DEFAULT_COORDS_ZERO.copy()
                 self._set_inertial_origin_ui(node.inertial_origin['xyz'], node.inertial_origin['rpy'])
 
-            # Rotation Axis - nodeのrotation_axis属性を確認して設定
+            # Rotation Axis - check node's rotation_axis attribute and set
             if hasattr(node, 'rotation_axis'):
                 axis_button = self.axis_group.button(node.rotation_axis)
                 if axis_button:
                     axis_button.setChecked(True)
             else:
-                # デフォルトでX軸を選択
+                # Default to X axis
                 node.rotation_axis = 0
                 if self.axis_group.button(0):
                     self.axis_group.button(0).setChecked(True)
 
-            # Body Angle の設定（度数法で表示）
-            # 親ノードの接続outポートのAng値を取得して反映
+            # Set Body Angle (display in degrees)
+            # Get and apply Ang value from connected parent node's outport
             parent_angle = None
             if hasattr(node, 'graph'):
                 graph = node.graph
-                # ノードの入力ポートから親を探す
+                # Find parent from node's input port
                 for input_port in node.input_ports():
                     connected_ports = input_port.connected_ports()
                     if connected_ports:
                         parent_node = connected_ports[0].node()
                         parent_port_name = connected_ports[0].name()
 
-                        # ポート名からポイントインデックスを計算（out_1 -> 0, out_2 -> 1, etc.）
-                        point_index = 0  # デフォルト
+                        # Calculate point index from port name (out_1 -> 0, out_2 -> 1, etc.)
+                        point_index = 0  # Default
                         if parent_port_name.startswith('out_'):
                             try:
                                 port_num = int(parent_port_name.split('_')[1])
@@ -2112,70 +2025,70 @@ class InspectorWindow(QtWidgets.QWidget):
                         elif parent_port_name == 'out':
                             point_index = 0
 
-                        # 親ノードのpointsからangleを取得
+                        # Get angle from parent node's points
                         if hasattr(parent_node, 'points') and point_index < len(parent_node.points):
                             point_data = parent_node.points[point_index]
                             parent_angle = point_data.get('angle', [0.0, 0.0, 0.0])
                         break
 
-            # 親ノードのangle値がある場合はそれを使用、なければnode.body_angleを使用
+            # Use parent node's angle value if available, otherwise use node.body_angle
             if parent_angle is not None:
-                # NOTE: body_angleが既に設定済み（MJCFのref等）の場合は上書きしない
+                # NOTE: Do not overwrite if body_angle is already set (e.g., MJCF ref)
                 existing_body_angle = getattr(node, 'body_angle', [0.0, 0.0, 0.0])
                 if not any(a != 0.0 for a in existing_body_angle):
-                    # body_angleが未設定の場合のみ同期
+                    # Sync only if body_angle is not set
                     node.body_angle = list(parent_angle)
-                # UIには親ノードのangle値を度数法で表示
+                # Display parent node's angle value in degrees in UI
                 self.angle_x_input.setText(str(round(math.degrees(parent_angle[0]), 2)))
                 self.angle_y_input.setText(str(round(math.degrees(parent_angle[1]), 2)))
                 self.angle_z_input.setText(str(round(math.degrees(parent_angle[2]), 2)))
             elif hasattr(node, 'body_angle'):
-                # UIには度数法で表示（ラジアンから変換）
+                # Display in degrees in UI (convert from radians)
                 self.angle_x_input.setText(str(round(math.degrees(node.body_angle[0]), 2)))
                 self.angle_y_input.setText(str(round(math.degrees(node.body_angle[1]), 2)))
                 self.angle_z_input.setText(str(round(math.degrees(node.body_angle[2]), 2)))
             else:
-                # デフォルト値を設定（ラジアンで0）
+                # Set default values (0 in radians)
                 node.body_angle = [0.0, 0.0, 0.0]
                 self.angle_x_input.setText("0.0")
                 self.angle_y_input.setText("0.0")
                 self.angle_z_input.setText("0.0")
 
-            # Massless Decoration の状態を設定
+            # Set Massless Decoration state
             if hasattr(node, 'massless_decoration'):
                 self.massless_checkbox.setChecked(node.massless_decoration)
             else:
                 node.massless_decoration = False
                 self.massless_checkbox.setChecked(False)
 
-            # Hide Mesh の状態を設定
+            # Set Hide Mesh state
             if hasattr(node, 'hide_mesh'):
                 self.hide_mesh_checkbox.setChecked(node.hide_mesh)
             else:
                 node.hide_mesh = False
                 self.hide_mesh_checkbox.setChecked(False)
 
-            # Joint Limits の設定（RadianからDegreeに変換して表示）
+            # Set Joint Limits (convert from Radian to Degree for display)
             if hasattr(node, 'joint_lower'):
-                # ノードにはRadian値で保存されているのでDegreeに変換（小数点2桁まで、3桁目を四捨五入）
+                # Convert Radian to Degree (round to 2 decimal places)
                 self.lower_limit_input.setText(str(round(math.degrees(node.joint_lower), 2)))
             else:
-                # DEFAULT_JOINT_LOWERは既にDegree値
+                # DEFAULT_JOINT_LOWER is already in Degree
                 node.joint_lower = math.radians(DEFAULT_JOINT_LOWER)
                 self.lower_limit_input.setText(str(DEFAULT_JOINT_LOWER))
 
             if hasattr(node, 'joint_upper'):
-                # ノードにはRadian値で保存されているのでDegreeに変換（小数点2桁まで、3桁目を四捨五入）
+                # Convert Radian to Degree (round to 2 decimal places)
                 self.upper_limit_input.setText(str(round(math.degrees(node.joint_upper), 2)))
             else:
-                # DEFAULT_JOINT_UPPERは既にDegree値
+                # DEFAULT_JOINT_UPPER is already in Degree
                 node.joint_upper = math.radians(DEFAULT_JOINT_UPPER)
                 self.upper_limit_input.setText(str(DEFAULT_JOINT_UPPER))
 
             if hasattr(node, 'joint_effort'):
                 self.effort_input.setText(str(node.joint_effort))
             else:
-                # グラフのデフォルト値を使用
+                # Use graph default value
                 if hasattr(node, 'graph') and hasattr(node.graph, 'default_joint_effort'):
                     node.joint_effort = node.graph.default_joint_effort
                 else:
@@ -2185,62 +2098,62 @@ class InspectorWindow(QtWidgets.QWidget):
             if hasattr(node, 'joint_velocity'):
                 self.velocity_input.setText(str(node.joint_velocity))
             else:
-                # グラフのデフォルト値を使用
+                # Use graph default value
                 if hasattr(node, 'graph') and hasattr(node.graph, 'default_joint_velocity'):
                     node.joint_velocity = node.graph.default_joint_velocity
                 else:
                     node.joint_velocity = DEFAULT_JOINT_VELOCITY
                 self.velocity_input.setText(str(node.joint_velocity))
 
-            # Dampingの設定
+            # Set Damping
             if hasattr(node, 'joint_damping'):
                 self.damping_input.setText(str(node.joint_damping))
             else:
                 node.joint_damping = DEFAULT_DAMPING_KV
                 self.damping_input.setText(str(node.joint_damping))
 
-            # Stiffnessの設定
+            # Set Stiffness
             if hasattr(node, 'joint_stiffness'):
                 self.stiffness_input.setText(str(node.joint_stiffness))
             else:
                 node.joint_stiffness = DEFAULT_STIFFNESS_KP
                 self.stiffness_input.setText(str(node.joint_stiffness))
 
-            # Marginの設定
+            # Set Margin
             if hasattr(node, 'joint_margin'):
                 self.margin_input.setText(str(node.joint_margin))
             else:
                 node.joint_margin = DEFAULT_MARGIN
                 self.margin_input.setText(str(node.joint_margin))
 
-            # Armatureの設定
+            # Set Armature
             if hasattr(node, 'joint_armature'):
                 self.armature_input.setText(str(node.joint_armature))
             else:
                 node.joint_armature = DEFAULT_ARMATURE
                 self.armature_input.setText(str(node.joint_armature))
 
-            # Frictionlossの設定
+            # Set Frictionloss
             if hasattr(node, 'joint_frictionloss'):
                 self.frictionloss_input.setText(str(node.joint_frictionloss))
             else:
                 node.joint_frictionloss = DEFAULT_FRICTIONLOSS
                 self.frictionloss_input.setText(str(node.joint_frictionloss))
 
-            # Color settings - nodeのnode_color属性を確認して設定
+            # Color settings - check node's node_color attribute and set
             if hasattr(node, 'node_color') and node.node_color:
                 self._set_color_ui(node.node_color)
 
-                # カラーサンプルチップの更新
+                # Update color sample chip
                 rgb_display = [int(v * 255) for v in node.node_color[:3]]
                 self.color_sample.setStyleSheet(
                     f"background-color: rgb({rgb_display[0]},{rgb_display[1]},{rgb_display[2]}); "
                     f"border: 1px solid black;"
                 )
-                # STLモデルにも色を適用
+                # Apply color to STL model
                 self.apply_color_to_stl()
             else:
-                # デフォルトの色を設定（白）
+                # Set default color (white)
                 node.node_color = DEFAULT_COLOR_WHITE.copy()
                 self._set_color_ui(node.node_color)
                 self.color_sample.setStyleSheet(
@@ -2248,24 +2161,24 @@ class InspectorWindow(QtWidgets.QWidget):
                 )
 
             # Collider Mesh settings
-            # コライダー行を更新
+            # Update collider rows
             self.update_collider_rows(node)
 
-            # 回転軸の選択を更新するためのシグナルを接続
+            # Connect signal to update rotation axis selection
             for button in self.axis_group.buttons():
                 button.clicked.connect(lambda checked, btn=button: self.update_rotation_axis(btn))
 
             # Output Ports
             self.update_output_ports(node)
 
-            # ラジオボタンのイベントハンドラを設定
+            # Set radio button event handler
             self.axis_group.buttonClicked.connect(self.on_axis_selection_changed)
 
-            # バリデータの設定
+            # Set validators
             self.setup_validators()
 
             # Refresh collider display after all data is loaded
-            # これにより、Node Inspector再オープン時にコライダーが正しく表示される
+            # This ensures colliders display correctly when Node Inspector is reopened
             if self.stl_viewer:
                 self.stl_viewer.refresh_collider_display()
 
@@ -2274,30 +2187,31 @@ class InspectorWindow(QtWidgets.QWidget):
             traceback.print_exc()
 
     def update_rotation_axis(self, button):
-        """回転軸の選択が変更されたときの処理"""
+        """Handle rotation axis selection change"""
         if self.current_node:
             self.current_node.rotation_axis = self.axis_group.id(button)
 
     def on_axis_selection_changed(self, button):
-        """回転軸の選択が変更されたときのイベントハンドラ"""
+        """Event handler when rotation axis selection changes"""
         if self.current_node:
-            # 回転軸の更新
+            # Update rotation axis
             axis_id = self.axis_group.id(button)
             self.current_node.rotation_axis = axis_id
 
-            # 軸のタイプを判定して表示
+            # Determine and display axis type
             axis_types = ['X (Roll)', 'Y (Pitch)', 'Z (Yaw)', 'Fixed']
             if 0 <= axis_id < len(axis_types):
                 print(f"Rotation axis changed to: {axis_types[axis_id]}")
 
-            # グラフ全体のレイアウトを更新して、point_angleを含む全ての変換を再適用
+            # Update entire graph layout and reapply all transforms including point_angle
             if hasattr(self, 'graph') and self.graph:
                 self.graph.update_node_layout()
             elif self.stl_viewer:
-                # グラフにアクセスできない場合は直接レンダリング
+                # Render directly if graph is not accessible
                 self.stl_viewer.render_to_image()
+
     def update_node_name(self):
-        """ノード名の更新"""
+        """Update node name"""
         if self.current_node:
             new_name = self.name_edit.text()
             old_name = self.current_node.name()
@@ -2305,20 +2219,20 @@ class InspectorWindow(QtWidgets.QWidget):
                 self.current_node.set_name(new_name)
 
     def add_point(self):
-        """ポイントの追加"""
+        """Add point"""
         if self.current_node and hasattr(self.current_node, '_add_output'):
             new_port_name = self.current_node._add_output()
             if new_port_name:
                 self.update_info(self.current_node)
 
     def remove_point(self):
-        """ポイントの削除"""
+        """Remove point"""
         if self.current_node and hasattr(self.current_node, 'remove_output'):
             self.current_node.remove_output()
             self.update_info(self.current_node)
 
     def import_mesh(self):
-        """メッシュファイルをインポート"""
+        """Import mesh file"""
         if self.current_node:
             file_filter = get_mesh_file_filter(trimesh_available=True)
             file_name, _ = QtWidgets.QFileDialog.getOpenFileName(
@@ -2327,35 +2241,35 @@ class InspectorWindow(QtWidgets.QWidget):
                 self.current_node.stl_file = file_name
                 if self.stl_viewer:
                     self.stl_viewer.load_stl_for_node(self.current_node)
-                    # 3Dビューを更新
+                    # Update 3D view
                     self.stl_viewer.render_to_image()
 
                 # Auto-load collider XML if exists
                 self.auto_load_collider_xml(file_name)
 
-                # Recalc Positionsと同じ効果を実行
+                # Execute same effect as Recalc Positions
                 if hasattr(self.current_node, 'graph') and self.current_node.graph:
                     self.current_node.graph.recalculate_all_positions()
 
     def closeEvent(self, event):
-        """ウィンドウが閉じられるときのイベントを処理"""
+        """Handle window close event"""
         try:
-            # ハイライトをクリア
+            # Clear highlight
             if self.stl_viewer:
                 self.stl_viewer.clear_highlight()
 
-            # 全てのウィジェットを明示的に削除
+            # Explicitly delete all widgets
             for widget in self.findChildren(QtWidgets.QWidget):
                 if widget is not self:
                     widget.setParent(None)
                     widget.deleteLater()
 
-            # 参照のクリア
+            # Clear references
             self.current_node = None
             self.stl_viewer = None
             self.port_widgets.clear()
 
-            # イベントを受け入れ
+            # Accept event
             event.accept()
 
         except Exception as e:
@@ -2363,13 +2277,13 @@ class InspectorWindow(QtWidgets.QWidget):
             event.accept()
 
     def _load_xml_common_properties(self, root, xml_dir):
-        """XMLファイルから共通プロパティを読み込む（load_xmlとload_xml_with_stlで共有）
-        
+        """Load common properties from XML file (shared by load_xml and load_xml_with_stl)
+
         Args:
             root: XML root element
             xml_dir: Directory containing the XML file
         """
-        # リンク名の取得と設定
+        # Get and set link name
         link_elem = root.find('link')
         if link_elem is not None:
             link_name = link_elem.get('name')
@@ -2377,24 +2291,24 @@ class InspectorWindow(QtWidgets.QWidget):
                 self.current_node.set_name(link_name)
                 self.name_edit.setText(link_name)
 
-            # 物理プロパティの設定
+            # Set physical properties
             inertial_elem = link_elem.find('inertial')
             if inertial_elem is not None:
-                # ボリュームの設定
+                # Set volume
                 volume_elem = inertial_elem.find('volume')
                 if volume_elem is not None:
                     volume = float(volume_elem.get('value', '0.0'))
                     self.current_node.volume_value = volume
                     self.volume_input.setText(format_float_no_exp(volume))
 
-                # 質量の設定
+                # Set mass
                 mass_elem = inertial_elem.find('mass')
                 if mass_elem is not None:
                     mass = float(mass_elem.get('value', '0.0'))
                     self.current_node.mass_value = mass
                     self.mass_input.setText(format_float_no_exp(mass))
 
-                # Inertial Originの設定
+                # Set Inertial Origin
                 origin_elem = inertial_elem.find('origin')
                 if origin_elem is not None:
                     origin_xyz = origin_elem.get('xyz', '0 0 0').split()
@@ -2403,13 +2317,13 @@ class InspectorWindow(QtWidgets.QWidget):
                         'xyz': [float(x) for x in origin_xyz],
                         'rpy': [float(x) for x in origin_rpy]
                     }
-                    # UIに反映
+                    # Update UI
                     self._set_inertial_origin_ui(
                         self.current_node.inertial_origin['xyz'],
                         self.current_node.inertial_origin['rpy']
                     )
 
-                # 慣性モーメントの設定
+                # Set inertia tensor
                 inertia_elem = inertial_elem.find('inertia')
                 if inertia_elem is not None:
                     self.current_node.inertia = {
@@ -2420,15 +2334,15 @@ class InspectorWindow(QtWidgets.QWidget):
                         'iyz': float(inertia_elem.get('iyz', '0')),
                         'izz': float(inertia_elem.get('izz', '0'))
                     }
-                    # UIに反映
+                    # Update UI
                     self._set_inertia_ui(self.current_node.inertia)
 
-            # Center of Massの設定
+            # Set Center of Mass
             center_of_mass_elem = link_elem.find('center_of_mass')
             if center_of_mass_elem is not None:
                 com_xyz = center_of_mass_elem.text.strip().split()
 
-        # 色情報の処理
+        # Process color information
         material_elem = root.find('.//material/color')
         if material_elem is not None:
             rgba = material_elem.get('rgba', '1.0 1.0 1.0 1.0').split()
@@ -2436,7 +2350,7 @@ class InspectorWindow(QtWidgets.QWidget):
             self.current_node.node_color = rgba_values
             self._set_color_ui(rgba_values)
 
-        # massless_decorationとhide_meshの読み込み
+        # Load massless_decoration and hide_mesh
         massless_elem = root.find('massless_decoration')
         if massless_elem is not None:
             try:
@@ -2458,63 +2372,79 @@ class InspectorWindow(QtWidgets.QWidget):
                 print(f"Error parsing hide_mesh: {e}")
 
         # Collider情報の読み込み
-        collider_enabled_elem = root.find('collider_enabled')
-        if collider_enabled_elem is not None:
-            try:
-                collider_enabled = collider_enabled_elem.text.lower() == 'true' if collider_enabled_elem.text else False
-                self.current_node.collider_enabled = collider_enabled
-                if hasattr(self, 'collider_enabled_checkbox'):
-                    self.collider_enabled_checkbox.setChecked(collider_enabled)
-            except Exception as e:
-                print(f"Error parsing collider_enabled: {e}")
-
         collider_elem = root.find('collider')
         if collider_elem is not None:
             collider_type = collider_elem.get('type')
             collider_file = collider_elem.get('file')
-            
+
             if collider_type == 'primitive' and collider_file:
                 collider_xml_path = os.path.join(xml_dir, collider_file)
                 if os.path.exists(collider_xml_path):
                     collider_data = self.parse_collider_xml(collider_xml_path)
                     if collider_data:
-                        self.current_node.collider_type = 'primitive'
-                        self.current_node.collider_data = collider_data
                         if hasattr(self, 'collider_mesh_input'):
                             self.collider_mesh_input.setText(f"Primitive {collider_data['type'].capitalize()}")
                         if hasattr(self, 'collider_enabled_checkbox'):
                             self.collider_enabled_checkbox.setChecked(True)
-                        self.current_node.collider_enabled = True
-            
+
+                        # Update colliders list
+                        if not hasattr(self.current_node, 'colliders'):
+                            self.current_node.colliders = []
+                        self.current_node.colliders = [{
+                            'type': 'primitive',
+                            'enabled': True,
+                            'data': collider_data,
+                            'position': collider_data.get('position', [0.0, 0.0, 0.0]),
+                            'rotation': collider_data.get('rotation', [0.0, 0.0, 0.0]),
+                            'mesh': None,
+                            'mesh_scale': [1.0, 1.0, 1.0]
+                        }]
+
             elif collider_type == 'mesh' and collider_file:
                 collider_mesh_path = os.path.join(xml_dir, collider_file)
                 if os.path.exists(collider_mesh_path):
-                    self.current_node.collider_type = 'mesh'
-                    self.current_node.collider_mesh = collider_mesh_path
                     if hasattr(self, 'collider_mesh_input'):
                         self.collider_mesh_input.setText(os.path.basename(collider_mesh_path))
                     if hasattr(self, 'collider_enabled_checkbox'):
                         self.collider_enabled_checkbox.setChecked(True)
-                    self.current_node.collider_enabled = True
 
-        # Collision mesh の処理（後方互換性のため）
+                    # Update colliders list
+                    if not hasattr(self.current_node, 'colliders'):
+                        self.current_node.colliders = []
+                    self.current_node.colliders = [{
+                        'type': 'mesh',
+                        'enabled': True,
+                        'data': None,
+                        'position': [0.0, 0.0, 0.0],
+                        'rotation': [0.0, 0.0, 0.0],
+                        'mesh': collider_mesh_path,
+                        'mesh_scale': [1.0, 1.0, 1.0]
+                    }]
+
+        # Process collision mesh (legacy XML format support)
         collision_mesh_elem = link_elem.find('collision_mesh') if link_elem is not None else None
         if collision_mesh_elem is not None and collision_mesh_elem.text:
             collision_mesh_path = os.path.join(xml_dir, collision_mesh_elem.text.strip())
             if os.path.exists(collision_mesh_path):
-                self.current_node.collider_mesh = collision_mesh_path
-                self.current_node.collider_type = 'mesh'
                 if hasattr(self, 'collider_mesh_input'):
                     self.collider_mesh_input.setText(os.path.basename(collision_mesh_path))
-            else:
-                self.current_node.collider_mesh = None
-        elif not hasattr(self.current_node, 'collider_mesh') or not self.current_node.collider_mesh:
-            self.current_node.collider_mesh = None
+                # Update colliders list
+                if not hasattr(self.current_node, 'colliders'):
+                    self.current_node.colliders = []
+                self.current_node.colliders = [{
+                    'type': 'mesh',
+                    'enabled': True,
+                    'data': None,
+                    'position': [0.0, 0.0, 0.0],
+                    'rotation': [0.0, 0.0, 0.0],
+                    'mesh': collision_mesh_path,
+                    'mesh_scale': [1.0, 1.0, 1.0]
+                }]
 
 
 
     def load_xml(self):
-        """XMLファイルの読み込み"""
+        """Load XML file"""
         if not self.current_node:
             return
 
@@ -2533,39 +2463,39 @@ class InspectorWindow(QtWidgets.QWidget):
                 return
 
 
-            # 共通プロパティを読み込む
+            # Load common properties
             xml_dir = os.path.dirname(file_name)
             self._load_xml_common_properties(root, xml_dir)
 
-            # 回転軸の処理
+            # Process rotation axis
             joint_elem = root.find('joint')
             if joint_elem is not None:
-                # jointのtype属性を確認
+                # Check joint type attribute
                 joint_type = joint_elem.get('type', '')
                 if joint_type == 'fixed':
-                    self.current_node.rotation_axis = 3  # 3をFixedとして使用
-                    if self.axis_group.button(3):  # Fixed用のボタンが存在する場合
+                    self.current_node.rotation_axis = 3  # Use 3 for Fixed
+                    if self.axis_group.button(3):  # If Fixed button exists
                         self.axis_group.button(3).setChecked(True)
                 else:
-                    # 回転軸の処理
+                    # Process rotation axis
                     axis_elem = joint_elem.find('axis')
                     if axis_elem is not None:
                         axis_xyz = axis_elem.get('xyz', '1 0 0').split()
                         axis_values = [float(x) for x in axis_xyz]
-                        if axis_values[2] == 1:  # Z軸
+                        if axis_values[2] == 1:  # Z axis
                             self.current_node.rotation_axis = 2
                             self.axis_group.button(2).setChecked(True)
-                        elif axis_values[1] == 1:  # Y軸
+                        elif axis_values[1] == 1:  # Y axis
                             self.current_node.rotation_axis = 1
                             self.axis_group.button(1).setChecked(True)
-                        else:  # X軸（デフォルト）
+                        else:  # X axis (default)
                             self.current_node.rotation_axis = 0
                             self.axis_group.button(0).setChecked(True)
 
-                # Joint limitsの処理
+                # Process Joint limits
                 limit_elem = joint_elem.find('limit')
                 if limit_elem is not None:
-                    # XMLからはRadian値で読み込む
+                    # Read from XML as Radian values
                     lower_rad = float(limit_elem.get('lower', -3.14159))
                     upper_rad = float(limit_elem.get('upper', 3.14159))
                     effort = float(limit_elem.get('effort', 10.0))
@@ -2574,7 +2504,7 @@ class InspectorWindow(QtWidgets.QWidget):
                     armature = float(limit_elem.get('armature', DEFAULT_ARMATURE))
                     frictionloss = float(limit_elem.get('frictionloss', DEFAULT_FRICTIONLOSS))
 
-                    # ノードにはRadian値で保存
+                    # Store as Radian values in node
                     self.current_node.joint_lower = lower_rad
                     self.current_node.joint_upper = upper_rad
                     self.current_node.joint_effort = effort
@@ -2583,7 +2513,7 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.current_node.joint_armature = armature
                     self.current_node.joint_frictionloss = frictionloss
 
-                    # UI表示はDegreeに変換
+                    # Convert to Degree for UI display
                     self.lower_limit_input.setText(str(round(math.degrees(lower_rad), 2)))
                     self.upper_limit_input.setText(str(round(math.degrees(upper_rad), 2)))
                     self.effort_input.setText(format_float_no_exp(effort))
@@ -2593,16 +2523,16 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.frictionloss_input.setText(format_float_no_exp(frictionloss))
 
 
-            # ポイントの処理
+            # Process points
             points = root.findall('point')
             num_points = len(points)
 
-            # 現在のポート数と必要なポート数を比較
+            # Compare current port count with required port count
             current_ports = len(self.current_node.output_ports())
 
-            # ポート数を調整
+            # Adjust port count
             if isinstance(self.current_node, FooNode):
-                # ポートを削除する前に、削除対象のポートの接続をすべてクリア
+                # Clear connections for ports to be deleted before removing them
                 if current_ports > num_points:
                     for i in range(num_points + 1, current_ports + 1):
                         port_name = f'out_{i}'
@@ -2618,7 +2548,7 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.current_node.remove_output()
                     current_ports -= 1
 
-                # ポイントデータの更新
+                # Update point data
                 self.current_node.points = []
                 for point_elem in points:
                     point_name = point_elem.get('name')
@@ -2628,7 +2558,7 @@ class InspectorWindow(QtWidgets.QWidget):
 
                     if point_xyz_elem is not None and point_xyz_elem.text:
                         xyz_values = [float(x) for x in point_xyz_elem.text.strip().split()]
-                        # point_angleの読み込み
+                        # Load point_angle
                         angle_values = [0.0, 0.0, 0.0]
                         if point_angle_elem is not None and point_angle_elem.text:
                             try:
@@ -2644,28 +2574,28 @@ class InspectorWindow(QtWidgets.QWidget):
                             'angle': angle_values
                         })
 
-                # 累積座標の更新
+                # Update cumulative coordinates
                 self.current_node.cumulative_coords = []
                 for i in range(len(self.current_node.points)):
                     self.current_node.cumulative_coords.append(create_cumulative_coord(i))
 
-                # output_countを更新
+                # Update output_count
                 self.current_node.output_count = len(self.current_node.points)
 
-            # UI更新
+            # Update UI
             self.update_info(self.current_node)
 
-            # 3Dビューを更新
+            # Update 3D view
             if self.stl_viewer:
                 self.stl_viewer.render_to_image()
-                # Collider表示も更新
+                # Also update Collider display
                 self.stl_viewer.refresh_collider_display()
 
-            # Recalc Positionsと同じ効果を実行
+            # Execute same effect as Recalc Positions
             if hasattr(self.current_node, 'graph') and self.current_node.graph:
                 self.current_node.graph.recalculate_all_positions()
 
-            # XMLファイル名を保存
+            # Save XML filename
             self.current_node.xml_file = file_name
 
         except Exception as e:
@@ -2674,11 +2604,11 @@ class InspectorWindow(QtWidgets.QWidget):
             traceback.print_exc()
 
 
-            # Recalc Positionsと同じ効果を実行
+            # Execute same effect as Recalc Positions
             if hasattr(self.current_node, 'graph') and self.current_node.graph:
                 self.current_node.graph.recalculate_all_positions()
 
-            # XMLファイル名を保存
+            # Save XML filename
             self.current_node.xml_file = file_name
 
         except Exception as e:
@@ -2687,11 +2617,11 @@ class InspectorWindow(QtWidgets.QWidget):
             traceback.print_exc()
 
     def load_xml_with_stl(self):
-        """XMLファイルとそれに対応するSTLファイルを読み込む"""
+        """Load XML file and corresponding STL file"""
         if not self.current_node:
             return
 
-        # XMLファイルの選択
+        # Select XML file
         xml_file, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Open XML File", "", "XML Files (*.xml)")
 
@@ -2699,12 +2629,12 @@ class InspectorWindow(QtWidgets.QWidget):
             return
 
         try:
-            # 対応するSTLファイルのパスを生成
+            # Generate corresponding STL file path
             xml_dir = os.path.dirname(xml_file)
             xml_name = os.path.splitext(os.path.basename(xml_file))[0]
             stl_path = os.path.join(xml_dir, f"{xml_name}.stl")
 
-            # まずXMLファイルを読み込む
+            # Load XML file first
             tree = ET.parse(xml_file)
             root = tree.getroot()
 
@@ -2712,33 +2642,33 @@ class InspectorWindow(QtWidgets.QWidget):
                 print("Invalid XML format: Root element should be 'urdf_part'")
                 return
 
-            # 共通プロパティを読み込む
+            # Load common properties
             xml_dir = os.path.dirname(xml_file)
             self._load_xml_common_properties(root, xml_dir)
 
-            # 回転軸とjoint limitsの処理
+            # Process rotation axis and joint limits
             joint_elem = root.find('joint')
             if joint_elem is not None:
-                # 回転軸の処理
+                # Process rotation axis
                 axis_elem = joint_elem.find('axis')
                 if axis_elem is not None:
                     axis_xyz = axis_elem.get('xyz', '1 0 0').split()
                     axis_values = [float(x) for x in axis_xyz]
-                    if axis_values[2] == 1:  # Z軸
+                    if axis_values[2] == 1:  # Z axis
                         self.current_node.rotation_axis = 2
                         self.axis_group.button(2).setChecked(True)
-                    elif axis_values[1] == 1:  # Y軸
+                    elif axis_values[1] == 1:  # Y axis
                         self.current_node.rotation_axis = 1
                         self.axis_group.button(1).setChecked(True)
-                    else:  # X軸（デフォルト）
+                    else:  # X axis (default)
                         self.current_node.rotation_axis = 0
                         self.axis_group.button(0).setChecked(True)
                     print(f"Set rotation axis: {self.current_node.rotation_axis} from xyz: {axis_xyz}")
 
-                # Joint limitsの処理
+                # Process Joint limits
                 limit_elem = joint_elem.find('limit')
                 if limit_elem is not None:
-                    # XMLからはRadian値で読み込む
+                    # Read from XML as Radian values
                     lower_rad = float(limit_elem.get('lower', -3.14159))
                     upper_rad = float(limit_elem.get('upper', 3.14159))
                     effort = float(limit_elem.get('effort', 10.0))
@@ -2749,7 +2679,7 @@ class InspectorWindow(QtWidgets.QWidget):
                     armature = float(limit_elem.get('armature', DEFAULT_ARMATURE))
                     frictionloss = float(limit_elem.get('frictionloss', DEFAULT_FRICTIONLOSS))
 
-                    # ノードにはRadian値で保存
+                    # Store as Radian values in node
                     self.current_node.joint_lower = lower_rad
                     self.current_node.joint_upper = upper_rad
                     self.current_node.joint_effort = effort
@@ -2760,7 +2690,7 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.current_node.joint_armature = armature
                     self.current_node.joint_frictionloss = frictionloss
 
-                    # UI表示はDegreeに変換
+                    # Convert to Degree for UI display
                     self.lower_limit_input.setText(str(round(math.degrees(lower_rad), 2)))
                     self.upper_limit_input.setText(str(round(math.degrees(upper_rad), 2)))
                     self.effort_input.setText(format_float_no_exp(effort))
@@ -2773,7 +2703,7 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.armature_input.setText(format_float_no_exp(armature))
                     self.frictionloss_input.setText(format_float_no_exp(frictionloss))
 
-                # Joint dynamicsの処理（優先的に読み込む）
+                # Process Joint dynamics (load with priority)
                 dynamics_elem = joint_elem.find('dynamics')
                 if dynamics_elem is not None:
                     if dynamics_elem.get('damping'):
@@ -2794,16 +2724,16 @@ class InspectorWindow(QtWidgets.QWidget):
                         self.current_node.joint_frictionloss = float(dynamics_elem.get('frictionloss', DEFAULT_FRICTIONLOSS))
                         self.frictionloss_input.setText(format_float_no_exp(self.current_node.joint_frictionloss))
 
-            # ポイントの処理
+            # Process points
             points = root.findall('point')
             num_points = len(points)
 
-            # FooNodeの場合のみポート数を調整
+            # Adjust port count only for FooNode
             if isinstance(self.current_node, FooNode):
-                # 現在のポート数を正しく取得
+                # Get current port count correctly
                 current_ports = len(self.current_node.output_ports())
 
-                # ポートを削除する前に、削除対象のポートの接続をすべてクリア
+                # Clear connections for ports to be deleted before removing them
                 if current_ports > num_points:
                     for i in range(num_points + 1, current_ports + 1):
                         port_name = f'out_{i}'
@@ -2819,7 +2749,7 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.current_node.remove_output()
                     current_ports -= 1
 
-                # ポイントデータの更新
+                # Update point data
                 self.current_node.points = []
                 for point_elem in points:
                     point_name = point_elem.get('name')
@@ -2829,7 +2759,7 @@ class InspectorWindow(QtWidgets.QWidget):
 
                     if point_xyz_elem is not None and point_xyz_elem.text:
                         xyz_values = [float(x) for x in point_xyz_elem.text.strip().split()]
-                        # point_angleの読み込み
+                        # Load point_angle
                         angle_values = [0.0, 0.0, 0.0]
                         if point_angle_elem is not None and point_angle_elem.text:
                             try:
@@ -2845,25 +2775,25 @@ class InspectorWindow(QtWidgets.QWidget):
                             'angle': angle_values
                         })
 
-                # 累積座標の更新
+                # Update cumulative coordinates
                 self.current_node.cumulative_coords = []
                 for i in range(len(self.current_node.points)):
                     self.current_node.cumulative_coords.append(create_cumulative_coord(i))
 
-                # output_countを更新
+                # Update output_count
                 self.current_node.output_count = len(self.current_node.points)
 
-            # STLファイルの処理
+            # Process STL file
             mesh_file = None
             if os.path.exists(stl_path):
                 mesh_file = stl_path
             else:
-                # STLが見つからない場合、DAEファイルを探す
+                # If STL not found, look for DAE file
                 dae_path = os.path.join(xml_dir, f"{xml_name}.dae")
                 if os.path.exists(dae_path):
                     mesh_file = dae_path
                 else:
-                    # どちらも見つからない場合、ダイアログを表示
+                    # If neither found, show dialog
                     print(f"Warning: Neither STL nor DAE file found: {stl_path}, {dae_path}")
                     msg_box = QtWidgets.QMessageBox()
                     msg_box.setIcon(QtWidgets.QMessageBox.Warning)
@@ -2884,29 +2814,37 @@ class InspectorWindow(QtWidgets.QWidget):
                     else:
                         pass
 
-            # メッシュファイルが見つかった、または選択された場合にロード
+            # Load if mesh file was found or selected
             if mesh_file:
                 self.current_node.stl_file = mesh_file
                 if self.stl_viewer:
                     self.stl_viewer.load_stl_for_node(self.current_node)
-                    # STLモデルに色を適用
+                    # Apply color to STL model
                     self.apply_color_to_stl()
 
-            # Collider Meshの自動検出と読み込み
+            # Auto-detect and load Collider Mesh
             collider_xml_path = os.path.join(xml_dir, f"{xml_name}_collider.xml")
             if os.path.exists(collider_xml_path):
                 try:
                     print(f"Found collider XML: {collider_xml_path}")
 
-                    # Collider XMLを解析
+                    # Parse Collider XML
                     collider_data = self.parse_collider_xml(collider_xml_path)
                     if collider_data:
-                        # ColliderMeshとして設定
-                        self.current_node.collider_type = 'primitive'
-                        self.current_node.collider_data = collider_data
-                        self.current_node.collider_enabled = True
+                        # Update colliders list
+                        if not hasattr(self.current_node, 'colliders'):
+                            self.current_node.colliders = []
+                        self.current_node.colliders = [{
+                            'type': 'primitive',
+                            'enabled': True,
+                            'data': collider_data,
+                            'position': collider_data.get('position', [0.0, 0.0, 0.0]),
+                            'rotation': collider_data.get('rotation', [0.0, 0.0, 0.0]),
+                            'mesh': None,
+                            'mesh_scale': [1.0, 1.0, 1.0]
+                        }]
 
-                        # UIに反映
+                        # Update UI
                         if hasattr(self, 'collider_mesh_input'):
                             self.collider_mesh_input.setText(f"Primitive {collider_data['type'].capitalize()}")
                         if hasattr(self, 'collider_enabled_checkbox'):
@@ -2922,20 +2860,20 @@ class InspectorWindow(QtWidgets.QWidget):
                     import traceback
                     traceback.print_exc()
 
-            # UI更新
+            # Update UI
             self.update_info(self.current_node)
 
-            # 3Dビューを更新
+            # Update 3D view
             if self.stl_viewer:
                 self.stl_viewer.render_to_image()
-                # Collider表示も更新
+                # Also update Collider display
                 self.stl_viewer.refresh_collider_display()
 
-            # Recalc Positionsと同じ効果を実行
+            # Execute same effect as Recalc Positions
             if hasattr(self.current_node, 'graph') and self.current_node.graph:
                 self.current_node.graph.recalculate_all_positions()
 
-            # XMLファイル名を保存
+            # Save XML filename
             self.current_node.xml_file = xml_file
 
         except Exception as e:
@@ -2946,13 +2884,13 @@ class InspectorWindow(QtWidgets.QWidget):
     # ========== Helper Methods for Code Consolidation ==========
 
     def _get_node_file_path(self, attr_name):
-        """ノードからファイルパスを安全に取得"""
+        """Safely get file path from node"""
         if not self.current_node:
             return None
         return getattr(self.current_node, attr_name, None) if hasattr(self.current_node, attr_name) else None
 
     def _show_message(self, title, message, msg_type='info'):
-        """統一されたメッセージボックス表示"""
+        """Unified message box display"""
         if msg_type == 'warning':
             QtWidgets.QMessageBox.warning(self, title, message)
         elif msg_type == 'error':
@@ -2961,14 +2899,14 @@ class InspectorWindow(QtWidgets.QWidget):
             QtWidgets.QMessageBox.information(self, title, message)
 
     class _OperationGuard:
-        """二重実行防止用コンテキストマネージャー"""
+        """Context manager for preventing duplicate execution"""
         def __init__(self, parent, flag_name):
             self.parent = parent
             self.flag_name = flag_name
 
         def __enter__(self):
             if hasattr(self.parent, self.flag_name) and getattr(self.parent, self.flag_name):
-                return False  # 既に実行中
+                return False  # Already in progress
             setattr(self.parent, self.flag_name, True)
             return True
 
@@ -2976,8 +2914,8 @@ class InspectorWindow(QtWidgets.QWidget):
             setattr(self.parent, self.flag_name, False)
 
     def save_xml(self):
-        """現在のノードのパラメータをXMLファイルに上書き保存"""
-        # 二重実行防止
+        """Overwrite save current node parameters to XML file"""
+        # Prevent duplicate execution
         with self._OperationGuard(self, '_save_xml_in_progress') as can_proceed:
             if not can_proceed:
                 print("Save XML already in progress, ignoring duplicate call")
@@ -2987,11 +2925,11 @@ class InspectorWindow(QtWidgets.QWidget):
 
 
     def clear_all_parameters(self):
-        """BaseLinkNodeのすべてのパラメータをデフォルト値にリセット"""
+        """Reset all BaseLinkNode parameters to default values"""
         if not self.current_node or not isinstance(self.current_node, BaseLinkNode):
             return
 
-        # デフォルト値にリセット
+        # Reset to default values
         self.current_node.mass_value = 0.0
         self.current_node.inertia = DEFAULT_INERTIA_ZERO.copy()
         self.current_node.inertial_origin = {
@@ -3011,23 +2949,23 @@ class InspectorWindow(QtWidgets.QWidget):
         self.current_node.joint_armature = DEFAULT_ARMATURE
         self.current_node.joint_frictionloss = DEFAULT_FRICTIONLOSS
 
-        # outポート数を1に設定
+        # Set output port count to 1
         while self.current_node.output_count > 1:
             self.current_node.remove_output()
         while self.current_node.output_count < 1:
             self.current_node._add_output()
 
-        # UIを更新
+        # Update UI
         self.update_info(self.current_node)
 
-        # 3Dビューアをクリア
+        # Clear 3D viewer
         if self.stl_viewer:
             self.stl_viewer.clear_all_polydata()
 
         print("BaseLinkNode parameters reset to default values")
 
     def open_parts_editor(self):
-        """PartsEditorを開き、現在のMeshとXMLを読み込む"""
+        """Open PartsEditor and load current Mesh and XML"""
         if not self.current_node:
             self._show_message("PartsEditor - Warning", "No node selected.", 'warning')
             return
@@ -3072,32 +3010,35 @@ class InspectorWindow(QtWidgets.QWidget):
                              'error')
             return
 
-        # コライダーデータを準備（Primitiveの場合）
+        # Prepare collider data (from colliders list)
         collider_info = None
         collider_xml_path = None
-        
-        if hasattr(self.current_node, 'collider_enabled') and self.current_node.collider_enabled:
-            if hasattr(self.current_node, 'collider_type') and self.current_node.collider_type == 'primitive':
-                if hasattr(self.current_node, 'collider_data') and self.current_node.collider_data:
-                    # プリミティブコライダーの場合、一時的なコライダーXMLファイルを作成
+
+        if hasattr(self.current_node, 'colliders') and self.current_node.colliders:
+            for collider in self.current_node.colliders:
+                if not collider.get('enabled', False):
+                    continue
+
+                if collider.get('type') == 'primitive' and collider.get('data'):
+                    # For primitive collider, create temporary collider XML file
                     try:
-                        collider_data = self.current_node.collider_data
-                        # STLファイルと同じディレクトリに一時的なコライダーXMLファイルを作成
+                        collider_data = collider['data']
+                        # Create temporary collider XML file in same directory as STL file
                         stl_dir = os.path.dirname(stl_file)
                         stl_basename = os.path.splitext(os.path.basename(stl_file))[0]
                         collider_xml_path = os.path.join(stl_dir, f"{stl_basename}_collider.xml")
-                        
-                        # コライダーXMLファイルを作成
+
+                        # Create collider XML file
                         root = ET.Element('urdf_kitchen_collider')
                         collider_elem = ET.SubElement(root, 'collider')
                         collider_elem.set('type', collider_data.get('type', 'box'))
-                        
-                        # ジオメトリ要素を追加
+
+                        # Add geometry element
                         geometry = collider_data.get('geometry', {})
                         if geometry:
                             geometry_elem = ET.SubElement(collider_elem, 'geometry')
                             geom_type = collider_data.get('type', 'box')
-                            
+
                             if geom_type == 'box':
                                 geometry_elem.set('size_x', str(geometry.get('size_x', 1.0)))
                                 geometry_elem.set('size_y', str(geometry.get('size_y', 1.0)))
@@ -3110,42 +3051,43 @@ class InspectorWindow(QtWidgets.QWidget):
                             elif geom_type == 'capsule':
                                 geometry_elem.set('radius', str(geometry.get('radius', 0.5)))
                                 geometry_elem.set('length', str(geometry.get('length', 1.0)))
-                        
-                        # 位置要素を追加
-                        position = collider_data.get('position', [0.0, 0.0, 0.0])
+
+                        # Add position element
+                        position = collider.get('position', collider_data.get('position', [0.0, 0.0, 0.0]))
                         position_elem = ET.SubElement(collider_elem, 'position')
                         position_elem.set('x', str(position[0]))
                         position_elem.set('y', str(position[1]))
                         position_elem.set('z', str(position[2]))
-                        
-                        # 回転要素を追加（度から度のまま）
-                        rotation = collider_data.get('rotation', [0.0, 0.0, 0.0])
+
+                        # Add rotation element (degrees remain as degrees)
+                        rotation = collider.get('rotation', collider_data.get('rotation', [0.0, 0.0, 0.0]))
                         rotation_elem = ET.SubElement(collider_elem, 'rotation')
                         rotation_elem.set('roll', str(rotation[0]))
                         rotation_elem.set('pitch', str(rotation[1]))
                         rotation_elem.set('yaw', str(rotation[2]))
-                        
-                        # XMLファイルを保存
+
+                        # Save XML file
                         tree = ET.ElementTree(root)
                         tree.write(collider_xml_path, encoding='utf-8', xml_declaration=True)
                         print(f"Created temporary collider XML: {collider_xml_path}")
-                        
+
                         collider_info = {
                             'type': 'primitive',
                             'xml_path': collider_xml_path
                         }
+                        break  # Use only the first enabled primitive collider
                     except Exception as e:
                         print(f"Error creating collider XML: {e}")
                         import traceback
                         traceback.print_exc()
-                        
-            elif hasattr(self.current_node, 'collider_type') and self.current_node.collider_type == 'mesh':
-                if hasattr(self.current_node, 'collider_mesh') and self.current_node.collider_mesh:
+
+                elif collider.get('type') == 'mesh' and collider.get('mesh'):
                     collider_info = {
                         'type': 'mesh',
-                        'mesh_path': self.current_node.collider_mesh
+                        'mesh_path': collider['mesh']
                     }
-                    print(f"Preparing collider mesh for PartsEditor: {os.path.basename(self.current_node.collider_mesh)}")
+                    print(f"Preparing collider mesh for PartsEditor: {os.path.basename(collider['mesh'])}")
+                    break  # Use only the first enabled mesh collider
 
         # Try to connect to existing PartsEditor instance first
         socket = QLocalSocket()
@@ -3158,7 +3100,7 @@ class InspectorWindow(QtWidgets.QWidget):
                 import json
                 print(f"Connected to existing PartsEditor, sending file: {stl_file}")
                 
-                # JSON形式でメッセージを構築
+                # Build message in JSON format
                 message_data = {
                     'stl_file': stl_file,
                     'collider': collider_info
@@ -3205,19 +3147,19 @@ class InspectorWindow(QtWidgets.QWidget):
                 stderr=subprocess.PIPE
             )
 
-            # プロセス起動確認
+            # Verify process startup
             time.sleep(0.1)
             poll = process.poll()
             if poll is not None:
                 stderr = process.stderr.read().decode('utf-8', errors='replace')
                 raise RuntimeError(f"PartsEditor exited immediately.\n\nError output:\n{stderr[:500]}")
 
-            # コライダーデータがある場合、起動後にメッセージで送信
+            # If collider data exists, send via message after startup
             if collider_info:
-                # PartsEditorが起動するまで少し待つ
+                # Wait a bit for PartsEditor to start
                 time.sleep(0.5)
-                
-                # 接続を試みてコライダーデータを送信
+
+                # Attempt to connect and send collider data
                 socket = QLocalSocket()
                 socket.connectToServer(server_name)
                 
@@ -3250,7 +3192,7 @@ class InspectorWindow(QtWidgets.QWidget):
                              'error')
 
     def reload_node_files(self):
-        """現在のノードのXMLファイルとMeshファイルを再読み込み"""
+        """Reload XML file and Mesh file for current node"""
         with self._OperationGuard(self, '_reload_in_progress') as can_proceed:
             if not can_proceed:
                 print("Reload already in progress, ignoring duplicate call")
@@ -3259,29 +3201,29 @@ class InspectorWindow(QtWidgets.QWidget):
             self._reload_node_files_impl()
 
     def create_port_widget(self, port_number, x=0.0, y=0.0, z=0.0, angle_x=0.0, angle_y=0.0, angle_z=0.0):
-        """Output Port用のウィジェットを作成"""
-        port_layout = QtWidgets.QHBoxLayout()  # GridLayoutからHBoxLayoutに変更
+        """Create widget for Output Port"""
+        port_layout = QtWidgets.QHBoxLayout()  # Changed from GridLayout to HBoxLayout
         port_layout.setSpacing(5)
         port_layout.setContentsMargins(0, 1, 0, 1)
 
-        # ポート番号
+        # Port number
         port_name = QtWidgets.QLabel(f"out_{port_number}")
         port_name.setFixedWidth(40)
         port_layout.addWidget(port_name)
 
-        # 座標入力のペアを作成
+        # Create coordinate input pairs
         coords = []
         for label, value in [('X:', x), ('Y:', y), ('Z:', z)]:
-            # 各座標のペアをHBoxLayoutで作成
+            # Create each coordinate pair with HBoxLayout
             coord_pair = QtWidgets.QHBoxLayout()
             coord_pair.setSpacing(0)
 
-            # ラベル
+            # Label
             coord_label = QtWidgets.QLabel(label)
             coord_label.setFixedWidth(15)
             coord_pair.addWidget(coord_label)
 
-            # 入力フィールド
+            # Input field
             coord_input = QtWidgets.QLineEdit(f"{value:.6f}")
             coord_input.setFixedWidth(70)
             coord_input.setFixedHeight(20)
@@ -3293,14 +3235,14 @@ class InspectorWindow(QtWidgets.QWidget):
             coord_pair.addWidget(coord_input)
             coords.append(coord_input)
 
-            # ペアをメインレイアウトに追加
+            # Add pair to main layout
             port_layout.addLayout(coord_pair)
 
-            # # ペア間にスペースを追加
-            # if label != 'Z:':  # 最後のペア以外の後にスペースを追加
+            # # Add spacing between pairs
+            # if label != 'Z:':  # Add space after all pairs except the last one
             #     port_layout.addSpacing(5)
 
-        # Angle入力のペアを作成
+        # Create angle input pairs
         port_layout.addSpacing(2)  # 座標とAngleの間にスペース
 
         # Angle ラベル
@@ -3310,16 +3252,16 @@ class InspectorWindow(QtWidgets.QWidget):
 
         angles = []
         for label, value in [('X:', angle_x), ('Y:', angle_y), ('Z:', angle_z)]:
-            # 各角度のペアをHBoxLayoutで作成
+            # Create each angle pair with HBoxLayout
             angle_pair = QtWidgets.QHBoxLayout()
             angle_pair.setSpacing(2)
 
-            # ラベル
+            # Label
             angle_label_item = QtWidgets.QLabel(label)
             angle_label_item.setFixedWidth(10)
             angle_pair.addWidget(angle_label_item)
 
-            # 入力フィールド
+            # Input field
             angle_input = QtWidgets.QLineEdit(f"{value:.2f}")
             angle_input.setFixedWidth(45)
             angle_input.setFixedHeight(20)
@@ -3331,37 +3273,37 @@ class InspectorWindow(QtWidgets.QWidget):
             angle_pair.addWidget(angle_input)
             angles.append(angle_input)
 
-            # ペアをメインレイアウトに追加
+            # Add pair to main layout
             port_layout.addLayout(angle_pair)
 
-            # ペア間にスペースを追加
-            # if label != 'Z:':  # 最後のペア以外の後にスペースを追加
+            # Add spacing between pairs
+            # if label != 'Z:':  # Add space after all pairs except the last one
             #     port_layout.addSpacing(1)
 
-        # 右側の余白
+        # Right margin
         port_layout.addStretch()
 
-        # ウィジェットをラップ
+        # Wrap widget
         port_widget = QtWidgets.QWidget()
         port_widget.setFixedHeight(25)
         port_widget.setLayout(port_layout)
         return port_widget, coords, angles
 
     def update_output_ports(self, node):
-        """Output Portsセクションを更新"""
-        # 既存のポートウィジェットをクリア
+        """Update Output Ports section"""
+        # Clear existing port widgets
         for widget in self.port_widgets:
             self.ports_layout.removeWidget(widget)
             widget.setParent(None)
             widget.deleteLater()
         self.port_widgets.clear()
 
-        # ノードの各ポートに対してウィジェットを作成
+        # Create widget for each port of the node
         if hasattr(node, 'points'):
             for i, point in enumerate(node.points):
-                # point_angleを取得（内部はラジアン、UIには度で表示）
+                # Get point_angle (internally radians, displayed as degrees in UI)
                 angle_rad = point.get('angle', [0.0, 0.0, 0.0])
-                # ラジアンから度に変換してUIに渡す
+                # Convert from radians to degrees for UI
                 angle_deg = [math.degrees(a) for a in angle_rad]
                 port_widget, _, _ = self.create_port_widget(
                     i + 1,
@@ -3376,7 +3318,7 @@ class InspectorWindow(QtWidgets.QWidget):
                 self.port_widgets.append(port_widget)
 
     def apply_original_mesh_color(self):
-        """Meshに対して最初から設定されている色データ（mesh_original_color）を適用"""
+        """Apply original color data (mesh_original_color) that was initially set for the Mesh"""
         if not self.current_node:
             return
 
@@ -3386,29 +3328,29 @@ class InspectorWindow(QtWidgets.QWidget):
                 print(f"Warning: No original mesh color found for node '{self.current_node.name()}'")
                 return
 
-            # mesh_original_colorを取得
+            # Get mesh_original_color
             original_color = self.current_node.mesh_original_color
-            
-            # RGBA形式に変換（3要素の場合はAlpha=1.0を追加）
+
+            # Convert to RGBA format (add Alpha=1.0 if 3 elements)
             if len(original_color) == 3:
                 rgba_values = list(original_color) + [1.0]
             else:
                 rgba_values = list(original_color[:4])  # 最大4要素まで
 
-            # ノードカラーを更新（RGBA）
+            # Update node color (RGBA)
             self.current_node.node_color = rgba_values
 
-            # UIを更新
+            # Update UI
             self._set_color_ui(rgba_values)
 
-            # カラーサンプルチップの更新
+            # Update color sample chip
             rgb_display = [int(v * 255) for v in rgba_values[:3]]
             self.color_sample.setStyleSheet(
                 f"background-color: rgb({rgb_display[0]},{rgb_display[1]},{rgb_display[2]}); "
                 f"border: 1px solid black;"
             )
 
-            # STLモデルに色を適用
+            # Apply color to STL model
             self.apply_color_to_stl()
 
             print(f"Applied original mesh color to node '{self.current_node.name()}': RGBA({rgba_values[0]:.3f}, {rgba_values[1]:.3f}, {rgba_values[2]:.3f}, {rgba_values[3]:.3f})")
@@ -3418,24 +3360,24 @@ class InspectorWindow(QtWidgets.QWidget):
             traceback.print_exc()
 
     def apply_color_to_stl(self):
-        """選択された色をSTLモデルに適用（RGBA対応）"""
+        """Apply selected color to STL model (RGBA support)"""
         if not self.current_node:
             return
 
         try:
-            # RGBA値を取得
+            # Get RGBA values
             rgba_values = [float(input.text()) for input in self.color_inputs]
             rgba_values = [max(0.0, min(1.0, value)) for value in rgba_values]
 
-            # ノードカラーを更新（RGBA）
+            # Update node color (RGBA)
             self.current_node.node_color = rgba_values
 
             if self.stl_viewer and hasattr(self.stl_viewer, 'stl_actors'):
                 if self.current_node in self.stl_viewer.stl_actors:
                     actor = self.stl_viewer.stl_actors[self.current_node]
-                    # RGB設定
+                    # Set RGB
                     actor.GetProperty().SetColor(*rgba_values[:3])
-                    # Alpha設定
+                    # Set Alpha
                     if len(rgba_values) >= 4:
                         actor.GetProperty().SetOpacity(rgba_values[3])
                         print(f"Applied color: RGBA({rgba_values[0]:.3f}, {rgba_values[1]:.3f}, "
@@ -3448,31 +3390,31 @@ class InspectorWindow(QtWidgets.QWidget):
             print(f"Error: Invalid color value - {str(e)}")
 
     def update_massless_decoration(self, state):
-        """Massless Decorationの状態を更新"""
+        """Update Massless Decoration state"""
         if self.current_node:
             self.current_node.massless_decoration = bool(state)
 
     def update_hide_mesh(self, state):
-        """Hide Meshの状態を更新して3Dビューのメッシュを表示/非表示"""
+        """Update Hide Mesh state and show/hide mesh in 3D view"""
         if self.current_node:
             hide = bool(state)
             self.current_node.hide_mesh = hide
 
-            # 3DビューアのメッシュをHide/Show
+            # Hide/Show mesh in 3D viewer
             if self.stl_viewer and hasattr(self.stl_viewer, 'stl_actors'):
                 if self.current_node in self.stl_viewer.stl_actors:
                     actor = self.stl_viewer.stl_actors[self.current_node]
-                    # hide=Trueなら非表示(VisibilityOff)、hide=Falseなら表示(VisibilityOn)
+                    # If hide=True, hide (VisibilityOff); if hide=False, show (VisibilityOn)
                     actor.SetVisibility(not hide)
                     self.stl_viewer.render_to_image()
 
     def update_blanklink(self, state):
-        """Blanklinkの状態を更新（BaseLinkNode用）"""
+        """Update Blanklink state (for BaseLinkNode)"""
         if self.current_node and isinstance(self.current_node, BaseLinkNode):
             self.current_node.blank_link = bool(state)
 
     def update_mass(self):
-        """質量の更新（リアルタイム + リターンキー）"""
+        """Update mass (realtime + return key)"""
         if not self.current_node:
             return
         try:
@@ -3482,10 +3424,10 @@ class InspectorWindow(QtWidgets.QWidget):
                 if mass >= 0:
                     self.current_node.mass_value = mass
         except ValueError:
-            pass  # 無効な値は無視
+            pass  # Ignore invalid values
 
     def update_inertial_origin(self):
-        """慣性原点の更新（リアルタイム + リターンキー）"""
+        """Update inertial origin (realtime + return key)"""
         if not self.current_node:
             return
         try:
@@ -4161,6 +4103,26 @@ class InspectorWindow(QtWidgets.QWidget):
                 "Calculation Error",
                 f"Failed to calculate inertia:\n\n{str(e)}"
             )
+
+    def zero_off_diagonal_inertia(self):
+        """Zero out off-diagonal elements of inertia tensor (Ixy, Ixz, Iyz)"""
+        if not self.current_node:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "No Node Selected",
+                "Please select a node first."
+            )
+            return
+
+        # Set off-diagonal elements to zero in UI fields
+        self.ixy_input.setText("0.0")
+        self.ixz_input.setText("0.0")
+        self.iyz_input.setText("0.0")
+
+        # Update internal parameters by calling update_inertia
+        self.update_inertia()
+
+        print(f"Zeroed off-diagonal inertia elements for node: {self.current_node.name()}")
 
 class SettingsDialog(QtWidgets.QDialog):
     """設定ダイアログ"""
@@ -6069,49 +6031,6 @@ class STLViewerWidget(QtWidgets.QWidget):
                 print(f"  ✓ Created {len(actors)} collider actor(s) for {node_name}")
             else:
                 print(f"  ✗ No enabled colliders found for {node_name}")
-            return
-        
-        # 後方互換性: 旧形式の collider_enabled と collider_type をチェック
-        collider_enabled = getattr(node, 'collider_enabled', False)
-        if not collider_enabled:
-            print(f"  Skipping {node_name}: collider_enabled = False")
-            return
-
-        print(f"  Creating collider for {node_name}...")
-        collider_type = getattr(node, 'collider_type', None)
-        print(f"    Collider type: {collider_type}")
-
-        if collider_type == 'primitive':
-            # プリミティブコライダー
-            collider_data = getattr(node, 'collider_data', None)
-            if collider_data:
-                print(f"    → Creating primitive collider: {collider_data.get('type', 'unknown')}")
-                actor = self.create_primitive_collider_actor(collider_data, node)
-                if actor:
-                    self.renderer.AddActor(actor)
-                    self.collider_actors[node] = actor
-                    print(f"    ✓ Primitive collider actor created and added")
-                else:
-                    print(f"    ✗ Failed to create primitive collider actor")
-            else:
-                print(f"    ✗ No collider_data found")
-
-        elif collider_type == 'mesh':
-            # メッシュコライダー
-            collider_mesh = getattr(node, 'collider_mesh', None)
-            if collider_mesh:
-                print(f"    → Creating mesh collider: {os.path.basename(collider_mesh)}")
-                actor = self.create_mesh_collider_actor(node, collider_mesh)
-                if actor:
-                    self.renderer.AddActor(actor)
-                    self.collider_actors[node] = actor
-                    print(f"    ✓ Mesh collider actor created and added")
-                else:
-                    print(f"    ✗ Failed to create mesh collider actor")
-            else:
-                print(f"    ✗ No collider_mesh found")
-        else:
-            print(f"    ✗ Unknown collider_type: {collider_type}")
 
     def create_primitive_collider_actor(self, collider_data, node=None, position=None, rotation=None):
         """プリミティブコライダーのアクターを作成
@@ -6340,11 +6259,11 @@ class STLViewerWidget(QtWidgets.QWidget):
 
     def create_mesh_collider_actor(self, node, collider_mesh, mesh_scale=None):
         """メッシュコライダーのアクターを作成
-        
+
         Args:
             node: ノードオブジェクト
             collider_mesh: コライダーメッシュファイルのパス
-            mesh_scale: メッシュスケール [x, y, z] (オプション、指定されない場合は node.collider_mesh_scale を使用)
+            mesh_scale: メッシュスケール [x, y, z] (オプション、デフォルトは [1.0, 1.0, 1.0])
         """
         # コライダーメッシュのパスを解決
         if os.path.isabs(collider_mesh):
@@ -6378,11 +6297,8 @@ class STLViewerWidget(QtWidgets.QWidget):
 
         # collision mesh scale を PolyData に適用（SDF <collision><mesh><scale> 対応）
         try:
-            # mesh_scale パラメータが指定されている場合はそれを使用、否则は node.collider_mesh_scale を使用
-            if mesh_scale is None:
-                scale = getattr(node, 'collider_mesh_scale', [1.0, 1.0, 1.0])
-            else:
-                scale = mesh_scale
+            # mesh_scale パラメータが指定されている場合はそれを使用、なければデフォルト
+            scale = mesh_scale if mesh_scale is not None else [1.0, 1.0, 1.0]
             
             if isinstance(scale, (list, tuple)) and len(scale) == 3:
                 # default [1,1,1] 以外ならスケール適用
@@ -6534,57 +6450,6 @@ class STLViewerWidget(QtWidgets.QWidget):
                     combined_transform.Concatenate(node_transform)
                     actor.SetUserTransform(combined_transform)
                     print(f"    Combined transform applied to mesh collider actor")
-
-            return
-        
-        # プリミティブコライダーの場合、コライダーのローカル変換とノードの変換を結合
-        if hasattr(node, 'collider_type') and node.collider_type == 'primitive' and hasattr(node, 'collider_data'):
-            collider_data = node.collider_data
-            position = collider_data.get('position', [0, 0, 0])
-            rotation = collider_data.get('rotation', [0, 0, 0])
-            
-            # コライダーのローカル変換を作成
-            collider_local_transform = vtk.vtkTransform()
-            collider_local_transform.PostMultiply()
-            
-            # 回転を適用
-            quat = euler_to_quaternion(rotation[0], rotation[1], rotation[2])
-            w, x, y, z = quat
-            rot_matrix = vtk.vtkMatrix4x4()
-            rot_matrix.SetElement(0, 0, 1 - 2*(y*y + z*z))
-            rot_matrix.SetElement(0, 1, 2*(x*y - w*z))
-            rot_matrix.SetElement(0, 2, 2*(x*z + w*y))
-            rot_matrix.SetElement(1, 0, 2*(x*y + w*z))
-            rot_matrix.SetElement(1, 1, 1 - 2*(x*x + z*z))
-            rot_matrix.SetElement(1, 2, 2*(y*z - w*x))
-            rot_matrix.SetElement(2, 0, 2*(x*z - w*y))
-            rot_matrix.SetElement(2, 1, 2*(y*z + w*x))
-            rot_matrix.SetElement(2, 2, 1 - 2*(x*x + y*y))
-            collider_local_transform.Concatenate(rot_matrix)
-            collider_local_transform.Translate(position[0], position[1], position[2])
-            
-            # ノードの変換と結合
-            combined_transform = vtk.vtkTransform()
-            combined_transform.PostMultiply()
-            combined_transform.Concatenate(collider_local_transform)
-            combined_transform.Concatenate(node_transform)
-            
-            if isinstance(actors, list):
-                for actor in actors:
-                    actor.SetUserTransform(combined_transform)
-            else:
-                actors.SetUserTransform(combined_transform)
-        else:
-            # メッシュコライダーの場合、ノードの変換のみ
-            if isinstance(actors, list):
-                for actor in actors:
-                    collider_transform = vtk.vtkTransform()
-                    collider_transform.DeepCopy(node_transform)
-                    actor.SetUserTransform(collider_transform)
-            else:
-                collider_transform = vtk.vtkTransform()
-                collider_transform.DeepCopy(node_transform)
-                actors.SetUserTransform(collider_transform)
 
     def refresh_collider_display(self):
         """Collider表示が有効な場合、表示を更新"""
@@ -8949,24 +8814,27 @@ class CustomNodeGraph(NodeGraph):
                         stl_files_failed.append((os.path.basename(source_path), "Source file not found"))
                         print(f"Mesh file not found: {source_path}")
 
-                # コリジョンメッシュファイルも変換して保存
-                if hasattr(node, 'collider_enabled') and node.collider_enabled:
-                    if hasattr(node, 'collider_type') and node.collider_type == 'mesh':
-                        if hasattr(node, 'collider_mesh') and node.collider_mesh:
+                # コリジョンメッシュファイルも変換して保存（collidersリストから）
+                if hasattr(node, 'colliders') and node.colliders:
+                    for collider in node.colliders:
+                        if not collider.get('enabled', False):
+                            continue
+                        if collider.get('type') == 'mesh' and collider.get('mesh'):
+                            collider_mesh = collider['mesh']
                             # collider_meshは相対パスまたはファイル名の可能性がある
                             if hasattr(node, 'stl_file') and node.stl_file:
                                 visual_dir = os.path.dirname(node.stl_file)
-                                collider_source_path = os.path.join(visual_dir, node.collider_mesh)
+                                collider_source_path = os.path.join(visual_dir, collider_mesh)
                             else:
-                                collider_source_path = node.collider_mesh
-                            
+                                collider_source_path = collider_mesh
+
                             if os.path.exists(collider_source_path):
                                 collider_original_filename = os.path.basename(collider_source_path)
                                 # ファイル名の拡張子を選択された形式に変更
                                 collider_base_name = os.path.splitext(collider_original_filename)[0]
                                 collider_new_filename = f"{collider_base_name}{selected_format}"
                                 collider_dest_path = os.path.join(meshes_dir, collider_new_filename)
-                                
+
                                 # 既にコピー済みでない場合のみ変換
                                 if collider_new_filename not in stl_files_copied:
                                     try:
@@ -9582,10 +9450,7 @@ class CustomNodeGraph(NodeGraph):
         if hasattr(node, 'mesh_original_color') and node.mesh_original_color:
             color_str = ' '.join(str(c) for c in node.mesh_original_color)
             ET.SubElement(node_elem, "mesh_original_color").text = color_str
-        if hasattr(node, 'collider_mesh_scale'):
-            scale_str = ' '.join(str(v) for v in node.collider_mesh_scale)
-            ET.SubElement(node_elem, "collider_mesh_scale").text = scale_str
-        
+
         # リンク属性
         if hasattr(node, 'blank_link'):
             ET.SubElement(node_elem, "blank_link").text = str(node.blank_link)
@@ -9601,7 +9466,7 @@ class CustomNodeGraph(NodeGraph):
                 collider_elem = ET.SubElement(colliders_elem, "collider")
                 
                 # タイプ
-                ET.SubElement(collider_elem, "type").text = collider.get('type', 'primitive')
+                ET.SubElement(collider_elem, "type").text = collider.get('type') or 'primitive'
                 
                 # 有効/無効
                 ET.SubElement(collider_elem, "enabled").text = str(collider.get('enabled', True))
@@ -9645,20 +9510,7 @@ class CustomNodeGraph(NodeGraph):
                     rotation = [0.0, 0.0, 0.0]
                 rot_str = ' '.join(str(v) for v in rotation)
                 ET.SubElement(collider_elem, "rotation").text = rot_str
-        
-        # 後方互換性：古い形式のコライダー情報も保存（colliders配列がない場合）
-        elif hasattr(node, 'collider_enabled') or hasattr(node, 'collider_type'):
-            if hasattr(node, 'collider_enabled'):
-                ET.SubElement(node_elem, "collider_enabled").text = str(node.collider_enabled)
-            if hasattr(node, 'collider_type'):
-                ET.SubElement(node_elem, "collider_type").text = str(node.collider_type)
-            if hasattr(node, 'collider_mesh') and node.collider_mesh:
-                try:
-                    rel_path = os.path.relpath(node.collider_mesh, project_dir)
-                    ET.SubElement(node_elem, "collider_mesh").text = rel_path
-                except (ValueError, TypeError):
-                    ET.SubElement(node_elem, "collider_mesh").text = node.collider_mesh
-        
+
         # Points (FooNodeの場合)
         if hasattr(node, 'points') and isinstance(node, FooNode):
             # 実際のポート数とpointsの数を同期
@@ -9937,13 +9789,7 @@ class CustomNodeGraph(NodeGraph):
                     mesh_original_color_elem = node_elem.find("mesh_original_color")
                     if mesh_original_color_elem is not None:
                         base_link_sub_node.mesh_original_color = [float(c) for c in mesh_original_color_elem.text.split()]
-                    
-                    collider_mesh_scale_elem = node_elem.find("collider_mesh_scale")
-                    if collider_mesh_scale_elem is not None:
-                        base_link_sub_node.collider_mesh_scale = [float(v) for v in collider_mesh_scale_elem.text.split()]
-                    elif not hasattr(base_link_sub_node, 'collider_mesh_scale'):
-                        base_link_sub_node.collider_mesh_scale = [1.0, 1.0, 1.0]
-                    
+
                     # リンク属性
                     blank_link_elem = node_elem.find("blank_link")
                     if blank_link_elem is not None:
@@ -10033,58 +9879,7 @@ class CustomNodeGraph(NodeGraph):
                                 collider['rotation'] = [0.0, 0.0, 0.0]
                             
                             base_link_sub_node.colliders.append(collider)
-                        
-                        # 後方互換性：古い形式の属性も設定
-                        base_link_sub_node.collider_enabled = any(c.get('enabled', False) for c in base_link_sub_node.colliders)
-                        base_link_sub_node.collider_type = base_link_sub_node.colliders[0].get('type') if base_link_sub_node.colliders else None
-                        base_link_sub_node.collider_mesh = base_link_sub_node.colliders[0].get('mesh') if base_link_sub_node.colliders and base_link_sub_node.colliders[0].get('type') == 'mesh' else None
-                    else:
-                        # 後方互換性：古い形式からロード
-                        has_old_collider_data = (collider_enabled_elem is not None) or \
-                                                (collider_type_elem is not None and collider_type_elem.text != 'None')
-                        
-                        if has_old_collider_data:
-                            base_link_sub_node.colliders = []
-                            collider_enabled = collider_enabled_elem.text.lower() == 'true' if collider_enabled_elem is not None else False
-                            collider_type = collider_type_elem.text if collider_type_elem is not None and collider_type_elem.text != 'None' else 'primitive'
-                            
-                            if collider_enabled:
-                                old_collider = {
-                                    'type': collider_type,
-                                    'enabled': collider_enabled,
-                                    'mesh_scale': [1.0, 1.0, 1.0],
-                                    'data': {
-                                        'type': 'sphere',
-                                        'geometry': {'radius': 0.05}
-                                    },
-                                    'position': [0.0, 0.0, 0.0],
-                                    'rotation': [0.0, 0.0, 0.0]
-                                }
-                                
-                                collider_mesh_elem = node_elem.find("collider_mesh")
-                                if collider_mesh_elem is not None and collider_mesh_elem.text:
-                                    collider_path = os.path.join(self.project_dir, collider_mesh_elem.text)
-                                    if os.path.exists(collider_path):
-                                        old_collider['mesh'] = collider_path
-                                        old_collider['type'] = 'mesh'
-                                else:
-                                    old_collider['mesh'] = None
-                                
-                                base_link_sub_node.colliders.append(old_collider)
-                                print(f"  Converted old collider format to new format for base_link_sub")
-                            
-                            # 古い形式の属性も設定
-                            base_link_sub_node.collider_enabled = collider_enabled
-                            base_link_sub_node.collider_type = collider_type
-                            base_link_sub_node.collider_mesh = old_collider.get('mesh') if collider_enabled else None
-                        else:
-                            # コライダー情報なし
-                            if not hasattr(base_link_sub_node, 'colliders'):
-                                base_link_sub_node.colliders = []
-                            base_link_sub_node.collider_enabled = False
-                            base_link_sub_node.collider_type = None
-                            base_link_sub_node.collider_mesh = None
-                    
+
                     # Points (FooNodeの場合)
                     if points_elem is not None:
                         # ポイントデータの復元（空のpointをフィルタリング）
@@ -10283,13 +10078,7 @@ class CustomNodeGraph(NodeGraph):
             mesh_original_color_elem = node_elem.find("mesh_original_color")
             if mesh_original_color_elem is not None:
                 node.mesh_original_color = [float(c) for c in mesh_original_color_elem.text.split()]
-            
-            collider_mesh_scale_elem = node_elem.find("collider_mesh_scale")
-            if collider_mesh_scale_elem is not None:
-                node.collider_mesh_scale = [float(v) for v in collider_mesh_scale_elem.text.split()]
-            elif not hasattr(node, 'collider_mesh_scale'):
-                node.collider_mesh_scale = [1.0, 1.0, 1.0]
-            
+
             # リンク属性
             blank_link_elem = node_elem.find("blank_link")
             if blank_link_elem is not None:
@@ -10379,63 +10168,7 @@ class CustomNodeGraph(NodeGraph):
                         collider['rotation'] = [0.0, 0.0, 0.0]
                     
                     node.colliders.append(collider)
-                
-                # 後方互換性：古い形式の属性も設定
-                node.collider_enabled = any(c.get('enabled', False) for c in node.colliders)
-                node.collider_type = node.colliders[0].get('type') if node.colliders else None
-                node.collider_mesh = node.colliders[0].get('mesh') if node.colliders and node.colliders[0].get('type') == 'mesh' else None
-            else:
-                # 後方互換性：古い形式からロード
-                collider_enabled_elem = node_elem.find("collider_enabled")
-                collider_type_elem = node_elem.find("collider_type")
-                collider_mesh_elem = node_elem.find("collider_mesh")
-                
-                # 古い形式のコライダー情報がある場合は新形式に変換
-                has_old_collider_data = (collider_enabled_elem is not None) or \
-                                        (collider_type_elem is not None and collider_type_elem.text != 'None') or \
-                                        (collider_mesh_elem is not None and collider_mesh_elem.text)
-                
-                if has_old_collider_data:
-                    node.colliders = []
-                    collider_enabled = collider_enabled_elem.text.lower() == 'true' if collider_enabled_elem is not None else False
-                    collider_type = collider_type_elem.text if collider_type_elem is not None and collider_type_elem.text != 'None' else 'primitive'
-                    
-                    if collider_enabled:
-                        old_collider = {
-                            'type': collider_type,
-                            'enabled': collider_enabled,
-                            'mesh_scale': [1.0, 1.0, 1.0],
-                            'data': {
-                                'type': 'sphere',
-                                'geometry': {'radius': 0.05}
-                            },
-                            'position': [0.0, 0.0, 0.0],
-                            'rotation': [0.0, 0.0, 0.0]
-                        }
-                        
-                        if collider_mesh_elem is not None and collider_mesh_elem.text:
-                            collider_path = os.path.join(self.project_dir, collider_mesh_elem.text)
-                            if os.path.exists(collider_path):
-                                old_collider['mesh'] = collider_path
-                                old_collider['type'] = 'mesh'
-                        else:
-                            old_collider['mesh'] = None
-                        
-                        node.colliders.append(old_collider)
-                        print(f"  Converted old collider format to new format for node '{node.name()}'")
-                    
-                    # 古い形式の属性も設定
-                    node.collider_enabled = collider_enabled
-                    node.collider_type = collider_type
-                    node.collider_mesh = old_collider.get('mesh') if collider_enabled else None
-                else:
-                    # コライダー情報なし
-                    if not hasattr(node, 'colliders'):
-                        node.colliders = []
-                    node.collider_enabled = False
-                    node.collider_type = None
-                    node.collider_mesh = None
-            
+
             # Points (FooNodeの場合)
             points_elem = node_elem.find("points")
             if points_elem is not None and isinstance(node, FooNode):
@@ -11559,42 +11292,51 @@ class CustomNodeGraph(NodeGraph):
                     print(f"Warning: No mesh file found for {base_name}")
 
                 # Collider情報の読み込み（XMLファイル内の要素から）
-                collider_enabled_elem = root.find('collider_enabled')
-                if collider_enabled_elem is not None:
-                    try:
-                        collider_enabled = collider_enabled_elem.text.lower() == 'true' if collider_enabled_elem.text else False
-                        new_node.collider_enabled = collider_enabled
-                        print(f"Loaded collider_enabled: {collider_enabled}")
-                    except Exception as e:
-                        print(f"Error parsing collider_enabled: {e}")
-
                 collider_elem = root.find('collider')
                 if collider_elem is not None:
                     collider_type = collider_elem.get('type')
                     collider_file = collider_elem.get('file')
-                    
+
                     if collider_type == 'primitive' and collider_file:
                         # プリミティブコライダーの場合、ファイルパスから読み込む
                         collider_xml_path = os.path.join(folder_path, collider_file)
-                        
+
                         if os.path.exists(collider_xml_path):
                             collider_data = self.inspector_window.parse_collider_xml(collider_xml_path)
                             if collider_data:
-                                new_node.collider_type = 'primitive'
-                                new_node.collider_data = collider_data
-                                new_node.collider_enabled = True
+                                # Update colliders list
+                                if not hasattr(new_node, 'colliders'):
+                                    new_node.colliders = []
+                                new_node.colliders = [{
+                                    'type': 'primitive',
+                                    'enabled': True,
+                                    'data': collider_data,
+                                    'position': collider_data.get('position', [0.0, 0.0, 0.0]),
+                                    'rotation': collider_data.get('rotation', [0.0, 0.0, 0.0]),
+                                    'mesh': None,
+                                    'mesh_scale': [1.0, 1.0, 1.0]
+                                }]
                                 print(f"Loaded collider XML: {collider_xml_path}")
                         else:
                             print(f"Warning: Collider XML file not found: {collider_xml_path}")
-                    
+
                     elif collider_type == 'mesh' and collider_file:
                         # メッシュコライダーの場合、相対パスから読み込む
                         collider_mesh_path = os.path.join(folder_path, collider_file)
-                        
+
                         if os.path.exists(collider_mesh_path):
-                            new_node.collider_type = 'mesh'
-                            new_node.collider_mesh = collider_mesh_path
-                            new_node.collider_enabled = True
+                            # Update colliders list
+                            if not hasattr(new_node, 'colliders'):
+                                new_node.colliders = []
+                            new_node.colliders = [{
+                                'type': 'mesh',
+                                'enabled': True,
+                                'data': None,
+                                'position': [0.0, 0.0, 0.0],
+                                'rotation': [0.0, 0.0, 0.0],
+                                'mesh': collider_mesh_path,
+                                'mesh_scale': [1.0, 1.0, 1.0]
+                            }]
                             print(f"Loaded collider mesh: {collider_mesh_path}")
                         else:
                             print(f"Warning: Collider mesh file not found: {collider_mesh_path}")
@@ -11604,10 +11346,19 @@ class CustomNodeGraph(NodeGraph):
                 if collision_mesh_elem is not None and collision_mesh_elem.text:
                     collision_mesh_path = os.path.join(folder_path, collision_mesh_elem.text.strip())
                     if os.path.exists(collision_mesh_path):
-                        new_node.collider_mesh = collision_mesh_path
-                        new_node.collider_type = 'mesh'
-                        new_node.collider_enabled = True
-                        print(f"Loaded collider mesh (legacy): {new_node.collider_mesh}")
+                        # Update colliders list
+                        if not hasattr(new_node, 'colliders'):
+                            new_node.colliders = []
+                        new_node.colliders = [{
+                            'type': 'mesh',
+                            'enabled': True,
+                            'data': None,
+                            'position': [0.0, 0.0, 0.0],
+                            'rotation': [0.0, 0.0, 0.0],
+                            'mesh': collision_mesh_path,
+                            'mesh_scale': [1.0, 1.0, 1.0]
+                        }]
+                        print(f"Loaded collider mesh (legacy): {collision_mesh_path}")
 
                 # コライダーファイルの自動検出（XMLファイル内にcollider要素がない場合）
                 if not collider_elem and not collision_mesh_elem:
@@ -11618,9 +11369,18 @@ class CustomNodeGraph(NodeGraph):
                         print(f"Loading collider XML (auto-detected): {os.path.basename(collider_path)}")
                         collider_data = self.inspector_window.parse_collider_xml(collider_path)
                         if collider_data:
-                            new_node.collider_type = 'primitive'
-                            new_node.collider_data = collider_data
-                            new_node.collider_enabled = True
+                            # Update colliders list
+                            if not hasattr(new_node, 'colliders'):
+                                new_node.colliders = []
+                            new_node.colliders = [{
+                                'type': 'primitive',
+                                'enabled': True,
+                                'data': collider_data,
+                                'position': collider_data.get('position', [0.0, 0.0, 0.0]),
+                                'rotation': collider_data.get('rotation', [0.0, 0.0, 0.0]),
+                                'mesh': None,
+                                'mesh_scale': [1.0, 1.0, 1.0]
+                            }]
                             print(f"  → Primitive collider: {collider_data['type']}")
                         else:
                             print(f"  → Warning: Failed to parse collider XML")
@@ -11628,29 +11388,47 @@ class CustomNodeGraph(NodeGraph):
                     elif collider_path and collider_type == 'mesh':
                         # メッシュコライダー
                         print(f"Loading collider mesh (auto-detected): {os.path.basename(collider_path)}")
-                        new_node.collider_type = 'mesh'
-                        new_node.collider_mesh = collider_path
-                        new_node.collider_enabled = True
+                        # Update colliders list
+                        if not hasattr(new_node, 'colliders'):
+                            new_node.colliders = []
+                        new_node.colliders = [{
+                            'type': 'mesh',
+                            'enabled': True,
+                            'data': None,
+                            'position': [0.0, 0.0, 0.0],
+                            'rotation': [0.0, 0.0, 0.0],
+                            'mesh': collider_path,
+                            'mesh_scale': [1.0, 1.0, 1.0]
+                        }]
                         print(f"  → Mesh collider assigned")
 
                     else:
                         # コライダーなし：ビジュアルメッシュを使用（初期値はアンチェック）
                         if mesh_path:
                             print(f"  → No dedicated collider found, will use visual mesh when enabled")
-                            new_node.collider_type = 'mesh'
-                            new_node.collider_mesh = mesh_path
-                            if not hasattr(new_node, 'collider_enabled') or new_node.collider_enabled is None:
-                                new_node.collider_enabled = False  # 初期値はアンチェック
+                            # Update colliders list（無効状態で）
+                            if not hasattr(new_node, 'colliders'):
+                                new_node.colliders = []
+                            new_node.colliders = [{
+                                'type': 'mesh',
+                                'enabled': False,
+                                'data': None,
+                                'position': [0.0, 0.0, 0.0],
+                                'rotation': [0.0, 0.0, 0.0],
+                                'mesh': mesh_path,
+                                'mesh_scale': [1.0, 1.0, 1.0]
+                            }]
                         else:
                             print(f"  → No collider available")
-                            if not hasattr(new_node, 'collider_enabled') or new_node.collider_enabled is None:
-                                new_node.collider_enabled = False
 
                 # ファイル名が_decまたは_dec[数字]で終わる場合の自動設定
                 import re
                 if re.search(r'_dec\d*$', base_name):
                     new_node.massless_decoration = True
-                    new_node.collider_enabled = False
+                    # collidersリストのenabledをFalseに設定
+                    if hasattr(new_node, 'colliders') and new_node.colliders:
+                        for collider in new_node.colliders:
+                            collider['enabled'] = False
                     new_node.rotation_axis = 3  # Fixed
                     print(f"  → Auto-configured: Massless Decoration=ON, Collider=OFF, Rotation Axis=Fixed (filename ends with '_dec')")
 
@@ -12168,20 +11946,16 @@ class CustomNodeGraph(NodeGraph):
                         
                         # コライダー設定を保存（r_用のコライダーを優先するため）
                         collider_settings = {}
-                        if hasattr(node, 'collider_enabled'):
-                            collider_settings['collider_enabled'] = node.collider_enabled
-                        if hasattr(node, 'collider_type'):
-                            collider_settings['collider_type'] = node.collider_type
-                        if hasattr(node, 'collider_data') and node.collider_data:
-                            # collider_dataをディープコピー
-                            import copy
-                            collider_settings['collider_data'] = copy.deepcopy(node.collider_data)
-                        if hasattr(node, 'collider_mesh') and node.collider_mesh:
-                            collider_settings['collider_mesh'] = node.collider_mesh
-                        
+                        import copy
+                        # collidersリストを保存
+                        if hasattr(node, 'colliders') and node.colliders:
+                            collider_settings['colliders'] = copy.deepcopy(node.colliders)
+
                         if collider_settings:
                             existing_r_collider_settings[corresponding_l_name] = collider_settings
                             print(f"  Saved collider settings for {node_name}")
+                            if 'colliders' in collider_settings:
+                                print(f"    Saved {len(collider_settings['colliders'])} collider(s) in new format")
                         
                         # メッシュファイル設定を保存（既存のメッシュを保持するため）
                         mesh_settings = {}
@@ -12538,31 +12312,43 @@ class CustomNodeGraph(NodeGraph):
                     # 既存のr_用コライダー設定を優先して適用
                     collider_settings = existing_r_collider_settings[l_name]
                     print(f"  Applying existing r_ collider settings for {r_name}")
+                    import copy
 
-                    if 'collider_enabled' in collider_settings:
-                        r_node.collider_enabled = collider_settings['collider_enabled']
-                    if 'collider_type' in collider_settings:
-                        r_node.collider_type = collider_settings['collider_type']
-                    if 'collider_data' in collider_settings:
-                        import copy
-                        r_node.collider_data = copy.deepcopy(collider_settings['collider_data'])
-                    if 'collider_mesh' in collider_settings:
-                        r_node.collider_mesh = collider_settings['collider_mesh']
-                        print(f"  Collider mesh (from existing r_): {r_node.collider_mesh}")
+                    # 新形式: collidersリストを優先して復元
+                    # 有効なコライダーがあるかチェック（type: Noneは除外）
+                    has_valid_colliders = (
+                        'colliders' in collider_settings and collider_settings['colliders'] and
+                        any(c.get('type') is not None for c in collider_settings['colliders'])
+                    )
+
+                    if has_valid_colliders:
+                        r_node.colliders = copy.deepcopy(collider_settings['colliders'])
+                        print(f"    Restored {len(r_node.colliders)} collider(s) from saved settings")
                 else:
                     # 既存のr_用コライダー設定がない場合、l_のコライダー設定をコピー（l_をr_に置換）
-                    if hasattr(l_node, 'collider_enabled'):
-                        r_node.collider_enabled = l_node.collider_enabled
-                    if hasattr(l_node, 'collider_type'):
-                        r_node.collider_type = l_node.collider_type
-                    if hasattr(l_node, 'collider_data') and l_node.collider_data:
-                        import copy
-                        r_node.collider_data = copy.deepcopy(l_node.collider_data)
+                    import copy
+
+                    # 新形式: collidersリストをl_からコピー（メッシュパスのl_をr_に変換）
+                    # 有効なコライダーがあるかチェック（type: Noneは除外）
+                    l_has_valid_colliders = (
+                        hasattr(l_node, 'colliders') and l_node.colliders and
+                        any(c.get('type') is not None for c in l_node.colliders)
+                    )
+
+                    if l_has_valid_colliders:
+                        r_node.colliders = copy.deepcopy(l_node.colliders)
+                        # メッシュパス内のl_をr_に変換
+                        for collider in r_node.colliders:
+                            if collider.get('mesh') and 'l_' in collider['mesh']:
+                                original_mesh = collider['mesh']
+                                collider['mesh'] = original_mesh.replace('l_', 'r_', 1)
+                                print(f"    Collider mesh path converted: {original_mesh} -> {collider['mesh']}")
+                        print(f"  Copied {len(r_node.colliders)} collider(s) from l_ node")
 
                     # Colliderファイルの自動検出と適用
                     r_collider_found = False
 
-                    # 方法1: r_用のSTLファイルに対応する _collider.xml を探す
+                    # r_用のSTLファイルに対応する _collider.xml を探す
                     if hasattr(r_node, 'stl_file') and r_node.stl_file:
                         r_stl_path = r_node.stl_file
                         if os.path.exists(r_stl_path):
@@ -12576,42 +12362,19 @@ class CustomNodeGraph(NodeGraph):
                                 if hasattr(self, 'inspector_window') and self.inspector_window:
                                     collider_data = self.inspector_window.parse_collider_xml(r_collider_xml_path)
                                     if collider_data:
-                                        r_node.collider_type = 'primitive'
-                                        r_node.collider_data = collider_data
-                                        r_node.collider_enabled = True
+                                        # Update colliders list
+                                        r_node.colliders = [{
+                                            'type': 'primitive',
+                                            'enabled': True,
+                                            'data': collider_data,
+                                            'position': collider_data.get('position', [0.0, 0.0, 0.0]),
+                                            'rotation': collider_data.get('rotation', [0.0, 0.0, 0.0]),
+                                            'mesh': None,
+                                            'mesh_scale': [1.0, 1.0, 1.0]
+                                        }]
                                         r_collider_found = True
                                         print(f"  ✓ Attached r_ collider XML: {os.path.basename(r_collider_xml_path)}")
                                         print(f"    Type: {collider_data.get('type', 'unknown')}")
-
-                    # 方法2: r_用のコライダーファイルが見つからなかった場合、l_の設定をr_に変換
-                    if not r_collider_found:
-                        if hasattr(l_node, 'collider_mesh') and l_node.collider_mesh:
-                            collider_mesh = l_node.collider_mesh
-                            # 相対パスのファイル名にl_が含まれる場合は置換
-                            if 'l_' in collider_mesh:
-                                r_collider_mesh = collider_mesh.replace('l_', 'r_', 1)
-
-                                # r_用のコライダーメッシュファイルが実際に存在するか確認
-                                # 相対パスの場合、STLファイルのディレクトリを基準に解決
-                                if hasattr(r_node, 'stl_file') and r_node.stl_file and os.path.exists(r_node.stl_file):
-                                    mesh_dir = os.path.dirname(r_node.stl_file)
-                                    r_collider_mesh_full_path = os.path.join(mesh_dir, r_collider_mesh)
-
-                                    if os.path.exists(r_collider_mesh_full_path):
-                                        r_node.collider_mesh = r_collider_mesh
-                                        print(f"  ✓ Found r_ collider mesh: {r_collider_mesh}")
-                                    else:
-                                        # r_用のファイルが存在しない場合、l_のファイルをそのまま使用
-                                        r_node.collider_mesh = collider_mesh
-                                        print(f"  Collider mesh (r_ not found, using l_): {collider_mesh}")
-                                else:
-                                    r_node.collider_mesh = r_collider_mesh
-                                    print(f"  Collider mesh (from l_): {collider_mesh} -> {r_collider_mesh}")
-                            else:
-                                r_node.collider_mesh = collider_mesh
-                                print(f"  Collider mesh (from l_): {collider_mesh} (unchanged)")
-                        else:
-                            r_node.collider_mesh = None
 
                 # ポイントをコピー（Y座標を反転してミラーリング）
                 if hasattr(l_node, 'points') and hasattr(r_node, 'points'):
@@ -13129,63 +12892,47 @@ class CustomNodeGraph(NodeGraph):
                 return f' scale="{scale[0]} {scale[1]} {scale[2]}"'
         return ''
 
-    def _format_collider_mesh_scale(self, node):
-        """Collider mesh scaleをフォーマット（デフォルト値でない場合のみ）"""
-        if hasattr(node, 'collider_mesh_scale') and isinstance(node.collider_mesh_scale, (list, tuple)) and len(node.collider_mesh_scale) == 3:
-            scale = list(node.collider_mesh_scale)
-            if scale != [1.0, 1.0, 1.0]:
-                return f' scale="{scale[0]} {scale[1]} {scale[2]}"'
-        return ''
+    def _write_urdf_collision(self, file, node, package_path, mesh_dir_name=None, mesh_format=".stl", unity_mode=False):
+        """Write collision geometry for URDF (supports multiple colliders)
 
-    def _write_urdf_collision(self, file, node, package_path, mesh_dir_name, mesh_format=".stl"):
-        """Write collision geometry for URDF (supports multiple colliders)"""
+        Args:
+            file: Output file handle
+            node: Node object
+            package_path: Package path for visual mesh fallback
+            mesh_dir_name: Mesh directory name (not used in unity_mode)
+            mesh_format: Mesh file format extension (not used in unity_mode)
+            unity_mode: If True, use Unity-style paths (package://meshes/)
+        """
         # Get colliders list
         colliders = []
         if hasattr(node, 'colliders') and node.colliders:
             colliders = node.colliders
-        else:
-            # Backward compatibility: migrate old format to list
-            collider_enabled = getattr(node, 'collider_enabled', False)
-            collider_type = getattr(node, 'collider_type', None)
-            
-            if collider_type == 'primitive' and hasattr(node, 'collider_data') and node.collider_data:
-                colliders.append({
-                    'type': 'primitive',
-                    'enabled': collider_enabled,
-                    'data': node.collider_data,
-                    'mesh': None,
-                    'mesh_scale': [1.0, 1.0, 1.0]
-                })
-            elif collider_type == 'mesh' and hasattr(node, 'collider_mesh') and node.collider_mesh:
-                colliders.append({
-                    'type': 'mesh',
-                    'enabled': collider_enabled,
-                    'data': None,
-                    'mesh': node.collider_mesh,
-                    'mesh_scale': getattr(node, 'collider_mesh_scale', [1.0, 1.0, 1.0])
-                })
-            elif collider_enabled:
-                # Enabled but no specific collider - use visual mesh
-                colliders.append({
-                    'type': 'mesh',
-                    'enabled': True,
-                    'data': None,
-                    'mesh': None,  # Use visual mesh
-                    'mesh_scale': [1.0, 1.0, 1.0]
-                })
-        
+
         # Write each enabled collider
         for collider in colliders:
             if not collider.get('enabled', False):
                 continue
-            
+
             file.write('    <collision>\n')
-            
+
             if collider.get('type') == 'primitive' and collider.get('data'):
                 # Primitive collider
                 data = collider['data']
-                pos = data.get('position', [0, 0, 0])
-                rot_deg = data.get('rotation', [0, 0, 0])
+                
+                # Prioritize collider['position'] over data['position'] (collider['position'] is set from UI/XML)
+                pos = collider.get('position', data.get('position', [0, 0, 0]))
+                
+                # Add visual_origin offset to collider position (collider should follow visual mesh position)
+                if hasattr(node, 'visual_origin') and node.visual_origin:
+                    visual_xyz = node.visual_origin.get('xyz', [0.0, 0.0, 0.0])
+                    pos = [
+                        pos[0] + visual_xyz[0],
+                        pos[1] + visual_xyz[1],
+                        pos[2] + visual_xyz[2]
+                    ]
+                
+                # Prioritize collider['rotation'] over data['rotation'] (collider['rotation'] is set from UI/XML)
+                rot_deg = collider.get('rotation', data.get('rotation', [0, 0, 0]))
                 # Convert degrees to radians for URDF
                 rot_rad = [math.radians(r) for r in rot_deg]
                 file.write(f'      <origin xyz="{pos[0]} {pos[1]} {pos[2]}" rpy="{rot_rad[0]} {rot_rad[1]} {rot_rad[2]}"/>\n')
@@ -13195,26 +12942,21 @@ class CustomNodeGraph(NodeGraph):
                 geom = data.get('geometry', {})
 
                 if geom_type == 'box':
-                    # Box: size attribute (x y z)
                     size = geom.get('size', None)
                     if isinstance(size, str):
                         file.write(f'        <box size="{size}"/>\n')
                     else:
-                        # If stored as dict with size_x, size_y, size_z or x, y, z
                         sx = float(geom.get('size_x', geom.get('x', 1.0)))
                         sy = float(geom.get('size_y', geom.get('y', 1.0)))
                         sz = float(geom.get('size_z', geom.get('z', 1.0)))
                         file.write(f'        <box size="{sx} {sy} {sz}"/>\n')
-
                 elif geom_type == 'sphere':
                     radius = float(geom.get('radius', 0.5))
                     file.write(f'        <sphere radius="{radius}"/>\n')
-
                 elif geom_type == 'cylinder':
                     radius = float(geom.get('radius', 0.5))
                     length = float(geom.get('length', 1.0))
                     file.write(f'        <cylinder radius="{radius}" length="{length}"/>\n')
-
                 elif geom_type == 'capsule':
                     # URDF doesn't have native capsule, approximate with cylinder
                     radius = float(geom.get('radius', 0.5))
@@ -13227,15 +12969,38 @@ class CustomNodeGraph(NodeGraph):
                 # Mesh collider
                 collider_mesh = collider.get('mesh')
                 if collider_mesh:
-                    file.write(f'      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+                    # Get position and rotation from collider
+                    pos = collider.get('position', [0, 0, 0])
+                    
+                    # Add visual_origin offset to collider position (collider should follow visual mesh position)
+                    if hasattr(node, 'visual_origin') and node.visual_origin:
+                        visual_xyz = node.visual_origin.get('xyz', [0.0, 0.0, 0.0])
+                        pos = [
+                            pos[0] + visual_xyz[0],
+                            pos[1] + visual_xyz[1],
+                            pos[2] + visual_xyz[2]
+                        ]
+                    
+                    rot_deg = collider.get('rotation', [0, 0, 0])
+                    # Convert degrees to radians for URDF
+                    rot_rad = [math.radians(r) for r in rot_deg]
+                    file.write(f'      <origin xyz="{pos[0]} {pos[1]} {pos[2]}" rpy="{rot_rad[0]} {rot_rad[1]} {rot_rad[2]}"/>\n')
                     file.write('      <geometry>\n')
-                    visual_dir = os.path.dirname(node.stl_file) if node.stl_file else ""
-                    collider_absolute = os.path.join(visual_dir, collider_mesh) if visual_dir else collider_mesh
-                    collider_original_filename = os.path.basename(collider_absolute)
-                    # ファイル名の拡張子を選択された形式に変更
-                    collider_base_name = os.path.splitext(collider_original_filename)[0]
-                    collider_filename = f"{collider_base_name}{mesh_format}"
-                    collider_package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{collider_filename}"
+
+                    # Build collider mesh path based on mode
+                    if unity_mode:
+                        # Unity: use original filename with package://meshes/
+                        collider_filename = os.path.basename(collider_mesh)
+                        collider_package_path = f"package://meshes/{collider_filename}"
+                    else:
+                        # Standard: convert format and use full package path
+                        visual_dir = os.path.dirname(node.stl_file) if node.stl_file else ""
+                        collider_absolute = os.path.join(visual_dir, collider_mesh) if visual_dir else collider_mesh
+                        collider_original_filename = os.path.basename(collider_absolute)
+                        collider_base_name = os.path.splitext(collider_original_filename)[0]
+                        collider_filename = f"{collider_base_name}{mesh_format}"
+                        collider_package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{collider_filename}"
+
                     mesh_scale = collider.get('mesh_scale', [1.0, 1.0, 1.0])
                     scale_attr = ''
                     if mesh_scale != [1.0, 1.0, 1.0]:
@@ -13244,11 +13009,26 @@ class CustomNodeGraph(NodeGraph):
                     file.write('      </geometry>\n')
                 else:
                     # Default: use visual mesh as collider
-                    file.write(f'      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+                    # Get position and rotation from collider (even if no explicit mesh set)
+                    pos = collider.get('position', [0, 0, 0])
+                    
+                    # Add visual_origin offset to collider position (collider should follow visual mesh position)
+                    if hasattr(node, 'visual_origin') and node.visual_origin:
+                        visual_xyz = node.visual_origin.get('xyz', [0.0, 0.0, 0.0])
+                        pos = [
+                            pos[0] + visual_xyz[0],
+                            pos[1] + visual_xyz[1],
+                            pos[2] + visual_xyz[2]
+                        ]
+                    
+                    rot_deg = collider.get('rotation', [0, 0, 0])
+                    # Convert degrees to radians for URDF
+                    rot_rad = [math.radians(r) for r in rot_deg]
+                    file.write(f'      <origin xyz="{pos[0]} {pos[1]} {pos[2]}" rpy="{rot_rad[0]} {rot_rad[1]} {rot_rad[2]}"/>\n')
                     file.write('      <geometry>\n')
                     file.write(f'        <mesh filename="{package_path}"/>\n')
                     file.write('      </geometry>\n')
-            
+
             file.write('    </collision>\n')
 
     def _write_link(self, file, node, materials, mesh_format=".stl"):
@@ -13437,7 +13217,7 @@ class CustomNodeGraph(NodeGraph):
                                     file.write('    </visual>\n')
 
                     # コリジョン (Unity用のパスで)
-                    self._write_urdf_collision_unity(file, node, package_path)
+                    self._write_urdf_collision(file, node, package_path, unity_mode=True)
 
                 except Exception as e:
                     print(f"Error processing STL file for node {node.name()}: {str(e)}")
@@ -13448,115 +13228,6 @@ class CustomNodeGraph(NodeGraph):
         except Exception as e:
             print(f"Error writing link for Unity: {str(e)}")
             traceback.print_exc()
-
-    def _write_urdf_collision_unity(self, file, node, package_path):
-        """Write collision geometry for URDF (Unity version with package://meshes/ path, supports multiple colliders)"""
-        # Get colliders list (same logic as _write_urdf_collision)
-        colliders = []
-        if hasattr(node, 'colliders') and node.colliders:
-            colliders = node.colliders
-        else:
-            # Backward compatibility: migrate old format to list
-            collider_enabled = getattr(node, 'collider_enabled', False)
-            collider_type = getattr(node, 'collider_type', None)
-            
-            if collider_type == 'primitive' and hasattr(node, 'collider_data') and node.collider_data:
-                colliders.append({
-                    'type': 'primitive',
-                    'enabled': collider_enabled,
-                    'data': node.collider_data,
-                    'mesh': None,
-                    'mesh_scale': [1.0, 1.0, 1.0]
-                })
-            elif collider_type == 'mesh' and hasattr(node, 'collider_mesh') and node.collider_mesh:
-                colliders.append({
-                    'type': 'mesh',
-                    'enabled': collider_enabled,
-                    'data': None,
-                    'mesh': node.collider_mesh,
-                    'mesh_scale': getattr(node, 'collider_mesh_scale', [1.0, 1.0, 1.0])
-                })
-            elif collider_enabled:
-                # Enabled but no specific collider - use visual mesh
-                colliders.append({
-                    'type': 'mesh',
-                    'enabled': True,
-                    'data': None,
-                    'mesh': None,  # Use visual mesh
-                    'mesh_scale': [1.0, 1.0, 1.0]
-                })
-        
-        # Write each enabled collider
-        for collider in colliders:
-            if not collider.get('enabled', False):
-                continue
-            
-            file.write('    <collision>\n')
-            
-            if collider.get('type') == 'primitive' and collider.get('data'):
-                # Primitive collider
-                data = collider['data']
-                pos = data.get('position', [0, 0, 0])
-                rot_deg = data.get('rotation', [0, 0, 0])
-                # Convert degrees to radians for URDF
-                rot_rad = [math.radians(r) for r in rot_deg]
-                file.write(f'      <origin xyz="{pos[0]} {pos[1]} {pos[2]}" rpy="{rot_rad[0]} {rot_rad[1]} {rot_rad[2]}"/>\n')
-                file.write('      <geometry>\n')
-
-                geom_type = data['type']
-                geom = data.get('geometry', {})
-
-                if geom_type == 'box':
-                    # Box: size attribute (x y z)
-                    size = geom.get('size', None)
-                    if isinstance(size, str):
-                        file.write(f'        <box size="{size}"/>\n')
-                    else:
-                        # If stored as dict with size_x, size_y, size_z or x, y, z
-                        sx = float(geom.get('size_x', geom.get('x', 1.0)))
-                        sy = float(geom.get('size_y', geom.get('y', 1.0)))
-                        sz = float(geom.get('size_z', geom.get('z', 1.0)))
-                        file.write(f'        <box size="{sx} {sy} {sz}"/>\n')
-
-                elif geom_type == 'sphere':
-                    radius = float(geom.get('radius', 0.5))
-                    file.write(f'        <sphere radius="{radius}"/>\n')
-
-                elif geom_type == 'cylinder':
-                    radius = float(geom.get('radius', 0.5))
-                    length = float(geom.get('length', 1.0))
-                    file.write(f'        <cylinder radius="{radius}" length="{length}"/>\n')
-
-                elif geom_type == 'capsule':
-                    # URDF doesn't have native capsule, approximate with cylinder
-                    radius = float(geom.get('radius', 0.5))
-                    length = float(geom.get('length', 1.0))
-                    file.write(f'        <cylinder radius="{radius}" length="{length}"/>\n')
-
-                file.write('      </geometry>\n')
-
-            elif collider.get('type') == 'mesh':
-                # Mesh collider (Unity用のパス)
-                collider_mesh = collider.get('mesh')
-                if collider_mesh:
-                    file.write(f'      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
-                    file.write('      <geometry>\n')
-                    collider_filename = os.path.basename(collider_mesh)
-                    collider_package_path = f"package://meshes/{collider_filename}"
-                    mesh_scale = collider.get('mesh_scale', [1.0, 1.0, 1.0])
-                    scale_attr = ''
-                    if mesh_scale != [1.0, 1.0, 1.0]:
-                        scale_attr = f' scale="{mesh_scale[0]} {mesh_scale[1]} {mesh_scale[2]}"'
-                    file.write(f'        <mesh filename="{collider_package_path}"{scale_attr}/>\n')
-                    file.write('      </geometry>\n')
-                else:
-                    # Default: use visual mesh as collider
-                    file.write(f'      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
-                    file.write('      <geometry>\n')
-                    file.write(f'        <mesh filename="{package_path}"/>\n')
-                    file.write('      </geometry>\n')
-            
-            file.write('    </collision>\n')
 
     def export_for_unity(self):
         """Unityプロジェクト用のファイル構造を作成しエクスポート"""
@@ -13985,102 +13656,7 @@ class CustomNodeGraph(NodeGraph):
                     mesh_names[node] = mesh_file_to_name[mesh_key]
                     node_to_mesh_scale_key[node] = mesh_key
 
-                # コリジョンメッシュファイルも処理
-                if hasattr(node, 'collider_enabled') and node.collider_enabled:
-                    if hasattr(node, 'collider_type') and node.collider_type == 'mesh':
-                        if hasattr(node, 'collider_mesh') and node.collider_mesh:
-                            # collider_meshのパスを取得
-                            if hasattr(node, 'stl_file') and node.stl_file:
-                                visual_dir = os.path.dirname(node.stl_file)
-                                collider_source_path = os.path.join(visual_dir, node.collider_mesh)
-                            else:
-                                collider_source_path = node.collider_mesh
-                            
-                            if os.path.exists(collider_source_path):
-                                # コリジョンメッシュファイルを検証してOBJ形式に変換
-                                try:
-                                    import trimesh
-                                    
-                                    collider_file_ext = os.path.splitext(collider_source_path)[1].lower()
-                                    
-                                    # .daeファイルの場合、特別な処理が必要な場合がある
-                                    if collider_file_ext == '.dae':
-                                        # COLLADAファイルを読み込み（Sceneの可能性があるため、force='mesh'を指定）
-                                        try:
-                                            collider_mesh = trimesh.load(collider_source_path, force='mesh')
-                                            # Sceneの場合、最初のメッシュを取得
-                                            if hasattr(collider_mesh, 'geometry'):
-                                                # Sceneオブジェクトの場合
-                                                if len(collider_mesh.geometry) > 0:
-                                                    # 最初のメッシュを取得
-                                                    collider_mesh = list(collider_mesh.geometry.values())[0]
-                                                else:
-                                                    print(f"Warning: Collider DAE file '{node.collider_mesh}' has no geometry. Skipping.")
-                                                    continue
-                                        except Exception as e:
-                                            print(f"Warning: Could not load collider DAE file '{node.collider_mesh}': {e}")
-                                            # フォールバック: 通常の読み込みを試行
-                                            try:
-                                                collider_mesh = trimesh.load(collider_source_path)
-                                                if hasattr(collider_mesh, 'geometry'):
-                                                    if len(collider_mesh.geometry) > 0:
-                                                        collider_mesh = list(collider_mesh.geometry.values())[0]
-                                                    else:
-                                                        print(f"Warning: Collider DAE file '{node.collider_mesh}' has no geometry. Skipping.")
-                                                        continue
-                                            except:
-                                                print(f"Warning: Failed to load collider DAE file '{node.collider_mesh}'. Skipping.")
-                                                continue
-                                    else:
-                                        # .stl または .obj ファイル
-                                        collider_mesh = trimesh.load(collider_source_path)
-                                    
-                                    # 面の数を確認
-                                    num_faces = 0
-                                    if hasattr(collider_mesh, 'faces'):
-                                        num_faces = len(collider_mesh.faces)
-                                    elif hasattr(collider_mesh, 'triangles'):
-                                        num_faces = len(collider_mesh.triangles)
-                                    
-                                    if num_faces < 1:
-                                        print(f"Warning: Skipping collider mesh '{node.collider_mesh}' - no faces found (file may be empty or invalid)")
-                                        continue
-                                    elif num_faces > 200000:
-                                        print(f"Warning: Skipping collider mesh '{node.collider_mesh}' - too many faces: {num_faces} (MuJoCo limit: 200000)")
-                                        continue
-                                    
-                                    # OBJファイル名を生成
-                                    collider_filename = os.path.basename(node.collider_mesh)
-                                    collider_filename = os.path.splitext(collider_filename)[0] + '.obj'
-
-                                    # まずビジュアルメッシュとして既に登録されているかチェック
-                                    if collider_filename in mesh_file_to_name:
-                                        # ビジュアルメッシュと同じファイル: 同じ名前を再利用
-                                        node._collider_mesh_name = mesh_file_to_name[collider_filename]
-                                        print(f"  Reusing visual mesh for collider: {node._collider_mesh_name} ({collider_filename})")
-                                    elif collider_filename in collider_file_to_name:
-                                        # 既にコライダーとして登録済み: 既存の名前を使用
-                                        node._collider_mesh_name = collider_file_to_name[collider_filename]
-                                        print(f"  Reusing collider mesh: {node._collider_mesh_name} ({collider_filename})")
-                                    else:
-                                        # 新規コライダーファイル: ファイルをエクスポートして登録
-                                        collider_dest_path = os.path.join(assets_dir, collider_filename)
-                                        collider_mesh.export(collider_dest_path, file_type='obj')
-                                        print(f"Converted collider mesh: {node.collider_mesh} -> {collider_filename} ({num_faces} faces)")
-
-                                        # メッシュ名を生成（拡張子なし）
-                                        collider_mesh_name = os.path.splitext(collider_filename)[0]
-                                        collider_file_to_name[collider_filename] = collider_mesh_name
-                                        node._collider_mesh_name = collider_mesh_name
-                                        print(f"  Registered unique collider: {collider_mesh_name} -> {collider_filename}")
-                                    
-                                except Exception as e:
-                                    print(f"Warning: Could not process collider mesh '{node.collider_mesh}': {e}")
-                                    continue
-                            else:
-                                print(f"Warning: Collider mesh file not found: {collider_source_path}")
-            
-            # 新形式: node.colliders リストの各コライダーメッシュを処理
+            # node.colliders リストの各コライダーメッシュを処理
             for node in self.all_nodes():
                 # Hide Meshにチェックが入っているノードはスキップ
                 if hasattr(node, 'hide_mesh') and node.hide_mesh:
@@ -14430,16 +14006,16 @@ class CustomNodeGraph(NodeGraph):
                     # kp: 位置ゲイン（stiffness）、デフォルト値を使用
                     kp = joint_info.get('kp', 100.0)  # デフォルトの位置ゲイン
                     
-                    # ctrlrange: ジョイントの可動範囲（radian）
+                    # ctrlrange: ジョイントの可動範囲（<compiler angle="radian"> なので radians で出力）
                     if joint_info.get('range_values'):
                         lower, upper = joint_info['range_values']
                         ctrlrange = f"{lower} {upper}"
                     else:
-                        # デフォルト範囲（±180度）
+                        # デフォルト範囲（±π radians）
                         ctrlrange = "-3.14159 3.14159"
                     
-                    # 位置制御アクチュエーター
-                    f.write(f'    <position name="{actuator_name}" joint="{joint_name}" kp="{kp}" ctrlrange="{ctrlrange}"/>\n')
+                    # 位置制御アクチュエーター（gear="1" を明示的に設定して1:1の伝達比にする）
+                    f.write(f'    <position name="{actuator_name}" joint="{joint_name}" gear="1" kp="{kp}" ctrlrange="{ctrlrange}"/>\n')
                 f.write('  </actuator>\n\n')
 
             # sensor
@@ -14657,11 +14233,12 @@ class CustomNodeGraph(NodeGraph):
                 # kv: Dampingの値
                 # forcerange: Effortの値を -値, +値 でプロット
                 # forcelimited: 常にtrue
+                # gear: 伝達比を1:1に設定（デフォルトだと半分になる問題を回避）
                 kp_str = format_float_no_exp(stiffness)
                 kv_str = format_float_no_exp(damping)
                 forcerange = f"-{format_float_no_exp(effort)} {format_float_no_exp(effort)}"
 
-                f.write(f'    <position name="{motor_name}" joint="{joint_name}" kp="{kp_str}" kv="{kv_str}" forcerange="{forcerange}" forcelimited="true" />\n')
+                f.write(f'    <position name="{motor_name}" joint="{joint_name}" gear="1" kp="{kp_str}" kv="{kv_str}" forcerange="{forcerange}" forcelimited="true" />\n')
 
             f.write('  </actuator>\n')
             f.write('</mujoco>\n')
@@ -15049,37 +14626,7 @@ class CustomNodeGraph(NodeGraph):
         colliders = []
         if hasattr(node, 'colliders') and node.colliders:
             colliders = node.colliders
-        else:
-            # Backward compatibility: migrate old format to list
-            collider_enabled = getattr(node, 'collider_enabled', False)
-            collider_type = getattr(node, 'collider_type', None)
-            
-            if collider_type == 'primitive' and hasattr(node, 'collider_data') and node.collider_data:
-                colliders.append({
-                    'type': 'primitive',
-                    'enabled': collider_enabled,
-                    'data': node.collider_data,
-                    'mesh': None,
-                    'mesh_scale': [1.0, 1.0, 1.0]
-                })
-            elif collider_type == 'mesh' and hasattr(node, 'collider_mesh') and node.collider_mesh:
-                colliders.append({
-                    'type': 'mesh',
-                    'enabled': collider_enabled,
-                    'data': None,
-                    'mesh': node.collider_mesh,
-                    'mesh_scale': getattr(node, 'collider_mesh_scale', [1.0, 1.0, 1.0])
-                })
-            elif collider_enabled:
-                # Enabled but no specific collider - use visual mesh
-                colliders.append({
-                    'type': 'mesh',
-                    'enabled': True,
-                    'data': None,
-                    'mesh': None,  # Use visual mesh
-                    'mesh_scale': [1.0, 1.0, 1.0]
-                })
-        
+
         # Write each enabled collider
         if colliders:
             file.write(f'{indent_str}  <!-- コライダー（衝突判定用） -->\n')
@@ -15091,8 +14638,22 @@ class CustomNodeGraph(NodeGraph):
             if collider.get('type') == 'primitive' and collider.get('data'):
                 # Primitive collider
                 data = collider['data']
-                pos = data.get('position', [0, 0, 0])
-                rot_deg = data.get('rotation', [0, 0, 0])
+                
+                # Prioritize collider['position'] over data['position'] (collider['position'] is set from UI/XML)
+                pos = collider.get('position', data.get('position', [0, 0, 0]))
+                
+                # Add visual_origin offset to collider position (collider should follow visual mesh position)
+                if hasattr(node, 'visual_origin') and node.visual_origin:
+                    visual_xyz = node.visual_origin.get('xyz', [0.0, 0.0, 0.0])
+                    pos = [
+                        pos[0] + visual_xyz[0],
+                        pos[1] + visual_xyz[1],
+                        pos[2] + visual_xyz[2]
+                    ]
+                    print(f"  [Collider Export] Primitive collider: Added visual_origin xyz {visual_xyz} to pos")
+                
+                # Prioritize collider['rotation'] over data['rotation'] (collider['rotation'] is set from UI/XML)
+                rot_deg = collider.get('rotation', data.get('rotation', [0, 0, 0]))
                 # Convert URDF RPY (ZYX) to quaternion for MuJoCo
                 quat = euler_to_quaternion(rot_deg[0], rot_deg[1], rot_deg[2])
                 pos_str = f"{pos[0]} {pos[1]} {pos[2]}"
@@ -15132,18 +14693,35 @@ class CustomNodeGraph(NodeGraph):
             elif collider.get('type') == 'mesh':
                 # Mesh collider
                 collider_mesh = collider.get('mesh')
-                # メッシュコライダーにもビジュアルと同じquat属性を適用（visual_originのRPYから生成）
-                # これにより、ビジュアルとコライダーの回転が一致する
-                collider_quat_attr = quat_attr  # ビジュアルと同じquat属性を使用
                 
-                # デバッグ: quat_attrが正しく設定されているか確認
-                if not collider_quat_attr and hasattr(node, 'visual_origin') and node.visual_origin:
-                    rpy = node.visual_origin.get('rpy', [0.0, 0.0, 0.0])
-                    if rpy != [0.0, 0.0, 0.0]:
-                        from urdf_kitchen_utils import ConversionUtils
-                        quat = ConversionUtils.rpy_to_quat(rpy)
-                        collider_quat_attr = f' quat="{quat[0]} {quat[1]} {quat[2]} {quat[3]}"'
-                        print(f"  Debug: Generated collider_quat_attr for node '{node.name()}': {collider_quat_attr}")
+                # Get position from collider data
+                collider_pos = collider.get('position', [0.0, 0.0, 0.0])
+                
+                # Add visual_origin offset to collider position (mesh collider should follow visual mesh position)
+                if hasattr(node, 'visual_origin') and node.visual_origin:
+                    visual_xyz = node.visual_origin.get('xyz', [0.0, 0.0, 0.0])
+                    collider_pos = [
+                        collider_pos[0] + visual_xyz[0],
+                        collider_pos[1] + visual_xyz[1],
+                        collider_pos[2] + visual_xyz[2]
+                    ]
+                    print(f"  [Collider Export] Added visual_origin xyz {visual_xyz} to collider pos")
+                
+                collider_pos_str = f"{collider_pos[0]} {collider_pos[1]} {collider_pos[2]}"
+                
+                # Get rotation from collider data
+                collider_rotation_deg = collider.get('rotation', [0.0, 0.0, 0.0])
+                if collider_rotation_deg != [0.0, 0.0, 0.0]:
+                    # Convert rotation (degrees) to quat
+                    from urdf_kitchen_utils import ConversionUtils
+                    import math
+                    collider_rpy = [math.radians(r) for r in collider_rotation_deg]
+                    collider_quat = ConversionUtils.rpy_to_quat(collider_rpy)
+                    collider_quat_attr = f' quat="{collider_quat[0]} {collider_quat[1]} {collider_quat[2]} {collider_quat[3]}"'
+                else:
+                    collider_quat_attr = ""
+                
+                print(f"  [Collider Export] Mesh collider pos={collider_pos}, rotation_deg={collider_rotation_deg}, quat_attr={collider_quat_attr}")
                 
                 if collider_mesh:
                     # export_mjcf で処理済みの _mesh_name を優先使用
@@ -15154,27 +14732,27 @@ class CustomNodeGraph(NodeGraph):
                         # visual mesh名と一致する場合はそのまま使用、一致しない場合はvisual mesh名にフォールバック
                         # （visual meshが複数のmeshに分割されてる場合など、_mesh_nameがassetに存在しない可能性があるため）
                         if collider_mesh_name == mesh_name:
-                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}"{collider_quat_attr} group="3"/>\n')
+                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
                         else:
                             # visual mesh名にフォールバック（安全策）
-                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_quat_attr} group="3"/>\n')
+                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
                     else:
                         # 旧形式: node._collider_mesh_name を使用（後方互換性）
                         if hasattr(node, '_collider_mesh_name') and node._collider_mesh_name:
                             collider_mesh_name = node._collider_mesh_name
                             # visual mesh名と一致する場合はそのまま使用、一致しない場合はvisual mesh名にフォールバック
                             if collider_mesh_name == mesh_name:
-                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}"{collider_quat_attr} group="3"/>\n')
+                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
                             else:
                                 # visual mesh名にフォールバック（安全策）
-                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_quat_attr} group="3"/>\n')
+                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
                         else:
                             # collider['_mesh_name'] が設定されてない場合、必ず visual mesh にフォールバック
                             # （ファイル名から生成したmesh名がassetに存在しない可能性があるため）
-                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_quat_attr} group="3"/>\n')
+                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
                 else:
                     # Default: visual and collision use same mesh
-                    file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}"{collider_quat_attr} group="3"/>\n')
+                    file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
 
     def _calculate_model_lowest_point(self, base_node, visited_nodes=None):
         """モデル全体の最低点（最小z座標）を計算
@@ -15775,10 +15353,11 @@ class CustomNodeGraph(NodeGraph):
         motor_name = f"{child_sanitized_name}_motor"
 
         # ジョイント制限（Min Angle(deg)とMax Angle(deg)をrad変換した値）
+        # MJCF <compiler angle="radian"> なので、radians で出力
         range_str = ""
         if hasattr(child_node, 'joint_lower') and hasattr(child_node, 'joint_upper'):
-            lower = child_node.joint_lower
-            upper = child_node.joint_upper
+            lower = child_node.joint_lower  # radians で保存されている
+            upper = child_node.joint_upper  # radians で保存されている
             # MJCF requires range[0] < range[1], so swap if needed
             if lower >= upper:
                 # If lower >= upper, use default range or swap values
@@ -15792,14 +15371,16 @@ class CustomNodeGraph(NodeGraph):
                     # Swap if lower > upper
                     lower, upper = upper, lower
                     print(f"  Warning: Joint '{joint_name}' has lower >= upper ({child_node.joint_lower:.6f} >= {child_node.joint_upper:.6f}), swapped to [{lower:.6f}, {upper:.6f}]")
+            # Output as radians (already in radians)
             range_str = f' range="{format_float_no_exp(lower)} {format_float_no_exp(upper)}"'
         else:
             # If joint_lower/upper are not set, use default range for limited joints
             # This is especially important for closed-loop joints (_CL_joint)
+            # Default: ±π radians
             lower = -3.14159
             upper = 3.14159
             range_str = f' range="{format_float_no_exp(lower)} {format_float_no_exp(upper)}"'
-            print(f"  Warning: Joint '{joint_name}' has no joint_lower/upper limits, using default range [-π, π]")
+            print(f"  Warning: Joint '{joint_name}' has no joint_lower/upper limits, using default range [-π, π] radians")
 
         # limited: 常にtrue
         limited_str = ' limited="true"'
@@ -15825,37 +15406,40 @@ class CustomNodeGraph(NodeGraph):
             damping_str = f' damping="{format_float_no_exp(child_node.joint_damping)}"'
         
         # stiffness: stiffnessの値（MJCFではジョイント要素の属性）
+        # Note: joint stiffness と actuator kp の相互作用を避けるため、joint stiffness は出力しない
+        # actuator の kp で制御する
         stiffness_str = ""
-        if hasattr(child_node, 'joint_stiffness') and child_node.joint_stiffness > 0:
-            stiffness_str = f' stiffness="{format_float_no_exp(child_node.joint_stiffness)}"'
+        # if hasattr(child_node, 'joint_stiffness') and child_node.joint_stiffness > 0:
+        #     stiffness_str = f' stiffness="{format_float_no_exp(child_node.joint_stiffness)}"'
         
         # ref: body_angleからref属性を生成（デフォルト姿勢/参照角度）
         # body_angleは[x_rad, y_rad, z_rad]の形式で、rotation_axisに対応する軸のみが非ゼロ
+        # MJCF では <compiler angle="radian"> が設定されているため、ref も radians で出力
         ref_str = ""
         if hasattr(child_node, 'body_angle') and hasattr(child_node, 'rotation_axis'):
             body_angle = child_node.body_angle
             rotation_axis = child_node.rotation_axis
             
-            # rotation_axisに対応する軸の角度を取得（ラジアン → 度に変換）
+            # rotation_axisに対応する軸の角度を取得（radians のまま出力）
             if rotation_axis in [0, 1, 2] and any(a != 0.0 for a in body_angle):
                 ref_angle_rad = body_angle[rotation_axis]
                 if abs(ref_angle_rad) > 1e-6:  # ゼロでない場合のみ出力
-                    ref_angle_deg = math.degrees(ref_angle_rad)
-                    ref_str = f' ref="{format_float_no_exp(ref_angle_deg)}"'
+                    ref_str = f' ref="{format_float_no_exp(ref_angle_rad)}"'
 
         # 作成されたジョイントをリストに追加（actuator用）
         joint_effort = getattr(child_node, 'joint_effort', 10.0)
         joint_stiffness = getattr(child_node, 'joint_stiffness', 100.0)
         joint_damping = getattr(child_node, 'joint_damping', 15.0)
         # range情報を抽出（ctrlrange用）
+        # MJCF <compiler angle="radian"> なので、radians で出力
         range_values = None
         if hasattr(child_node, 'joint_lower') and hasattr(child_node, 'joint_upper'):
-            lower = child_node.joint_lower
-            upper = child_node.joint_upper
+            lower = child_node.joint_lower  # radians で保存されている
+            upper = child_node.joint_upper  # radians で保存されている
             # MJCF requires range[0] < range[1], so swap if needed
             if lower >= upper:
                 # If lower >= upper, use default range or swap values
-                # Default: ±π (3.14159 rad)
+                # Default: ±π radians
                 if abs(lower - upper) < 1e-6:
                     # If they're equal, use default range
                     lower = -3.14159
@@ -15863,10 +15447,12 @@ class CustomNodeGraph(NodeGraph):
                 else:
                     # Swap if lower > upper
                     lower, upper = upper, lower
+            # Output as radians (already in radians)
             range_values = (lower, upper)
         else:
             # If joint_lower/upper are not set, use default range
             # This is especially important for closed-loop joints (_CL_joint)
+            # Default: ±π radians
             range_values = (-3.14159, 3.14159)
         created_joints.append({
             'joint_name': joint_name,
@@ -16337,12 +15923,8 @@ if __name__ == '__main__':
         name_input.setStyleSheet("QLineEdit { padding-left: 3px; padding-top: 0px; padding-bottom: 0px; }")
         left_layout.addWidget(name_input)
 
-
         # 名前入力フィールドとグラフを接続（graphが定義された後に接続）
         name_input.textChanged.connect(graph.update_robot_name)
-
-
-
 
         # ボタンの作成と設定
         buttons = {
