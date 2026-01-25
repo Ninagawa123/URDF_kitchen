@@ -4,6 +4,9 @@
 URDF_kitchenは、URDFの組み立てをサポートするPythonツールです。  
 STLファイルにジョイントポイントを設定し、ノードで接続していくことで組み立て、URDFとしてエクスポートします。  
 重量入力やイナーシャ計算、パーツごとの着色などにも対応しています。  
+
+# beta2 リリース！　(2025.01.25)
+超強化版の [Beta2](https://github.com/Ninagawa123/URDF_kitchen/tree/beta2) を公開しましたので、ぜひブランチを移動してください。  
   
 # Tools  
   
