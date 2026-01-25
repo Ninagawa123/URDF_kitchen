@@ -9,8 +9,7 @@ Meshファイルにジョイントポイントを設定し、ノードで接続�
 Beta2版ではMeshファイルとして.stlに加え新たに.obj,.daeファイルに対応しました。  
 Colliderの設定にも対応し、ColliderとしてMeshを設定できる他、立方体や円錐なども設定できるようになりました。  
 おまけ機能としてURDF,MJCFを読み込むことも可能となり、既存のファイルをGUI上で調整することができます。  
-（URDF,MJCFの読み込み機能はまだ簡易的なもので、一部手作業による修正などが必要になる場合もあります。）  
-  
+    
 コードがPythonであるため、AIコーディングを活用すればユーザーが自由にUI変更やデバグ、機能拡張などをすることができます。  
   
 # Tools  
@@ -21,7 +20,7 @@ MeshSourcer, PartsEditor, Assemblerの3つのツールを起動できるラウ�
 作業はフローはMeshSourcerでパーツの下拵えをし、PartsEditorで接続部分を設定、Assemblerで組み立てて仕上げるという流れになります。  
   
 ### STEP 1 -  仕込み -  "MeshSourcer"  
-<img width="500" alt="urdf_kitchen_beta" src="docs/MeshSourcer_beta2_img1.png">  
+<img width="500" alt="urdf_kitchen_beta" src="docs/img/MeshSourcer_img2.png">  
 組み立ての準備の工程として、まずお手持ちのCADでロボットの部品を動くまとまりごとにユニット化し、可動の起点を原点として出力しておきます。  
 MeshSourcerはそれをサポートするツールで、下記の処理が可能です。  
 
@@ -53,13 +52,24 @@ URDFのチェックは、Garrett Johnsonが作成したブラウザツールで�
 https://gkjohnson.github.io/urdf-loaders/javascript/example/bundle/  
 
 またMJCFのチェックはMuJoCoアプリに出力されたscene.xmlをドロップすることで動作確認ができます。  
-    
+  
+### OMAKE - おまけ機能 - "Import　MODEL"  
+<img width="400" alt="urdf_kitchen_beta" src="docs/img/Assembler_img2.png">  
+Assemblerの左上に「Imoprt MODEL」というボタンがあります。  
+これは既存のURDF、SDF、MJCFファイルを読み込み、ノード形式で展開するものです。  
+（このおまけ機能の実装が大変で1ヶ月ほどかかってしまいました。）  
+Githubなどで公開されているほとんどのファイルが展開できます。  
+ロボット同士の外見上の合体などもできてしまいます。  
+（閉リンクには十分に対応できておらず、またパラメータも対応していないものがありますので、手書きやAIコーディングなどでご対応ください。）  
   
 # Install  
-python 3.11 と M4 Macの組み合わせで動作確認をしています。  
+python 3.11 + M4 Mac、python 3.13 + Windows 11 の組み合わせで動作確認をしています。  
   
 ### libraryとpip  
-  
+
+pythonは3.11か3.13の仮想空間を作成するのがおすすめです。  
+以下のライブラリを導入してください。  
+
 ```
 pip install numpy  
 pip install PySide6  
@@ -68,27 +78,19 @@ pip install NodeGraphQt
 pip install trimesh
 pip install pycollada
 pip install networkx
-```  
-  
-##### 起動できない場合  
-前回のバージョンで、Windows11+python3.12で起動できないという報告がありました。  
-python3.12から消えたdistutilsが原因とのことで、  
-NodeGraphQtのmenu.py,viewer.pyについて、  
-from distutils.version import LooseVersion  
-から  
-from packaging.version import Version as LooseVersion  
-に修正することで起動したとのことです。  
+pip install xacrodoc
+```   
   
 ### 実行方法  
   
-ターミナルにて、DLしたファイルがある場所にcdで移動し、  
+ターミナルやパワーシェルで、DLしたファイルがある場所にcdで移動し、  
 python urdf_kitchen_Launcher.py  
 でラウンチャーを起動した後、各アプリを起動します。  
 urdf_kitchen_StlSourcer.py  
 urdf_kitchen_PartsEditor.py  
 urdf_kitchen_Assembler.py  
 はpythonで直接実行することもできます。  
-urdf_kitchen_utils.py  は他のコードと同じディレクトリにおいてください。  
+urdf_kitchen_utils.py, urdf_kitchen_importer.py  は他のコードと同じディレクトリにおいてください。  
   
 # バグレポート  
   
