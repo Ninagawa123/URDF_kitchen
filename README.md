@@ -53,7 +53,7 @@ https://gkjohnson.github.io/urdf-loaders/javascript/example/bundle/
 
 またMJCFのチェックはMuJoCoアプリに出力されたscene.xmlをドロップすることで動作確認ができます。  
   
-### OMAKE - おまけ機能 - "Import　MODEL"  
+### OMAKE - おまけ機能 - "Import MODEL"  
 <img width="400" alt="urdf_kitchen_beta" src="docs/img/Assembler_img2.png">  
 Assemblerの左上に「Imoprt MODEL」というボタンがあります。  
 これは既存のURDF、SDF、MJCFファイルを読み込み、ノード形式で展開するものです。  
