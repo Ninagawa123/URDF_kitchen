@@ -675,8 +675,9 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.collider_position_checkbox.setChecked(False)
         self.collider_position_checkbox.stateChanged.connect(self.on_collider_position_checkbox_changed)
         position_layout.addWidget(self.collider_position_checkbox, 0, 0)
-        position_layout.addWidget(QLabel("Position:"), 0, 1)
-        position_layout.setColumnMinimumWidth(1, 90)  # Align with Size: and Rotation:
+        position_label = QLabel("Position:")
+        position_label.setMinimumWidth(90)  # Align with Size: and Rotation:
+        position_layout.addWidget(position_label, 0, 1)
         col = 2
         self.collider_position_inputs = []
         for i, axis in enumerate(['X', 'Y', 'Z']):
@@ -1197,34 +1198,32 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.collider_param_checkboxes.append(checkbox)
         self.collider_params_layout.addWidget(checkbox, 0, col)
         col += 1
+        # Add 30px spacing after checkbox
+        self.collider_params_layout.setColumnMinimumWidth(col, 12)
+        col += 1
 
         # Add parameter labels and inputs
         if collider_type == "box":
             # Size: [space] X:[input] [space] Y:[input] [space] Z:[input]
+            # (Same structure as Position row)
             size_label = QLabel("Size:")
+            size_label.setMinimumWidth(90)  # Align with Position: and Rotation:
             self.collider_param_labels.append(size_label)
             self.collider_params_layout.addWidget(size_label, 0, col)
-            self.collider_params_layout.setColumnMinimumWidth(col, 90)  # Align with Position: and Rotation:
             col += 1
-
-            axis_labels = ["X:", "Y:", "Z:"]
-            for i, (axis_label, param_value) in enumerate(zip(axis_labels, params)):
-                label = QLabel(axis_label)
-                self.collider_param_labels.append(label)
-                self.collider_params_layout.addWidget(label, 0, col)
+            for i, axis in enumerate(['X', 'Y', 'Z']):
+                self.collider_params_layout.addWidget(QLabel(f"{axis}:"), 0, col)
                 col += 1
-
-                input_field = QLineEdit(str(param_value))
+                input_field = QLineEdit(str(params[i]))
                 input_field.setMaximumWidth(60)
                 input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
                 input_field.setFocusPolicy(Qt.ClickFocus)
                 input_field.editingFinished.connect(lambda idx=i: self.on_collider_param_input_changed(idx))
                 input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
-                self.collider_param_inputs.append(input_field)
                 self.collider_params_layout.addWidget(input_field, 0, col)
+                self.collider_param_inputs.append(input_field)
                 col += 1
-                # Add spacing between axis groups (except after last one)
-                if i < 2:
+                if i < 2:  # Add spacing between X-Y and Y-Z
                     self.collider_params_layout.setColumnMinimumWidth(col, 6)
                     col += 1
         else:
@@ -1238,10 +1237,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             for i, (label_text, param_value) in enumerate(zip(labels, params)):
                 label = QLabel(label_text)
+                if i == 0:
+                    label.setMinimumWidth(90)  # Align with Position: and Rotation:
                 self.collider_param_labels.append(label)
                 self.collider_params_layout.addWidget(label, 0, col)
-                if i == 0:
-                    self.collider_params_layout.setColumnMinimumWidth(col, 90)  # Align with Position: and Rotation:
                 col += 1
 
                 input_field = QLineEdit(str(param_value))
@@ -1254,6 +1253,9 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.collider_param_inputs.append(input_field)
                 self.collider_params_layout.addWidget(input_field, 0, col)
                 col += 1
+
+        # Add stretch at the end to absorb extra space and prevent layout collapse on resize
+        self.collider_params_layout.setColumnStretch(col, 1)
 
     def on_collider_type_changed(self, new_type):
         """Handle collider type change"""
