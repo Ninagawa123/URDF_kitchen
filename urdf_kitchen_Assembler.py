@@ -13500,9 +13500,21 @@ class CustomNodeGraph(NodeGraph):
             collider_file_to_name = {}  # → （）
             mesh_counter = 0
 
+            # Determine which intermediate nodes should be skipped
+            # (base_link is always skipped, base_link_sub is skipped if base_link_mjcf exists)
+            base_link_mjcf_exists = self.get_node_by_name('base_link_mjcf') is not None
+
             for node in self.all_nodes():
                 # Skip nodes with "Hide Mesh" enabled
                 if hasattr(node, 'hide_mesh') and node.hide_mesh:
+                    continue
+
+                # Skip base_link node (it's always skipped in MJCF export)
+                if node.name() == 'base_link':
+                    continue
+
+                # Skip base_link_sub if base_link_mjcf exists (base_link_sub is intermediate)
+                if node.name() == 'base_link_sub' and base_link_mjcf_exists:
                     continue
 
                 # Check stl dae stl_file .stl .dae .obj
@@ -13661,7 +13673,15 @@ class CustomNodeGraph(NodeGraph):
                 # Skip nodes with "Hide Mesh" enabled
                 if hasattr(node, 'hide_mesh') and node.hide_mesh:
                     continue
-                
+
+                # Skip base_link node (it's always skipped in MJCF export)
+                if node.name() == 'base_link':
+                    continue
+
+                # Skip base_link_sub if base_link_mjcf exists (base_link_sub is intermediate)
+                if node.name() == 'base_link_sub' and base_link_mjcf_exists:
+                    continue
+
                 if hasattr(node, 'colliders') and node.colliders:
                     for collider in node.colliders:
                         if collider.get('type') == 'mesh' and collider.get('mesh'):
@@ -13771,16 +13791,18 @@ class CustomNodeGraph(NodeGraph):
             # List
             created_joints = []
 
-            # Base_link
-            base_node = self.get_node_by_name('base_link')
+            # Determine actual root node for MJCF (skip base_link, base_link_sub as needed)
+            root_node, rename_to_base_link = self._determine_mjcf_root_node()
+            if not root_node:
+                raise ValueError("Could not determine MJCF root node. Please check the node structure.")
 
             # Create 1 dir_name xml 1. .xml
             robot_file_path = os.path.join(mjcf_dir, f"{dir_name}.xml")
             robot_file_basename = os.path.basename(robot_file_path)  # NOTE
-            self._write_mjcf_robot_file(robot_file_path, dir_name, base_node, mesh_names, node_to_mesh, created_joints, mesh_file_to_name, mesh_file_to_scale, collider_file_to_name, node_to_mesh_scale_key, fix_base_to_ground)
+            self._write_mjcf_robot_file(robot_file_path, dir_name, root_node, mesh_names, node_to_mesh, created_joints, mesh_file_to_name, mesh_file_to_scale, collider_file_to_name, node_to_mesh_scale_key, fix_base_to_ground, rename_to_base_link)
 
             # Compute 2 model 2. z
-            model_z_height = self._calculate_model_z_height(base_node, node_to_mesh)
+            model_z_height = self._calculate_model_z_height(root_node, node_to_mesh)
             
             # Create 3 scene xml include 3. scene.xml
             scene_path = os.path.join(mjcf_dir, "scene.xml")
@@ -13829,6 +13851,64 @@ class CustomNodeGraph(NodeGraph):
             name = "robot"
         return name
 
+    def _determine_mjcf_root_node(self):
+        """Determine the actual root node for MJCF export.
+
+        Rules:
+        1. base_link is ignored, use first connected child
+        2. If base_link → base_link_sub → base_link_mjcf: use base_link_mjcf, rename to "base_link"
+        3. If base_link → base_link_sub → (other): use base_link_sub, rename to "base_link"
+        4. If base_link → (not base_link_sub): use that node, keep original name
+
+        Returns:
+            tuple: (root_node, rename_to_base_link: bool)
+                   root_node: The actual node to use as MJCF root
+                   rename_to_base_link: True if root should be renamed to "base_link"
+        """
+        base_link = self.get_node_by_name('base_link')
+        if not base_link:
+            print("Warning: No base_link found")
+            return None, False
+
+        # Get first child of base_link
+        first_child = None
+        for output_port in base_link.output_ports():
+            for connected_port in output_port.connected_ports():
+                first_child = connected_port.node()
+                break
+            if first_child:
+                break
+
+        if not first_child:
+            print("Warning: base_link has no children")
+            return None, False
+
+        # Check if first child is base_link_sub
+        if first_child.name() == 'base_link_sub':
+            # Look for base_link_mjcf in base_link_sub's children
+            base_link_mjcf = None
+            for output_port in first_child.output_ports():
+                for connected_port in output_port.connected_ports():
+                    child = connected_port.node()
+                    if child.name() == 'base_link_mjcf':
+                        base_link_mjcf = child
+                        break
+                if base_link_mjcf:
+                    break
+
+            if base_link_mjcf:
+                # Rule 2: base_link → base_link_sub → base_link_mjcf
+                print(f"MJCF Root: Using base_link_mjcf (renamed to base_link)")
+                return base_link_mjcf, True
+            else:
+                # Rule 3: base_link → base_link_sub → (other)
+                print(f"MJCF Root: Using base_link_sub (renamed to base_link)")
+                return first_child, True
+        else:
+            # Rule 4: base_link → (not base_link_sub)
+            print(f"MJCF Root: Using {first_child.name()} (keeping original name)")
+            return first_child, False
+
     def collect_closed_loop_joints_from_nodes(self):
         """textnodetext"""
         collected_joints = []
@@ -13853,12 +13933,16 @@ class CustomNodeGraph(NodeGraph):
 
         return collected_joints
 
-    def _write_mjcf_robot_file(self, file_path, model_name, base_node, mesh_names, node_to_mesh, created_joints, mesh_file_to_name, mesh_file_to_scale, collider_file_to_name, node_to_mesh_scale_key, fix_base_to_ground=False):
+    def _write_mjcf_robot_file(self, file_path, model_name, base_node, mesh_names, node_to_mesh, created_joints, mesh_file_to_name, mesh_file_to_scale, collider_file_to_name, node_to_mesh_scale_key, fix_base_to_ground=False, rename_to_base_link=False):
         """text(alltext)
-        
+
         Args:
             fix_base_to_ground: Truetext、base_linktext<freejoint>textremovetext
+            rename_to_base_link: True if root node should be renamed to "base_link"
         """
+        # Check if base_link_mjcf exists (for skipping intermediate nodes)
+        base_link_mjcf_exists = self.get_node_by_name('base_link_mjcf') is not None
+
         with open(file_path, 'w') as f:
             # Todo
             sanitized_model_name = self._sanitize_name(model_name)
@@ -13909,7 +13993,15 @@ class CustomNodeGraph(NodeGraph):
                 # Skip nodes with "Hide Mesh" enabled
                 if hasattr(node, 'hide_mesh') and node.hide_mesh:
                     continue
-                
+
+                # Skip base_link node (it's always skipped in MJCF export)
+                if node.name() == 'base_link':
+                    continue
+
+                # Skip base_link_sub if base_link_mjcf exists (base_link_sub is intermediate)
+                if node.name() == 'base_link_sub' and base_link_mjcf_exists:
+                    continue
+
                 if node in node_to_mesh and node in node_to_mesh_scale_key:
                     mesh_key = node_to_mesh_scale_key[node]
                     if mesh_key not in processed_mesh_keys:
@@ -13987,7 +14079,7 @@ class CustomNodeGraph(NodeGraph):
                 visited_nodes = set()
                 used_body_names = set()  # Set to ensure unique body names
                 used_joint_names = set()  # joint
-                self._write_mjcf_body(f, base_node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent=4, fix_base_to_ground=fix_base_to_ground, used_body_names=used_body_names, used_joint_names=used_joint_names)
+                self._write_mjcf_body(f, base_node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent=4, fix_base_to_ground=fix_base_to_ground, used_body_names=used_body_names, used_joint_names=used_joint_names, is_root=True, rename_to_base_link=rename_to_base_link)
             f.write('  </worldbody>\n\n')
 
             # Equality constraints
@@ -14199,7 +14291,7 @@ class CustomNodeGraph(NodeGraph):
             f.write('</mujoco>\n')
         print(f"Created defaults file: {file_path}")
 
-    def _write_mjcf_body_file(self, file_path, base_node, mesh_names, node_to_mesh, created_joints):
+    def _write_mjcf_body_file(self, file_path, base_node, mesh_names, node_to_mesh, created_joints, rename_to_base_link=False):
         """body.xmltext"""
         with open(file_path, 'w') as f:
             f.write('<?xml version="1.0" ?>\n')
@@ -14208,7 +14300,7 @@ class CustomNodeGraph(NodeGraph):
 
             if base_node:
                 visited_nodes = set()
-                self._write_mjcf_body(f, base_node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent=4, fix_base_to_ground=False)
+                self._write_mjcf_body(f, base_node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent=4, fix_base_to_ground=False, is_root=True, rename_to_base_link=rename_to_base_link)
 
             f.write('  </worldbody>\n')
             f.write('</mujoco>\n')
@@ -14579,6 +14671,11 @@ class CustomNodeGraph(NodeGraph):
         - group 1: textmesh(Massless Decorationtext)
         - group 3: textー(text)
         """
+        # Skip nodes with "Hide Mesh" enabled - safety check
+        if hasattr(node, 'hide_mesh') and node.hide_mesh:
+            print(f"Skipping geom output for node with hide_mesh=True: {node.name()}")
+            return
+
         # Group 1 geom
         file.write(f'{indent_str}  <!-- text(displaytext) -->\n')
 
@@ -14855,22 +14952,24 @@ class CustomNodeGraph(NodeGraph):
         
         return min_z
 
-    def _write_mjcf_body(self, file, node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent=2, joint_info=None, fix_base_to_ground=False, used_body_names=None, used_joint_names=None):
+    def _write_mjcf_body(self, file, node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent=2, joint_info=None, fix_base_to_ground=False, used_body_names=None, used_joint_names=None, is_root=False, rename_to_base_link=False):
         """MJCF bodytext
-        
+
         Args:
             fix_base_to_ground: Truetext、base_linktext<freejoint>textremovetext
             used_body_names: textbody nametextset(uniquenessensuretext)
             used_joint_names: textjointtextset(uniquenessensuretext)
+            is_root: True if this node is the MJCF root (gets freejoint or fixed)
+            rename_to_base_link: True if root should be renamed to "base_link"
         """
         if node in visited_nodes:
             return
         visited_nodes.add(node)
-        
+
         # Used_body_names
         if used_body_names is None:
             used_body_names = set()
-        
+
         # Used_joint_names
         if used_joint_names is None:
             used_joint_names = set()
@@ -14886,9 +14985,13 @@ class CustomNodeGraph(NodeGraph):
 
         indent_str = ' ' * indent
 
-        # Base_link if
-        if node.name() == 'base_link':
-            sanitized_name = self._sanitize_name(node.name())
+        # Root node handling (replaces old base_link check)
+        if is_root:
+            # Use "base_link" as name if rename_to_base_link is True, otherwise use node's actual name
+            if rename_to_base_link:
+                sanitized_name = self._sanitize_name("base_link")
+            else:
+                sanitized_name = self._sanitize_name(node.name())
             
             # Add body
             unique_name = sanitized_name
@@ -14973,15 +15076,15 @@ class CustomNodeGraph(NodeGraph):
 
                     port_index = list(node.output_ports()).index(port)
                     child_joint_info = self._get_joint_info(node, child_node, port_index, created_joints)
-                    self._write_mjcf_body(file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent + 2, child_joint_info, fix_base_to_ground, used_body_names, used_joint_names)
+                    self._write_mjcf_body(file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent + 2, child_joint_info, fix_base_to_ground, used_body_names, used_joint_names, is_root=False, rename_to_base_link=False)
 
             # Add moving body freejoint inertial
             if not has_inertial:
                 # Set MuJoCo mjMINVAL mass 0 001 inertia 1e-6 MuJoCo mjMINVAL mass: 0.001 inertia:
                 file.write(f'{indent_str}  <inertial pos="0 0 0" mass="0.001" diaginertia="1e-6 1e-6 1e-6"/>\n')
-                print(f"  Auto-added inertial to moving body (base_link) to avoid MuJoCo load error")
+                print(f"  Auto-added inertial to moving body (root) to avoid MuJoCo load error")
 
-            # Base_link
+            # Close root body
             file.write(f'{indent_str}</body>\n')
             return
 
@@ -15305,7 +15408,7 @@ class CustomNodeGraph(NodeGraph):
                 child_joint_info = self._get_joint_info(node, child_node, port_index, created_joints)
 
                 # Output
-                self._write_mjcf_body(file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent + 2, child_joint_info, fix_base_to_ground, used_body_names, used_joint_names)
+                self._write_mjcf_body(file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent + 2, child_joint_info, fix_base_to_ground, used_body_names, used_joint_names, is_root=False, rename_to_base_link=False)
 
         # Add moving body joint inertial
         if is_moving_body and not has_inertial:
@@ -15347,9 +15450,20 @@ class CustomNodeGraph(NodeGraph):
         if joint_type == "fixed":
             return None
 
-        # Todo
+        # Generate joint name with axis suffix (roll/pitch/yaw based on rotation_axis)
         child_sanitized_name = self._sanitize_name(child_node.name())
-        joint_name = f"{child_sanitized_name}_joint"
+        # Determine axis suffix based on rotation_axis
+        axis_suffix = "_roll"  # Default: X axis (rotation_axis == 0)
+        if hasattr(child_node, 'rotation_axis'):
+            if child_node.rotation_axis == 0:
+                axis_suffix = "_roll"    # X axis
+            elif child_node.rotation_axis == 1:
+                axis_suffix = "_pitch"   # Y axis
+            elif child_node.rotation_axis == 2:
+                axis_suffix = "_yaw"     # Z axis
+            elif child_node.rotation_axis == 3:
+                axis_suffix = "_fixed"   # Fixed (though this case returns None above)
+        joint_name = f"{child_sanitized_name}{axis_suffix}"
         motor_name = f"{child_sanitized_name}_motor"
 
         # Min angle deg max angle deg min angle max angle rad
