@@ -54,10 +54,11 @@ https://gkjohnson.github.io/urdf-loaders/javascript/example/bundle/
 またMJCFのチェックはMuJoCoアプリに出力されたscene.xmlをドロップすることで動作確認ができます。  
   
 ### OMAKE - おまけ機能 - "Import MODEL"  
+
 <img width="400" alt="urdf_kitchen_beta" src="docs/img/Assembler_img2.png">  
+
 Assemblerの左上に「Imoprt MODEL」というボタンがあります。  
 これは既存のURDF、SDF、MJCFファイルを読み込み、ノード形式で展開するものです。  
-（このおまけ機能の実装が大変で1ヶ月ほどかかってしまいました。）  
 Githubなどで公開されているほとんどのファイルが展開できます。  
 ロボット同士の外見上の合体などもできてしまいます。  
 （閉リンクには十分に対応できておらず、またパラメータも対応していないものがありますので、手書きやAIコーディングなどでご対応ください。）  
