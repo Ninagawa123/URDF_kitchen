@@ -4,7 +4,7 @@ Description: A Python script to assembling files configured with urdf_kitchen_Pa
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 24, 2026
+Update.     : Jan 25, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta

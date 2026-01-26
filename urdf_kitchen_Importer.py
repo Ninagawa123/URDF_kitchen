@@ -7,7 +7,7 @@ Description: URDF/MJCF Import functionality for URDF Kitchen.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Jan 24, 2026
+Update.     : Jan 25, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -4457,19 +4457,27 @@ def import_urdf(graph):
                         base_link_sub_node.mesh_scale = base_link_data.get('mesh_scale', [1.0, 1.0, 1.0])
                         # Set visual origin info
                         base_link_sub_node.visual_origin = base_link_data.get('visual_origin', {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]})
-                        # Set collision info
+                        # Set collision info (multiple colliders support)
+                        # Initialize colliders list
+                        base_link_sub_node.colliders = []
+
+                        # Copy colliders from base_link_data to node
+                        if 'colliders' in base_link_data and base_link_data['colliders']:
+                            for collider in base_link_data['colliders']:
+                                collider_copy = collider.copy()
+                                base_link_sub_node.colliders.append(collider_copy)
+                            print(f"Set base_link_sub colliders: {len(base_link_sub_node.colliders)} collider(s)")
+
+                        # Backward compatibility: set single collider attributes
                         if base_link_data.get('collider_type') == 'mesh' and base_link_data.get('collision_mesh'):
                             base_link_sub_node.collider_type = 'mesh'
                             base_link_sub_node.collider_mesh = base_link_data['collision_mesh']
                             base_link_sub_node.collider_mesh_scale = base_link_data.get('collision_mesh_scale', [1.0, 1.0, 1.0])
                             base_link_sub_node.collider_enabled = True
-                            print(f"Set base_link_sub collision mesh: {os.path.basename(base_link_data['collision_mesh'])}")
                         elif base_link_data.get('collider_type') == 'primitive' and base_link_data.get('collider_data'):
                             base_link_sub_node.collider_type = 'primitive'
                             base_link_sub_node.collider_data = base_link_data['collider_data']
                             base_link_sub_node.collider_enabled = True
-                            collider_type = base_link_data['collider_data'].get('type', 'unknown')
-                            print(f"Set base_link_sub primitive collider: {collider_type}")
                         
                         # Mesh reversal check
                         base_link_sub_node.is_mesh_reversed = is_mesh_reversed_check(
@@ -4646,19 +4654,35 @@ def import_urdf(graph):
                 node.mesh_scale = link_data.get('mesh_scale', [1.0, 1.0, 1.0])
                 # Set visual origin info (mesh position/rotation)
                 node.visual_origin = link_data.get('visual_origin', {'xyz': [0.0, 0.0, 0.0], 'rpy': [0.0, 0.0, 0.0]})
-                # Set collision info (mesh or primitive)
+                # Set collision info (multiple colliders support)
+                # Initialize colliders list
+                node.colliders = []
+
+                # Copy colliders from link_data to node
+                if 'colliders' in link_data and link_data['colliders']:
+                    for collider in link_data['colliders']:
+                        collider_copy = collider.copy()
+                        node.colliders.append(collider_copy)
+                    print(f"Set {link_name} colliders: {len(node.colliders)} collider(s)")
+                    for i, collider in enumerate(node.colliders):
+                        ctype = collider.get('type', 'unknown')
+                        if ctype == 'mesh':
+                            mesh_name = os.path.basename(collider.get('mesh', '')) if collider.get('mesh') else 'visual mesh'
+                            print(f"  Collider[{i}]: mesh ({mesh_name})")
+                        elif ctype == 'primitive':
+                            prim_type = collider.get('data', {}).get('type', 'unknown')
+                            print(f"  Collider[{i}]: primitive ({prim_type})")
+
+                # Backward compatibility: set single collider attributes for first collider
                 if link_data.get('collider_type') == 'mesh' and link_data.get('collision_mesh'):
                     node.collider_type = 'mesh'
                     node.collider_mesh = link_data['collision_mesh']
                     node.collider_mesh_scale = link_data.get('collision_mesh_scale', [1.0, 1.0, 1.0])
                     node.collider_enabled = True
-                    print(f"Set {link_name} collision mesh: {os.path.basename(link_data['collision_mesh'])}")
                 elif link_data.get('collider_type') == 'primitive' and link_data.get('collider_data'):
                     node.collider_type = 'primitive'
                     node.collider_data = link_data['collider_data']
                     node.collider_enabled = True
-                    collider_type = link_data['collider_data'].get('type', 'unknown')
-                    print(f"Set {link_name} primitive collider: {collider_type}")
                 # Mesh reversal check
                 node.is_mesh_reversed = is_mesh_reversed_check(
                     node.visual_origin,
@@ -5519,10 +5543,18 @@ def import_mjcf(graph):
                     mjcf_root_body_name = root_body.get('name')
                     print(f"[DEBUG] Found freejoint root: {mjcf_root_body_name}")
                     break
+            # Track the actual node name (original MJCF name or 'base_link_sub')
+            actual_sub_node_name = 'base_link_sub'
             if mjcf_root_body_name and mjcf_root_body_name != 'base_link':
                 root_body_data = bodies_data.get(mjcf_root_body_name)
                 if root_body_data:
-                    print(f"\n  Using root body '{mjcf_root_body_name}' as base_link_sub (freejoint)")
+                    # Rename base_link_sub_node to use original MJCF body name
+                    actual_sub_node_name = mjcf_root_body_name
+                    base_link_sub_node.set_name(mjcf_root_body_name)
+                    # Update nodes dictionary with new name
+                    nodes.pop('base_link_sub', None)
+                    nodes[mjcf_root_body_name] = base_link_sub_node
+                    print(f"\n  Using root body '{mjcf_root_body_name}' as intermediate node (freejoint, keeping original name)")
                     # Count children of root body BEFORE absorption
                     root_children = [b for b in bodies_data_list if b.get('parent') == mjcf_root_body_name]
                     print(f"  [DEBUG] Root body '{mjcf_root_body_name}' has {len(root_children)} direct children: {[b.get('name') for b in root_children]}")
@@ -5550,16 +5582,16 @@ def import_mjcf(graph):
                     # Additional visual
                     base_link_sub_additional_visuals = root_body_data.get('visuals', [])[1:]
 
-                    # Delete root body (reparent children to base_link_sub)
+                    # Delete root body (reparent children to actual_sub_node_name)
                     bodies_data.pop(mjcf_root_body_name, None)
                     bodies_data_list = [b for b in bodies_data_list if b.get('name') != mjcf_root_body_name]
                     updated_children_count = 0
                     for body_data in bodies_data_list:
                         if body_data.get('parent') == mjcf_root_body_name:
-                            body_data['parent'] = 'base_link_sub'
+                            body_data['parent'] = actual_sub_node_name
                             updated_children_count += 1
-                            print(f"    ✓ Updated body '{body_data.get('name')}' parent: {mjcf_root_body_name} -> base_link_sub")
-                    print(f"  [DEBUG] Updated {updated_children_count} children to point to base_link_sub")
+                            print(f"    ✓ Updated body '{body_data.get('name')}' parent: {mjcf_root_body_name} -> {actual_sub_node_name}")
+                    print(f"  [DEBUG] Updated {updated_children_count} children to point to {actual_sub_node_name}")
                     
                     # Update joint parent references, delete joints to root body
                     new_joints = []
@@ -5569,12 +5601,12 @@ def import_mjcf(graph):
                             print(f"    ✓ Skipping joint to root body: {joint_data.get('name')}")
                             continue
                         if joint_data.get('parent') == mjcf_root_body_name:
-                            joint_data['parent'] = 'base_link_sub'
+                            joint_data['parent'] = actual_sub_node_name
                             updated_joints_count += 1
-                            print(f"    ✓ Updated joint '{joint_data.get('name')}' parent: {mjcf_root_body_name} -> base_link_sub")
+                            print(f"    ✓ Updated joint '{joint_data.get('name')}' parent: {mjcf_root_body_name} -> {actual_sub_node_name}")
                         new_joints.append(joint_data)
                     joints_data = new_joints
-                    print(f"  [DEBUG] Updated {updated_joints_count} joints to point to base_link_sub")
+                    print(f"  [DEBUG] Updated {updated_joints_count} joints to point to {actual_sub_node_name}")
                     print(f"  [DEBUG] After absorption: bodies_data has {len(bodies_data)} bodies, bodies_data_list has {len(bodies_data_list)} bodies")
 
             # If MJCF has base_link data, create base_link_mjcf node
@@ -5693,15 +5725,15 @@ def import_mjcf(graph):
                     graph.base_link_height = 0.5
                     print(f"  ✓ Using default base_link_height: {graph.base_link_height} (no base body in MJCF)")
 
-            # If no base_link_mjcf, redirect parent references to base_link_sub
+            # If no base_link_mjcf, redirect parent references to actual_sub_node_name
             if base_link_mjcf_node is None:
                 for joint_data in joints_data:
                     if joint_data['parent'] == 'base_link':
-                        joint_data['parent'] = 'base_link_sub'
-                        print(f"    ✓ Updated joint '{joint_data['name']}' parent: base_link -> base_link_sub")
+                        joint_data['parent'] = actual_sub_node_name
+                        print(f"    ✓ Updated joint '{joint_data['name']}' parent: base_link -> {actual_sub_node_name}")
                 for body_data in bodies_data_list:
                     if body_data.get('parent') == 'base_link':
-                        body_data['parent'] = 'base_link_sub'
+                        body_data['parent'] = actual_sub_node_name
 
             # Count child joints for each body
             body_child_counts = {}
@@ -5711,8 +5743,8 @@ def import_mjcf(graph):
             # Add if base_link_mjcf was created
             if base_link_mjcf_node is not None:
                 body_child_counts['base_link_mjcf'] = 0
-            # base_link_sub is always counted
-            body_child_counts['base_link_sub'] = 0
+            # intermediate node (actual_sub_node_name) is always counted
+            body_child_counts[actual_sub_node_name] = 0
 
             for joint_data in joints_data:
                 parent = joint_data['parent']
@@ -5721,7 +5753,7 @@ def import_mjcf(graph):
 
             # Parent->child order map (based on XML order)
             child_order_by_parent = {}
-            default_root_parent = 'base_link_sub' if base_link_sub_node is not None else 'base_link'
+            default_root_parent = actual_sub_node_name if base_link_sub_node is not None else 'base_link'
             print(f"\n[DEBUG] Creating child_order_by_parent map")
             print(f"[DEBUG] default_root_parent: {default_root_parent}")
             print(f"[DEBUG] bodies_data_list length: {len(bodies_data_list)}")
@@ -5845,12 +5877,12 @@ def import_mjcf(graph):
                         else:
                             print(f"      ✗ Output port not found: {output_port_name} (have {len(output_ports)} ports)")
 
-            # Add required output ports to base_link_sub (for child bodies + additional visuals)
-            base_link_sub_child_count = body_child_counts.get('base_link_sub', 0)
-            print(f"\n[DEBUG] base_link_sub port configuration:")
+            # Add required output ports to intermediate node (for child bodies + additional visuals)
+            base_link_sub_child_count = body_child_counts.get(actual_sub_node_name, 0)
+            print(f"\n[DEBUG] {actual_sub_node_name} port configuration:")
             print(f"  Child count from body_child_counts: {base_link_sub_child_count}")
-            print(f"  base_link_sub needs {base_link_sub_child_count} output ports for child bodies")
-            
+            print(f"  {actual_sub_node_name} needs {base_link_sub_child_count} output ports for child bodies")
+
             # Get current output port count
             current_base_link_sub_ports = len(base_link_sub_node.output_ports())
             print(f"  Current output ports: {current_base_link_sub_ports}")
@@ -5859,13 +5891,13 @@ def import_mjcf(graph):
             if needed_ports_for_children > 0:
                 for _ in range(needed_ports_for_children):
                     base_link_sub_node._add_output()
-                print(f"  ✓ Added {needed_ports_for_children} output port(s) to base_link_sub for children")
+                print(f"  ✓ Added {needed_ports_for_children} output port(s) to {actual_sub_node_name} for children")
             print(f"  Total output ports after addition: {len(base_link_sub_node.output_ports())}")
 
-            # Process base_link_sub additional visuals (when freejoint root is absorbed)
+            # Process intermediate node additional visuals (when freejoint root is absorbed)
             if base_link_sub_additional_visuals:
-                child_count = body_child_counts.get('base_link_sub', 0)
-                print(f"  base_link_sub has {len(base_link_sub_additional_visuals)} additional visual(s)")
+                child_count = body_child_counts.get(actual_sub_node_name, 0)
+                print(f"  {actual_sub_node_name} has {len(base_link_sub_additional_visuals)} additional visual(s)")
                 for _ in range(len(base_link_sub_additional_visuals)):
                     base_link_sub_node._add_output()
 
@@ -5885,7 +5917,7 @@ def import_mjcf(graph):
                     base_mjcf_pos_y = 50
 
                 for visual_idx, visual_data in enumerate(base_link_sub_additional_visuals, start=1):
-                    visual_node_name = f"base_link_sub_visual_{visual_idx}"
+                    visual_node_name = f"{actual_sub_node_name}_visual_{visual_idx}"
                     visual_pos_x = base_mjcf_pos_x + 50 + visual_idx * 30
                     visual_pos_y = base_mjcf_pos_y + 100
 
@@ -5929,9 +5961,9 @@ def import_mjcf(graph):
                         output_port = output_ports[output_port_index]
                         input_port = visual_node.input_ports()[0]
                         output_port.connect_to(input_port)
-                        print(f"      ✓ Connected base_link_sub -> {visual_node_name}")
+                        print(f"      ✓ Connected {actual_sub_node_name} -> {visual_node_name}")
                     else:
-                        print(f"      ✗ Output port not found on base_link_sub: {output_port_name} (have {len(output_ports)} ports)")
+                        print(f"      ✗ Output port not found on {actual_sub_node_name}: {output_port_name} (have {len(output_ports)} ports)")
 
             # Create nodes for other bodies
             if mjcf_parser.verbose:
@@ -6443,8 +6475,8 @@ def import_mjcf(graph):
                 # Search for nodes with unconnected input
                 unconnected_nodes = []
                 for body_name, node in nodes.items():
-                    # Exclude base_link variants
-                    if body_name in ['base_link', 'base_link_mjcf', 'base_link_sub']:
+                    # Exclude base_link variants and intermediate node
+                    if body_name in ['base_link', 'base_link_mjcf', 'base_link_sub', actual_sub_node_name]:
                         continue
                     
                     # Check if input port is connected
