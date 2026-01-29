@@ -1,122 +1,160 @@
-# URDF_kitchen beta2  
-<img width="600" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_beta2_banner20260101.png">  
-  
-URDF_kitchenは、ロボットモデルの記述方式であるURDFやMJCFの作成をサポートするPythonツール群です。  
-Meshファイルにジョイントポイントを設定し、ノードで接続していく方式となっており、GUIで直感的にロボットファイルを組み立てることができます。  
-普段使っているCADがURDFやMJCFの出力に対応していない場合や、手書きでXMLファイルを作成している場合に役立ちます。  
-重量入力や重心設定、イナーシャ計算、パーツごとの着色などにも対応しています。  
-  
-Beta2版ではMeshファイルとして.stlに加え新たに.obj,.daeファイルに対応しました。  
-Colliderの設定にも対応し、ColliderとしてMeshを設定できる他、立方体や円柱なども設定できるようになりました。  
-おまけ機能としてURDF,MJCFを読み込むことも可能となり、既存のファイルをGUI上で調整することができます。  
-    
-コードがPythonであるため、AIコーディングを活用すればユーザーが自由にUI変更やデバグ、機能拡張などをすることができます。  
+# URDF_kitchen beta2
+[English](README.md) | [日本語](README_JP.md)
 
-# Quick Start  
+<img width="600" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_beta2_banner20260101.png">
 
-pythonは3.11 の仮想環境で下記を実行します。  
+URDF_kitchen is a Python-based GUI toolset that supports creating robot models described in URDF and MJCF formats.  
+It allows users to define joint connection points on mesh files and assemble robot models by connecting nodes in a GUI.  
+This tool is useful when your CAD software does not support exporting URDF or MJCF, or when you have been manually editing XML files.  
+It also supports mass input, center-of-mass settings, inertia calculation, and per-part coloring.
 
-```
-pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc  
-```
+In the beta2 release, URDF_kitchen supports `.obj` and `.dae` mesh files in addition to `.stl`.  
+Collider configuration is also supported: meshes can be used as colliders, or simple primitive shapes such as boxes, cylinders, spheres, and capsules can be assigned.  
+As a bonus feature, existing URDF and MJCF files can be imported and adjusted within the GUI.
 
-urdf_kitchen_Launcher.pyのある階層に移動し、下記を実行します。
+Since the codebase is written in Python, users can freely modify the UI, fix bugs, or extend functionality using AI-assisted coding.
 
-```
-python urdf_kitchen_Launcher.py 
+---
+
+## Quick Start
+
+Create a Python 3.11 virtual environment and run:
+
+```bash
+pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc
 ```
 
-Assemblerのボタンを押して起動します。（初回は起動まですこし時間がかかります。）
-  
-Assemblerで**Import XMLs**を押し、ダイアログウインドウでsample/Roid1_assetsを選択します。  
-ロボットの部品がノードとして展開されるので、まずbase_linkのoutをドラッグし、任意のノードパネルのinと結んでください。  
-ノードのoutポイントとinポイントを数珠繋ぎに結ぶことでロボットを組み立てていきます。  
+Move to the directory containing `urdf_kitchen_Launcher.py` and run:
 
-# Tools  
-  
-### STEP 0 -  はじめに -  "Launcher"  
-<img width="200" alt="urdf_kitchen_beta" src="docs/URDF_kitchen_launcher_beta2_img1.png">  
-MeshSourcer, PartsEditor, Assemblerの3つのツールを起動できるラウンチャーです。  
-作業はフローはMeshSourcerでパーツの下拵えをし、PartsEditorで接続部分を設定、Assemblerで組み立てて仕上げるという流れになります。  
-  
-### STEP 1 -  仕込み -  "MeshSourcer"  
-<img width="500" alt="urdf_kitchen_beta" src="docs/img/MeshSourcer_img2.png">  
-組み立ての準備の工程として、まずお手持ちのCADでロボットの部品を動くまとまりごとにユニット化し、可動の起点を原点として出力しておきます。  
-MeshSourcerはそれをサポートするツールで、下記の処理が可能です。  
-
-- .stl, .dae, .objの読み込み  
-- .stl, .dae, .objへの書き出し, 複数ファイル一括変換  
-- Meshの中心点や座標軸の入れ替え  
-- Meshに該当する簡易Colliderの作成(Box, Cylinder, Sphere, Capsule)  
-  
-### STEP 2 - 調理 - "PartsEditor"  
-<img width="500" alt="urdf_kitchen_beta" src="docs/PartsEditor_beta2_img1.png">  
-ユニットのMeshファイルを見ながら次のパーツを接続するジョイントポイントを設定するツールです。  
-ジョイントポイントは8つまで設定でき、回転軸や色なども設定や確認ができます。  
-左右対称のロボットの場合、左側のパーツさえ設定すれば右側は自動で出力できます。  
-設定ファイルはパーツと対になるxmlとして保存できます。  
-  
-### STEP 3 - 盛り付け - "Assembler"  
-<img width="500" alt="urdf_kitchen_beta" src="docs/Assembler_beta2_img1.png">  
-urdfをプラモデルのように組み立てられるツールです。  
-設定ファイルをまとめて読み込み、パーツ同士をノードでポチポチと接続していきます。  
-また、Jointの各種パラメータも設定することができます。  
-こちらも、左側だけ設定や組み立てを行えば、右側は自動で組み立てることができます。  
-作業途中のファイルを保存する機能や、回転軸を確認する機能などもあります。  
-Inertiaの簡易チェック機能があり、インポートしたファイルの慣性テンソルが破綻している場合には簡単に修正することができます。  
-  
-完成したモデルはURDF形式もしくはMJCF形式でエクスポートすることができます。  
-URDFのチェックは、Garrett Johnsonが作成したブラウザツールで可能です。  
-ツール内にもリンクのボタンを設置しています。  
-
-https://gkjohnson.github.io/urdf-loaders/javascript/example/bundle/  
-
-またMJCFのチェックはMuJoCoアプリに出力されたscene.xmlをドロップすることで動作確認ができます。  
-  
-### OMAKE - おまけ機能 - "Import MODEL"  
-
-<img width="400" alt="urdf_kitchen_beta" src="docs/img/Assembler_img2.png">  
-
-Assemblerの左上に「Import MODEL」というボタンがあります。  
-これは既存のURDF、SDF、MJCFファイルを読み込み、ノード形式で展開するものです。  
-Githubなどで公開されているほとんどのファイルが展開できます。  
-ロボット同士の外見上の合体などもできてしまいます。  
-（閉リンクには十分に対応できておらず、またパラメータも対応していないものがありますので、手書きやAIコーディングなどでご対応ください。）  
-  
-# Install  
-python 3.11 + M4 Mac、python 3.13 + Windows 11 の組み合わせで動作確認をしています。  
-  
-### libraryとpip  
-   
-pythonは3.11以上の仮想空間で実行することを推奨します。  
-以下のライブラリを導入してください。  
-  
+```bash
+python urdf_kitchen_Launcher.py
 ```
-pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc  
-```   
-  
-### 実行方法  
-  
-ターミナルやパワーシェルで、DLしたファイルがある場所にcdで移動し、  
-python urdf_kitchen_Launcher.py  
-でランチャーを起動した後、各アプリを起動します。  
-urdf_kitchen_MeshSourcer.py  
-urdf_kitchen_PartsEditor.py  
-urdf_kitchen_Assembler.py  
-はpythonで直接実行することもできます。  
-urdf_kitchen_utils.py, urdf_kitchen_Importer.py　は他のコードと同じディレクトリにおいてください。  
-  
-# バグレポート  
-  
-絶賛バグフィックス中です。  
-  
-# Tutorial  
-  
-チュートリアルは下記のファイルにまとめています。  
-https://github.com/Ninagawa123/URDF_kitchen/blob/beta2/Tutorial_JP.md  
-  
-Qiita記事もあります。  
 
-<a href="https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb">
-  <img width="400" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_banner202550406.png">  
-</a>
+Click the **Assembler** button to launch it (the first startup may take some time).
+
+In Assembler, click **Import XMLs** and select `sample/Roid1_assets`.  
+Robot parts will be expanded as nodes.  
+Drag the `out` port of `base_link` and connect it to the `in` port of any node.  
+By chaining `out` and `in` ports, you can assemble the robot model.
+
+---
+
+## Tools
+
+### STEP 0 – Introduction – "Launcher"
+<img width="200" alt="urdf_kitchen_beta" src="docs/URDF_kitchen_launcher_beta2_img1.png">
+
+The Launcher allows you to start the three tools: MeshSourcer, PartsEditor, and Assembler.  
+The workflow is:
+1. Prepare parts in MeshSourcer  
+2. Define connections in PartsEditor  
+3. Assemble the robot in Assembler
+
+---
+
+### STEP 1 – Preparation – "MeshSourcer"
+<img width="500" alt="urdf_kitchen_beta" src="docs/img/MeshSourcer_img2.png">
+
+Before assembly, robot parts should be exported from your CAD software as individual units, each with its rotation origin set correctly.  
+MeshSourcer supports this preparation step with the following features:
+
+- Import `.stl`, `.dae`, `.obj` files  
+- Export `.stl`, `.dae`, `.obj` files and batch conversion  
+- Adjust mesh origin and coordinate axes  
+- Create simple colliders for meshes (Box, Cylinder, Sphere, Capsule)
+
+---
+
+### STEP 2 – Cooking – "PartsEditor"
+<img width="500" alt="urdf_kitchen_beta" src="docs/PartsEditor_beta2_img1.png">
+
+PartsEditor lets you define joint connection points while viewing each unit’s mesh.  
+Up to eight joint points can be defined, and rotation axes and colors can be set and previewed.  
+For left-right symmetric robots, defining only the left-side parts is sufficient—the right side is generated automatically.  
+Settings are saved as XML files paired with each part.
+
+---
+
+### STEP 3 – Plating – "Assembler"
+<img width="500" alt="urdf_kitchen_beta" src="docs/Assembler_beta2_img1.png">
+
+Assembler allows you to build URDF models like assembling a plastic model kit.  
+You can load all configuration files at once and connect parts by clicking nodes.  
+Joint parameters can also be adjusted here.
+
+If you assemble only the left side, the right side can be generated automatically.  
+You can save work-in-progress files and preview rotation axes.  
+A simplified inertia check is provided, allowing quick fixes when imported inertia tensors are invalid.
+
+Completed models can be exported as URDF or MJCF files.  
+URDF models can be checked using the browser-based tool created by Garrett Johnson (linked in the UI):
+
+https://gkjohnson.github.io/urdf-loaders/javascript/example/bundle/
+
+MJCF models can be verified by dropping the exported `scene.xml` file into the MuJoCo application.
+
+---
+
+### OMAKE – Bonus Feature – "Import MODEL"
+<img width="400" alt="urdf_kitchen_beta" src="docs/img/Assembler_img2.png">
+
+The **Import MODEL** button in the top-left of Assembler allows you to import existing URDF, SDF, or MJCF files and expand them into node form.  
+Most models published on GitHub can be loaded.  
+You can even visually combine different robots.
+
+Note: Closed-loop structures and some parameters are not fully supported.  
+Please adjust them manually or with AI-assisted coding if needed.
+
+---
+
+## Install
+
+The following environments have been tested:
+- Python 3.11 on macOS (M4 Mac)
+- Python 3.13 on Windows 11
+
+### Libraries and pip
+
+We recommend creating a Python 3.11 or 3.13 virtual environment.  
+Install dependencies with:
+
+```bash
+pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc
+```
+
+### Running
+
+From a terminal or PowerShell, move to the directory containing the downloaded files and run:
+
+```bash
+python urdf_kitchen_Launcher.py
+```
+
+You can also run the tools directly:
+
+- `urdf_kitchen_MeshSourcer.py`
+- `urdf_kitchen_PartsEditor.py`
+- `urdf_kitchen_Assembler.py`
+
+Ensure that `urdf_kitchen_utils.py` and `urdf_kitchen_Importer.py` are in the same directory.
+
+---
+
+## Bug Reports
+
+We are actively fixing bugs.  
+Please report issues as you find them.
+
+---
+
+## Tutorial
+
+The tutorial is available here:  
+https://github.com/Ninagawa123/URDF_kitchen/blob/beta2/Tutorial_EN.md
+
+Although written for a previous version, the workflow is summarized in the following article.  
+Official tutorials and guides are currently in development.
+
+https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb
+
+<img width="400" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_banner202550406.png">
