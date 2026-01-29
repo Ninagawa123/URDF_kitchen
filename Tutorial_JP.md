@@ -1,422 +1,411 @@
-# URDF kitchen チュートリアル  
+# URDF kitchen Tutorial  
   
-GUIでロボットモデル（URDF/MJCF）を組み立てる  
-  
----  
-## 概要  
-  
-**URDF kitchen** は、STL/OBJ/DAE などのMESH(3Dモデル)を元に、**GUI操作でロボットの構造を組み立て、URDF/MJCF として出力できるツール群**です。  
-レシピを見ながら楽しく料理をつくるように、URDF/MJCFのロボットモデルの作成をステップごとに分け、わかりやすく直感的に作成していきます。  
-  
-## 想定ユーザー  
-  
-CADや3Dソフトで作成したロボットモデルを持っていることが大前提となります。  
-その上で、お使いのソフトがURDF/MJCFを直接出力できない場合や、自動出力されたものに修正が必要な場合などに活用できます。  
-特に、これまでテキストファイルに直接値を記入してURDF/MJCFを作成していた方には強力なサポートツールとなります。  
+Let's build URDF/MJCF robot models with a GUI.  
   
 ---  
+## Overview  
   
-## インストール　  
+**URDF kitchen** is a set of tools that lets you **assemble robot structures in a GUI from mesh assets such as STL/OBJ/DAE, and export them as URDF/MJCF**.  
+Like following a recipe, URDF kitchen breaks down the creation of URDF/MJCF robot models into clear, intuitive steps.  
   
-Python3.11で動作します。(おそらく3.11以上であれば動作します。)  
-Pythonの仮想環境を準備し、以下の必要なライブラリをインストールしてください。  
+## Target Users  
+  
+The basic prerequisite is that you already have a robot model created in a CAD or 3D modeling application.  
+This tool is useful when your software cannot directly export URDF/MJCF, or when auto-generated output needs manual adjustments.  
+It is especially valuable for anyone who has been writing URDF/MJCF by hand in a text editor.  
+  
+---  
+  
+## Installation  
+  
+Tested on Python 3.11; may work on newer versions.  
+Set up a Python virtual environment and install the following libraries:  
   
 ```  
-pip install numpy    
-pip install PySide6    
-pip install vtk    
-pip install NodeGraphQt  
-pip install trimesh  
-pip install pycollada  
-pip install networkx  
-pip install xacrodoc  
+pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc
 ```  
   
-6つのPythonファイル(urdf_kitchen_Launcher.py, urdf_kitchen_MeshSourcer.py, urdf_kitchen_PartsEditor.py, urdf_kitchen_Assembler.py, urdf_kitchen_Importer.py, urdf_kitchen_utils.py)を格納したディレクトリに移動し、下記を実行してください。  
+Navigate to the directory containing the six files (urdf_kitchen_Launcher.py, urdf_kitchen_MeshSourcer.py, urdf_kitchen_PartsEditor.py, urdf_kitchen_Assembler.py, urdf_kitchen_Importer.py, urdf_kitchen_utils.py) and run:  
   
 ```  
 python urdf_kitchen_Launcher.py  
 ```  
   
-ラウンチャーが起動し、MeshSourcer, PartsEditor, Assemblerが使えるようになります。  
+The launcher will start, giving you access to Mesh Sourcer, Parts Editor, and Assembler.  
   
 ---  
-## 全体ワークフロー  
-    
-URDF kitchen は以下の **4ステップ構成** です。    
+## Overall Workflow  
   
-0. **MESH出力** : お手持ちのCADやモデリングツールでのパーツ出力  
-1. **Mesh Sourcer**：メッシュの原点・軸・コライダー調整  
-2. **Parts Editor**：接続点・慣性などをパーツ単位で定義  
-3. **Assembler**：ノード接続して URDF / MJCF を出力  
+URDF kitchen consists of the following **4 steps**:  
+  
+0. **Mesh Export** : Export parts from your CAD or modeling tool  
+1. **Mesh Sourcer** : Adjust mesh origin, axes, and colliders  
+2. **Parts Editor** : Define connection points, inertia, and other per-part properties  
+3. **Assembler** : Connect nodes and export as URDF/MJCF  
   
 ---  
 ## Sample  
   
-**sample/Roid1_assetsディレクトリに作業を進めたMESHとXMLが格納**されています。  
-STEP 1 以降はそのサンプルファイルを例に説明していきます。  
+**Pre-configured mesh and XML files are stored in the sample/Roid1_assets directory.**  
+From STEP 1 onward, these sample files will be used as examples.  
   
 ---  
-## STEP 0：MESH出力  
+## STEP 0: Mesh Export  
   
-まず、ロボットをユニットごとにMESH(3Dモデル)として出力します。  
-この作業は、基本的にお手持ちのCADソフトや3DCGモデリングソフトで行っていただきます。  
+First, export your robot as **mesh files** (STL/OBJ/DAE), one per unit.  
+This step is typically done in your own CAD or 3D modeling software.  
   
-ここでいうユニットとは、ひとまとまりで動く回転軸(joint)と躯体(link)をまとめたものです。  
-例えば、前腕であれば、動きの起点となる肘を回転軸(joint)とし、手首までの前腕部分を躯体(link)と考えてペアに、一つのユニットとします。  
-以下の解説の中では、**ユニットとMESHはほぼ同義であると捉えてください。**  
+Here, a "unit" refers to a group consisting of a rotation axis (joint) and a body (link) that move together.  
+For example, a forearm unit would pair the elbow as the rotation axis (joint) with the forearm body extending to the wrist as the link.  
+In this guide, each unit is represented by one mesh file.  
   
-### 座標の向きは統一  
-使用するモデリングソフトにより、座標系はまちまちです。シミュレータで使用する一般的な右手系座標に合わせてMESHを出力してください。  
+### Use a Consistent Coordinate System  
+Different modeling tools use different coordinate systems. Export your mesh in a standard right-handed coordinate system used by simulators:  
   
-| 軸   | 意味  |  
+| Axis | Direction |  
 | --- | --- |  
-| X   | 前方  |  
-| Y   | 左   |  
-| Z   | 上方  |  
+| X   | Forward |  
+| Y   | Left |  
+| Z   | Up |  
   
-### チェック① ユニットの原点＝回転の原点  
-前述の前腕をMESHで出力する際に、必ず以下の条件を満たすように設定してください。  
-- モデルの原点は回転の原点である  
-- その原点は親ユニットからの接続ポイントとなる  
+### Check 1: Unit Origin = Rotation Origin  
+When exporting a forearm as a mesh, make sure the following conditions are met:  
+- The model's origin is the center of rotation  
+- That origin serves as the connection point from the parent unit  
   
-### チェック② 子ユニット接続ポイントの確認  
-子ユニットを接続するポイント(座標)をわかりやすいようにしておきます。  
-モデル自体に印をつけたり、座標の基準となる目安を決めておきます。具体的な座標(単位はメートル）のメモでもかまいません。  
+### Check 2: Confirm Child Unit Connection Points  
+Keep track of the points (coordinates) where child units will be connected.  
+You can mark these on the model itself, establish reference landmarks, or simply note down the coordinates (in meters).  
   
-### チェック③ MESHの命名規則  
-モデルを出力する際に、必ず下記の命名規則に則ってください。  
-- 左半身に属するユニットは、ファイル名冒頭に **"l_"** をつける  
-- 体の中心ライン上に属するユニットは、ファイル名冒頭に **"c_"** をつける  
-たとえば左肩は "l_shoulder_pitch", 頭は "c_head"などになります。  
-右半身は"r_"で設定しますが、自動生成が可能のため左右対称の場合は設定は不要です。  
+### Check 3: Mesh Naming Convention  
+When exporting models, follow these naming rules:  
+- Units belonging to the **left side** of the body must have **"l_"** at the beginning of the file name  
+- Units on the **center line** of the body must have **"c_"** at the beginning of the file name  
+For example, the left shoulder would be "l_shoulder_pitch", and the head would be "c_head".  
+Right-side units use "r_", but if the robot is left-right symmetric, you do not need to create them manually — they can be auto-generated.  
   
-また、物理特性を持たない飾り用のMESHも設定することができます。その場合はファイル名の末端に **" *_dec1 "** とつけ、同名ファイルで複数の飾りがある場合は数字を変えてください。  
+You can also define decorative mesh files that carry no physical properties. In that case, append **"_dec1"** to the end of the file name. If there are multiple decorations for the same part, increment the number (e.g., _dec2, _dec3).  
   
-### チェック④ ファイル形式と単位  
-URDFで扱えるファイル形式は、STL, OBJ, DAE(Collada)です。  
-書き出し時の単位はメートルを指定してください。  
+### Check 4: File Format and Units  
+URDF typically references meshes in STL, OBJ, and DAE (Collada).  
+Set the export unit to **meters**.  
   
-### チェック⑤ 出力ディレクトリ  
-任意のディレクトリにMESHをまとめて保存してください。  
-一括変換時にはそのディレクトリの第一階層を範囲として処理が行われます。  
+### Check 5: Output Directory  
+Save all mesh files together in a single directory.  
+Batch operations will process all files in the top level of that directory.  
   
-**左半身および中央のユニット**がすべて出力できたら作業完了です。  
-**左右対称の場合は、右半身のユニットは不要**です。後ほどミラーコピーで自動作成できます。  
+Once all **left-side and center units** have been exported, this step is complete.  
+**If the robot is symmetric, right-side units are not needed** — they will be auto-generated via mirror copy later.  
   
-全体の様子をみるため、2個以上の連続したパーツが準備できれば先に進んでもOKです。  
-いよいよURDF kitchenを使っていきます。  
+To get a sense of the overall workflow, you can move on once you have at least two or more consecutive parts ready.  
+Now it is time to start using URDF kitchen.  
   
   
   
 ---  
-## STEP 1：Mesh Sourcer  
+## STEP 1: Mesh Sourcer  
   
-ここでは出力されたユニットのMESHを元に、Collider(衝突判定)を設定することができます。  
-また、MESHの原点の調整、軸の設定、軽量化も行うことができます。  
-MESHが正しく設定されており、またMESH自体をColliderとして使用する場合には、この工程は省略できますので、そのままSTEP2にお進みください。  
+In this step, you can set up Colliders (collision geometry) based on the exported unit mesh files.  
+You can also adjust the mesh origin, configure axes, and reduce mesh complexity.  
+If your mesh files are already set up correctly and you plan to use the mesh itself as the collider, you can skip this step and proceed directly to STEP 2.  
   
 ```  
 python urdf_kitchen_Launcher.py  
 ```  
   
-でラウンチャーを起動し、 Mesh Sourcerのボタンを押します。  
+Launch the application and click the Mesh Sourcer button.  
   
-### 1-1. Mesh Sourcerの基本操作  
+### 1-1. Mesh Sourcer Basic Controls  
   
-**「Load Mesh」** ボタンで、読み込むMESHを選択します。  
+Click the **"Load Mesh"** button to select a mesh file to load.  
   
 ```  
-例）**sample/Roid1_assetsディレクトリ** から c_chest.stl を選択  
+Example: Select c_chest.stl from the sample/Roid1_assets directory  
 ```  
   
-左側の3Dビューの操作方法は下記です。  
-この操作方法はPartsEditorやAssemblerでも共通です。  
+The 3D view on the left side supports the following controls.  
+These controls are shared across Parts Editor and Assembler as well.  
   
-| 操作        | キー                  |  
-| --------- | ------------------- |  
-| 左右回転      | A / D               |  
-| 上下回転      | W / S               |  
-| 時計回転      | Q / E               |  
-| 視点リセット    | R                   |  
-| ワイヤーフレーム  | T (ON/OFF)          |  
-| マーカー移動    | 矢印キー (画面に対して上下左右)   |  
-| 微調整       | Shift / Ctrl + 矢印キー |  
-| 数値入力      | 直接入力                |  
-| ドラッグ      | カメラの回転              |  
-| ホイール＋ドラッグ | カメラのパン              |  
-| ホイール      | 縮小拡大                |  
+| Action | Key |  
+| --- | --- |  
+| Rotate left/right | A / D |  
+| Rotate up/down | W / S |  
+| Roll clockwise/counterclockwise | Q / E |  
+| Reset view | R |  
+| Wireframe toggle | T (ON/OFF) |  
+| Move marker | Arrow keys (relative to the screen) |  
+| Fine adjustment | Shift / Ctrl + Arrow keys |  
+| Direct numeric input | Type values directly |  
+| Drag | Rotate the camera |  
+| Wheel + Drag | Pan the camera |  
+| Wheel | Zoom in/out |  
   
-### 1-2. Origin Coordinates（原点・軸）  
+### 1-2. Origin Coordinates (Origin & Axes)  
   
-MESHの原点座標の調整や座標軸の入れ替えが必要な場合に使用します。  
+Use this when you need to adjust the mesh origin coordinates or swap coordinate axes.  
   
-Target Marker Position にチェックを入れた状態でカーソルキーを押すことで、原点を設定するための紫色のマーカーを操作できます。マーカーは画面に対して上下左右に10mmずつ移動し、Shiftを押しながらで1mmずつ、 Ctrlを押しながらで0.1mmずつ移動します。またインプットフィールドに数値を直接入力することでも座標を設定できます。  
-A/S/D/Wキーで3Dビューを回転させ、新しい原点座標にマーカーを移動してください。  
+With the Target Marker Position checkbox enabled, use the arrow keys to move the purple marker that sets the new origin. The marker moves in 10 mm increments relative to the screen, 1 mm with Shift held, and 0.1 mm with Ctrl held. You can also type coordinates directly into the input fields.  
+Rotate the 3D view with A/S/D/W and move the marker to the desired origin position.  
   
-- **Reset Marker** : マーカーの座標を0,0,0にリセットします。  
-- **Set Front as X** : 現在の3Dビューの正面をX座標として座標軸を再設定します。  
-- **Save** : 現在の座標軸とマーカー位置を原点としてMESHを保存します。  
-- **Clean Mesh** : チェックを入れることでMESHデータをクリンナップし軽量化します。  
+- **Reset Marker** : Resets the marker position to 0, 0, 0.  
+- **Set Front as X** : Reassigns the coordinate axes so that the current front-facing direction in the 3D view becomes the X axis.  
+- **Save** : Saves the mesh with the current axis orientation and marker position as the new origin.  
+- **Clean Mesh** : When checked, cleans up and simplifies the mesh data.  
   
 ### 1-3. Collider Design  
   
-衝突判定の領域であるColliderについて、Primitiveというシンプルな形状を設定できます。  
-衝突判定としてMESHではなくPrimitiveを設定することで、シミュレーターの負荷を軽減させることができます。  
+You can define the collision region (Collider) using simple shapes called Primitives.  
+Using Primitives instead of the full mesh for collision detection reduces the computational load on the simulator.  
   
-コライダーの設定では、「T」キーを押してMESHの表示をワイヤーフレームにすると便利です。  
+Pressing "T" to switch to wireframe mode is helpful when configuring colliders.  
   
-- **Show Collider** : コライダーの領域を表示します。  
-- **Type** : コライダーの形状を選択できます。 Box, Sphere, Cylinder, Capsuleから選べます。  
-- **Position** : コライダーの中心位置を移動します。カーソルで移動できます。  
-- **Size** : コライダーのサイズを変更します。カーソルでサイズを変更できます。  
-- **Rotation** : コライダーの傾きを調整します。カーソル左右で画面に対して時計/半時計に回転します。  
+- **Show Collider** : Displays the collider region.  
+- **Type** : Choose the collider shape: Box, Sphere, Cylinder, or Capsule.  
+- **Position** : Move the center of the collider. Can be adjusted with arrow keys.  
+- **Size** : Change the collider dimensions. Can be adjusted with arrow keys.  
+- **Rotation** : Adjust the collider orientation. Left/right arrows rotate clockwise/counterclockwise relative to the screen.  
   
-コライダーの設定中、TABキーを押すことで、Position, Size, Rotationを切り替えることができます。  
+While configuring colliders, press TAB to cycle between Position, Size, and Rotation modes.  
   
-- **Rough Fit** : MESHに対して目安となるコライダーを自動で割り当てます。  
-- **Reset Collider** : コライダーをリセットします。  
-- **Export Collider** : コライダーをXML形式で出力します。  
+- **Rough Fit** : Automatically assigns an approximate collider to the mesh.  
+- **Reset Collider** : Resets the collider settings.  
+- **Export Collider** : Exports the collider as an XML file.  
   
-コライダーを適切に設定できたら、Export Colliderで設定ファイルを出力します。MESH名_collider.xmlというファイルが、読み込んだMESHと同じディレクトリに保存されます。  
+Once colliders are properly configured, use Export Collider to save the settings. A file named mesh_name_collider.xml will be saved in the same directory as the loaded mesh.  
   
 ```  
-例）MESHがc_chest.stlの場合、c_chest_collider.xmlというファイルが出力される。  
+Example: If the mesh is c_chest.stl, a file named c_chest_collider.xml is exported.  
 ```  
   
 ### 1-4. Batch Mesh Converter  
   
-ディレクトリ単位でMESHのファイル形式を変換保存します。  
+Converts mesh file formats in batch for an entire directory.  
   
-- **Input** : 変換元のファイル形式を選択します。  
-- **Output** : 変換後のファイル形式を選択します。  
-- **Clean Mesh** : チェックを入れることでMESHデータをクリンナップし軽量化します。  
-- **Select Directory and Convert** : ディレクトリを選択し、変更を実行します。  
+- **Input** : Select the source file format.  
+- **Output** : Select the target file format.  
+- **Clean Mesh** : When checked, cleans up and simplifies the mesh data.  
+- **Select Directory and Convert** : Select a directory and execute the conversion.  
   
   
-各ユニットに対し、必要なコライダーが設定できたら作業完了です。  
-コライダーはすべてのユニットに対応させる必要はなく、手足の先端だけなどでもシミュレーターでは最低限機能します。  
-（逆にコライダーがまったくないと床をすり抜けて落ちてしまいますのでご注意ください。）  
+Once the necessary colliders have been configured for each unit, this step is complete.  
+You do not need to create colliders for every single unit — even setting them for just the hands and feet is enough for the simulator to function at a basic level.  
+(However, if there are no colliders at all, the robot will fall through the floor, so keep that in mind.)  
   
----    
-## STEP 2：Parts Editor  
+---  
+## STEP 2: Parts Editor  
   
-ユニットのMESHに対して、子ユニットを接続するための座標を設定していきます。  
-また、ユニットの重量や慣性テンソル、回転方向、色なども設定できます。  
-設定したパラメータはMESH名.xmlというxmlとして保存されます。  
+In this step, you define the coordinates for connecting child units to each unit's mesh.  
+You can also configure weight, inertia tensor, rotation axis, color, and other properties.  
+The configured parameters are saved as an XML file named mesh_name.xml.  
   
-### 2-1. Mesh Sourcerの基本操作  
+### 2-1. Parts Editor Basic Controls  
   
-右側の3Dビューの操作方法はMeshSourcerとほぼ同様です。  
-左側の設定画面は3つのパートに作業フロー順に並んでいます。  
-上段パートがユニットMESHの読み込み、中段がパラメータ設定、下段が出力や変換となります。  
+The 3D view on the right side operates similarly to Mesh Sourcer.  
+The settings panel on the left is arranged in three sections following the workflow order:  
+the top section for loading unit mesh files, the middle for parameter settings, and the bottom for export and conversion.  
   
-### 2-2. ユニットMESHの読み込み  
+### 2-2. Loading Unit Mesh Files  
   
-- **Import Mesh** : Meshを読み込みます。  
-- **Load XML** : PartsEditorで作成したXMLファイルを読み込みます。  
-- **Reload** : XMLの内容を再読み込みします。  
-- **Load Mesh with XML** : MeshとXMLをペアで読み込みます。  
+- **Import Mesh** : Loads a mesh file.  
+- **Load XML** : Loads an XML file created by Parts Editor.  
+- **Reload** : Reloads the XML contents.  
+- **Load Mesh with XML** : Loads both a mesh and its corresponding XML file together.  
   
-MESHを読み込むと3Dビューにモデルが表示され、また**重心を示す赤い球**も表示されます。Tボタンでワイヤーフレームにすると重心がわかりやすくなります。  
-  
-```  
-例）Import Meshボタンで、c_chest.stlを読み込みます。  
-　　Tボタンを押すと3DビューのMESHがワイヤーフレームとなり、重心を示す赤い球が確認できます。  
-```  
-### 2-3. 質量とイナーシャの設定  
-  
-- **MeshSourcer** : 現在のMeshをMeshSourcerで開き、前の工程に戻り編集します。  
-- **Volume** : ユニットの体積です。  
-- **Density** : ユニットの密度です。  
-- **Mass** : ユニットの質量です。単位はkgです。  
-- **Center of Mass** : ユニットの重心座標です。  
-- **Inertia Tensor** : 慣性テンソルです。  
-- **Zero off-diag** : 計算結果の慣性テンソルの簡易的な対角化を行います。  
-- **Calculate** : 慣性テンソル等の計算を行います。  
-  
-「Calculate」ボタンで計算を行いますが、チェックが入った項目を固定値として、チェックが入っていない項目および慣性テンソルを自動計算します。  
-基本的な使い方としては、Massについては実測値を入力してチェック、Center of Massもできれば実測して目安の座標を入力してチェック、Zero off-diagにもチェックを入れ、Calculateします。体積と密度は目安として自動計算され、また慣性テンソルは固定値に基づき計算されます。  
-Center of MassにチェックせずにCalculateした場合、重心はMESHのデータを根拠に計算されます。  
-  
-Center of Massにチェックを入れてると重心を示す赤いマーカーが3Dビューに現れます。マーカーはカーソルで操作することができますが、Calculate完了後はチェックを外すようにしてください。（チェックが入ったままだと後述のPointと連動してマーカーが動いてしまいます。）  
+When a mesh is loaded, the model appears in the 3D view along with a **red sphere indicating the center of mass**. Pressing T to switch to wireframe mode makes the center of mass easier to see.  
   
 ```  
-例）Massにチェックを入れ、「0.4215」を入力。  
-　　Center of Massにチェックを入れ、Y:に0を入力。  
-　　Zero off-diagにチェックを入れる。  
-　　Calculateを押す。  
-　　結果、重量と重心を規定値として、対角化されたInertia Tensorが表示される。  
-　　  
-　　Mass(kg): 0.4215  
-　　Center of Mass: X:-0.016071, Y:0, Z:0.032638  
-　　<inertia ixx="0.00069558" ixy="0.00000000" ixz="0.00000000"   
-　　 iyy="0.00084151" iyz="0.00000000" izz="0.00088363"/>  
+Example: Click Import Mesh and load c_chest.stl.  
+         Press T to switch the 3D view to wireframe mode, revealing the red center-of-mass sphere.  
 ```  
+### 2-3. Mass and Inertia Settings  
   
-### 2-4. Colorの設定  
+- **MeshSourcer** : Opens the current mesh in Mesh Sourcer to go back and edit it.  
+- **Volume** : The volume of the unit.  
+- **Density** : The density of the unit.  
+- **Mass** : The mass of the unit in kg.  
+- **Center of Mass** : The center-of-mass coordinates of the unit.  
+- **Inertia Tensor** : The inertia tensor values.  
+- **Zero off-diag** : Performs a simplified diagonalization of the computed inertia tensor.  
+- **Calculate** : Computes the inertia tensor and related values.  
   
-ユニットの色を設定できます。インプットフィールドで値を指定できるほか、Pickボタンを押すことで専用のカラーパレットが開きます。  
+The "Calculate" button computes results, treating checked items as fixed values and automatically calculating unchecked items along with the inertia tensor.  
+A typical workflow is: enter a measured value for Mass and check it, optionally enter approximate center-of-mass coordinates for Center of Mass and check it, check Zero off-diag, then click Calculate. Volume and density are automatically computed as reference values, and the inertia tensor is calculated based on the fixed values.  
+If Center of Mass is left unchecked when you click Calculate, the center of mass is computed from the mesh data.  
   
-### 2-5. 回転軸の設定  
-  
-ユニットがMESH原点を軸として回転する方向を設定します。  
-- Axis : 回転方向をX:roll, Y:pitch, Z:yawから選びます。回転しない場合はFixedを選びます。  
-- Rotate Test : 回転方向を3Dビューで確認できます。  
+When Center of Mass is checked, a red marker appears in the 3D view. The marker can be moved with arrow keys, but be sure to uncheck it after Calculate is done. (If left checked, the marker will move in sync with Point markers described later.)  
   
 ```  
-例）Axis: Z:yawをチェックします。  
-   Rotate Testを押し続けると、3Dビューのモデルが回転します。回転軸は原点を通るZ軸です。  
+Example: Check Mass and enter "0.4215".  
+         Check Center of Mass and enter 0 for Y.  
+         Check Zero off-diag.  
+         Click Calculate.  
+         Result: the inertia tensor is computed with the specified mass and center of mass as fixed values, and diagonalized.  
+  
+         Mass(kg): 0.4215  
+         Center of Mass: X:-0.016071, Y:0, Z:0.032638  
+         <inertia ixx="0.00069558" ixy="0.00000000" ixz="0.00000000"  
+          iyy="0.00084151" iyz="0.00000000" izz="0.00088363"/>  
 ```  
   
-### 2-6. 子ユニットの接続ポイントの設定  
+### 2-4. Color Settings  
   
-子ユニットを接続する座標を設定します。座標は復数設定することができます。例えば、腰パーツであれば、右股関節、左股関節、上半身を接続するポイントを設定するなどです。  
+You can set the color of the unit. Enter values directly in the input fields, or click the Pick button to open a color palette.  
   
-- **Angle(deg)** : 下記でチェックした接続ポイントの回転軸のオフセット角度を指定できます。  
-- **Point 1~8** : 接続ポイントの座標です。左側のチェックが入っていると、マーカーが出現し、カーソルで移動させることができます。インプットフィールドに数値を入力して設定することもできます。  
-- **Reset Point** : チェックが入っているPointについて値をリセットします。  
+### 2-5. Rotation Axis Settings  
   
-復数のポイントにチェックを入れてマーカーを同時に動かしたり、左右対称の場合はY:の値をコピペして正負反転させるなどができます。  
-  
-```  
-例）Point1: X:0.016030, Y:0.000000,  Z:0.062400  
-   Point2: X:0.016030, Y:0.048855,  Z:0.045405  
-   Point2: X:0.016030, Y:-0.048855, Z:0.045405  
-   をします。Angle(deg)は設定しません。  
-```  
-  
-### 2-7. XMLファイルの出力  
-  
-ユニットに対して設定したパラメータをXMLファイルとして出力します。  
-- **Export XML** : 設定ファイルをXML出力します。  
-- **Export Mirror Mesh with XML** : ミラーファイルを1つ出力します。  
-- **Batch Mirror "l_" to "r_" Meshs and XMLs** : 指定ディレクトリ内のユニットについて一括でミラーのMESHとXMLを作成します。  
-  
-この工程でも、**左半身および中央のユニット**がすべて出力できたら作業完了です。  
-最後に**Batch Mirror "l_" to "r_" Meshs and XMLs** をすることにより、ミラーの右半身をまとめて出力することができます。  
+Configure the rotation direction of the unit around its mesh origin.  
+- Axis : Choose the rotation direction from X:roll, Y:pitch, or Z:yaw. Select Fixed if the unit does not rotate.  
+- Rotate Test : Preview the rotation in the 3D view.  
   
 ```  
-例）Export XMLを押します。今回設定したXMLファイルがMESHと同じディレクトリに保存されます。  
+Example: Check Z:yaw for Axis.  
+         Press and hold Rotate Test — the model rotates in the 3D view around the Z axis through the origin.  
+```  
+  
+### 2-6. Child Unit Connection Points  
+  
+Define the coordinates where child units will be connected. Multiple connection points can be set. For example, a waist part might have connection points for the right hip, left hip, and upper body.  
+  
+- **Angle(deg)** : Specifies the angular offset of the rotation axis for the checked connection point.  
+- **Point 1~8** : Connection point coordinates. When the left-side checkbox is checked, a marker appears and can be moved with arrow keys. You can also type values directly into the input fields.  
+- **Reset Point** : Resets the values of checked Points.  
+  
+You can check multiple Points to move their markers simultaneously, or copy a Y value and flip its sign for symmetric left/right configurations.  
+  
+```  
+Example: Point1: X:0.016030, Y:0.000000,  Z:0.062400  
+         Point2: X:0.016030, Y:0.048855,  Z:0.045405  
+         Point3: X:0.016030, Y:-0.048855, Z:0.045405  
+         Angle(deg) is left unset.  
+```  
+  
+### 2-7. XML File Export  
+  
+Export the configured parameters as an XML file.  
+- **Export XML** : Exports the settings as an XML file.  
+- **Export Mirror Mesh with XML** : Exports a single mirrored file.  
+- **Batch Mirror "l_" to "r_" Meshes and XMLs** : Batch-creates mirrored mesh and XML files for all units in the specified directory.  
+  
+In this step as well, the work is complete once all **left-side and center units** have been exported.  
+Finally, use **Batch Mirror "l_" to "r_" Meshes and XMLs** to generate all right-side units at once.  
+  
+```  
+Example: Click Export XML. The XML file is saved in the same directory as the mesh.  
 ```  
   
 ```  
-例）Batch Mirror "l_" to "r_" Meshs and XMLsを押し、  
-   Roid1_assetsディレクトリを指定します。  
-　　サンプルファイルのの左半身のMESHと設定XMLから右半身のファイルがミラー生成されます。  
+Example: Click Batch Mirror "l_" to "r_" Meshes and XMLs and  
+         select the Roid1_assets directory.  
+         Right-side files are mirror-generated from the left-side mesh and XML files in the sample data.  
 ```  
   
-ここまででユニットの仕込みは一通り完了です。楽しいあとは組み立てです！  
+This completes the preparation of all units. Now comes the fun part — assembly!  
   
 ---  
   
-## STEP 3：Assembler  
+## STEP 3: Assembler  
   
-ユニットのMESHとパラメータのXMLをまとめたものを、Assemblerのノードパネルに読み込みます。そのノードを接続していくことでロボットが組み上がり、URDFやMJCFファイルとして出力できるようになります。未設定のパラメータもここで設定していきます。  
+Load the unit mesh files and their parameter XML files into the Assembler's node panel. By connecting these nodes together, you assemble the robot and can export it as a URDF or MJCF file. Any parameters not yet configured can also be set here.  
   
-ユニットのMESHに対して、子ユニットを接続するための座標を設定していきます。  
-また、ユニットの重量や慣性テンソル、回転方向、色なども設定できます。  
-設定したパラメータはMESH名.xmlというxmlとして保存されます。  
+### 3-1. Starting the Assembler  
   
-### 3-1. Assemblerの起動  
+Click the Assembler button in the Launcher to open the window.  
+The left side is the navigation panel, the center is the node view, and the right side is the 3D view.  
+Both the node view and 3D view can be zoomed with the scroll wheel.  
+The borders between panels can be dragged to resize them.  
   
-LauncherのAssemblerボタンを押すとウィンドウが開きます。  
-画面の左側がナビゲーション、中央がノードビュー、右側が3Dビューとなります。  
-ノードビュー、3Dビューはホイール操作で縮小拡大することができます。  
-境界線はマウス操作で移動することができます。  
+Here are a few buttons to start with:  
   
-最初に幾つかのボタンについて説明します。  
+- **Add Node** : Creates a new node.  
+- **Delete Node** : Deletes the selected node.  
+- **Recalc Positions** : Recalculates unit display positions in the 3D view.  
   
-- **Add Node** : 新しいノードを作成します。  
-- **Delete Node** : 選択したノードを削除します。  
-- **Recalc Positions** : 3Dビュー上のユニットの表示位置を再計算します。  
+Other buttons will be explained as they come up in the workflow.  
   
-その他のボタンについては、作業の中で順に説明します。  
+### 3-2. Loading XML Files  
   
-### 3-2. XML読み込み  
+Load the units you have configured so far.  
   
-これまで設定したユニットを読み込みます。  
+- **Import XMLs** : Specify a directory to load all XML files along with their associated mesh files.  
+- **Import MODEL** : Import a URDF or MJCF file. Details are described later.  
   
-- **Import XMLs** : ディレクトリを指定し、作成したXMLファイルと共にMESHを読み込みます。  
-- **Import MODEL** : URDFやMJCFファイルをインポートします。説明は後述します。  
-  
-**Import XMLs** を行うと、設定ファイルが一気に読み込まれ、メインウィンドウにはノードパネルが並び、3DビューにはユニットMESHが表示されます。この時点ではまだノードが組み立てられていないため、ユニットMESHは中央に集まって表示されます。  
+When you use **Import XMLs**, all configuration files are loaded at once. Node panels appear in the main window and unit mesh files are displayed in the 3D view. Since nodes are not yet connected at this point, all unit mesh files appear clustered at the center.  
   
 ```  
-例）Import XMLsを押し、Roid1_assetsディレクトリを指定します。  
-　　ユニットに対応したノードが画面に並びます。  
-　　未接続のノードはグレーで表示されるため、base_link以外はグレーとなります。  
+Example: Click Import XMLs and select the Roid1_assets directory.  
+         Nodes corresponding to each unit appear on the screen.  
+         Unconnected nodes are displayed in gray, so all nodes except base_link will be gray.  
 ```  
   
-### 3-3. ノード接続による組み立て  
+### 3-3. Assembling by Connecting Nodes  
   
-まずルートとなるノード、たとえば腰部などを左上にある「base_link」ノードに接続します。base_linkに接続されたノードはグレーからブラックに色が変わります。  
-さらに、そのノードのoutポート（オレンジの点）と該当する子ノードのinポート（オレンジの点）に接続します。すると、3Dビュー上に組み立ての結果が表示されます。  
-座標が反映されるのはbase_linkにつながっているノードのみで、それ以外のノードのユニットは原点に表示されます。  
-  
-```  
-例）base_linkのoutポートを、c_waistのinポートに接続します。  
-　　c_waistのout_1ポートを、c_chestのinポートに接続します。  
-　　c_waistのout_2ポートを、l_hipjoint_upperに接続します。  
-　　c_chestのout_1ポートを、c_headのinポートに接続します。  
-　　c_chestのout_2ポートを、l_shoulderのinポートに接続します。  
-```  
-  
-### 3-4.  Node Inspector: outポートの操作  
-  
-ノードをダブルクリックすると、Node Inspectorが開きます。  
-ここで各種パラメータを設定することができます。  
-手始めにoutポートを追加し、飾りユニットを接続します。  
-Node Inspector下方のAdd outport, Remove outportで操作します。  
+First, connect the root node (e.g., the waist) to the "base_link" node in the upper left. Once a node is connected to base_link, it changes from gray to black.  
+Next, connect that node's out port (orange dot) to the corresponding child node's in port (orange dot). The assembly result is then displayed in the 3D view.  
+Coordinates are only applied to nodes connected to base_link; units belonging to unconnected nodes are displayed at the origin.  
   
 ```  
-例）c_chestのノードをダブルクリックし、Node Inspectorを開きます。  
-　　Add outportを2回押し、outport_4, outport_5を作成します。  
-　　Node Inspectorを閉じます。  
-　　c_chestのoutport_4に、c_chest_dec1を接続します。  
-　　c_chestのoutport_5に、c_chest_dec2を接続します。  
-　　3Dビュー上で、モデルの胸部の位置が更新されていることを確認します。  
+Example: Connect base_link's out port to c_waist's in port.  
+         Connect c_waist's out_1 port to c_chest's in port.  
+         Connect c_waist's out_2 port to l_hipjoint_upper's in port.  
+         Connect c_chest's out_1 port to c_head's in port.  
+         Connect c_chest's out_2 port to l_shoulder's in port.  
 ```  
   
-### 3-5.  Node Inspector: 着彩の操作  
+### 3-4. Node Inspector: Working with Out Ports  
   
-Node Inspectorでユニットの色を指定することができます。  
-color: の行にある「Pick」ボタンでカラーパレットが開き、色を自由に設定できます。  
-カラーパレットのCustom colors欄のボックスをクリックしてから色をピックし、Add to Custom colorsボタンを押すことで、カラーを保存できます。復数のパーツに同じ色を割り当てる際に便利です。  
-  
-```  
-例）c_chest_dec1のノードをダブルクリックし、Node Inspectorを開きます。  
-　　Node Inspector中段の color: の行にある「Pick」ボタンを押します。  
-　　カラーパレットウィンドウのCustom colors欄の任意のボックスを選択します。  
-　　色をピックし、Add to Custom colorsボタンで色を登録します。  
-　　OKボタンを押すと、カラーパレットが閉じ、3Dビューのユニットに色が反映されます。  
-```  
-  
-### 3-6.  Save / Load 操作  
-  
-作業の状況は保存することができます。  
-- Save Project : 作業を保存します。ファイル名にはタイムスタンプが付きます。  
-- Load Project : 保存した作業を読み込みます。  
+Double-click a node to open the Node Inspector.  
+Here you can configure various parameters.  
+To start, let's add out ports and connect decorative units.  
+Use the Add outport and Remove outport buttons at the bottom of the Node Inspector.  
   
 ```  
-例）Save Projectのボタンを押し、わかりやすいディレクトリにプロジェクトファイルを保存します。  
-   一度Assemblerを完全に終了します。ウィンドウ標準の閉じるボタンもしくは  
-   ターミナル、コマンドプロンプトでctrl+cを押します。  
-   Assemblerを起動し、Load Projectのボタンを押し、保存したプロジェクトファイルを指定します。  
-   作業が完全に再現されることを確認します。  
+Example: Double-click the c_chest node to open the Node Inspector.  
+         Click Add outport twice to create outport_4 and outport_5.  
+         Close the Node Inspector.  
+         Connect c_chest's outport_4 to c_chest_dec1.  
+         Connect c_chest's outport_5 to c_chest_dec2.  
+         Verify in the 3D view that the chest section has been updated.  
 ```  
   
-### 3-7.  左半身と中央の組み立て  
+### 3-5. Node Inspector: Color Settings  
   
-少し大変ですが、ここで左半身と中央のパーツをすべて組み立てます。  
-右半身のパーツはまとめて選択し、少し離れた場所に置くと組み立てやすいです。  
-また、接続したノードは法則を決めてわかりやすく整列しておくと便利です。  
-ノードはデフォルトでは50ピクセルごとの画面のグリッドにスナップします。  
-またナビゲーションや3Dビューの境界をドラッグすることで左右に畳むことができ、ノードビューの作業領域を広げることもできます。  
+You can specify the unit's color in the Node Inspector.  
+Click the "Pick" button on the color: row to open a color palette where you can freely choose colors.  
+To save a color for reuse, click a box in the Custom colors area of the palette, pick a color, and press the Add to Custom colors button. This is convenient when applying the same color to multiple parts.  
+  
+```  
+Example: Double-click the c_chest_dec1 node to open the Node Inspector.  
+         Click the "Pick" button on the color: row in the middle of the Node Inspector.  
+         Select any box in the Custom colors area of the color palette window.  
+         Pick a color and click Add to Custom colors to save it.  
+         Click OK to close the palette — the color is applied to the unit in the 3D view.  
+```  
+  
+### 3-6. Save / Load Operations  
+  
+You can save and restore your work progress.  
+- Save Project : Saves the current work. The file name includes a timestamp.  
+- Load Project : Loads a previously saved project.  
+  
+```  
+Example: Click Save Project and save the project file to a convenient directory.  
+         Close the Assembler completely — either by clicking the window's close button  
+         or pressing Ctrl+C in the terminal/command prompt.  
+         Relaunch the Assembler, click Load Project, and select the saved project file.  
+         Verify that the work is fully restored.  
+```  
+  
+### 3-7. Assembling the Left Side and Center  
+  
+This part requires some effort — assemble all left-side and center parts here.  
+It helps to select the right-side parts and move them off to the side to keep the workspace clear.  
+Arranging connected nodes in an organized pattern also makes things easier to follow.  
+By default, nodes snap to a 50-pixel grid on the screen.  
+You can also drag the borders of the navigation panel and 3D view to collapse them, giving the node view more workspace.  
   
   
 ```  
-例）各ノードの接続関係は下記の通りです。  
+Example: The node connections are as follows:  
   
 base_link - c_waist_out1 - c_chest  
                   ├_out2 - l_hipjoint_upper  
@@ -430,7 +419,7 @@ l_shoulder - l_arm_upper - l_elbow - l_arm_lower
   
 l_hipjoint_upper - l_hipjoint_lower - l_leg_upper - l_leg_lower - l_ankle - l_foot  
   
-飾りの接続は下記の通りです。  
+Decorative connections:  
   
 c_chest_out4 - c_chest_dec1  
 c_chest_out5 - c_chest_dec2  
@@ -440,128 +429,128 @@ l_hipjoint_upper_out2 - l_hipjoint_upper_dec1
 l_leg_upper_out2 - l_leg_upper_dec1  
 l_leg_lower_out2 - l_leg_lower_dec1  
   
-接続作業が完了したら一度プロジェクトをセーブします。  
+Save the project once all connections are complete.  
   
 ```  
   
-### 3-8.  Node Inspector: ノード情報を読み込みと書き出し  
+### 3-8. Node Inspector: Loading and Saving Node Information  
   
-Node Inspector単体の情報を読み書きできます。  
+You can load and save information for individual Node Inspectors.  
   
-ウィンドウ上部のボタン：  
-- **Import Mesh** : Meshを読み込みます。  
-- **Load XML** : 設定XMLを読み込みます。  
-- **Load XML with Mesh** : XML指定すると紐づくMeshを同時に読み込みます。  
-- **Reload** :  保存されたXMLファイルに基づいて情報を更新します。  
+Buttons at the top of the window:  
+- **Import Mesh** : Loads a mesh file.  
+- **Load XML** : Loads a settings XML file.  
+- **Load XML with Mesh** : Specify an XML file to load it along with its associated mesh.  
+- **Reload** : Refreshes the information based on the saved XML file.  
   
-ウィンドウ下部のボタン：  
-- **Save XML** : Node Inspector単体の情報を保存します。  
+Button at the bottom of the window:  
+- **Save XML** : Saves the individual Node Inspector's information.  
   
-### 3-9.  Node Inspector: ノードの属性設定  
+### 3-9. Node Inspector: Node Attribute Settings  
   
-ウィンドウ情報のチェックボックスでノードの属性を設定します。  
+Use the checkboxes in the window to configure node attributes.  
   
-- **Massless Decoration** : チェックすると書き出し時に物理属性なしのビジュアルとします。  
-- **Hide Mesh** : 3Dビュー上の表示を隠します。  
-  
-```  
-例）下記のノードについて、Hide Meshを設定します。  
-　　l_foot_small, l_foot_large  
-```  
-### 3-10.  Node Inspector: 質量とイナーシャの設定  
-  
-PartsEditorと同様に、イナーシャの簡易設定ができます。  
-  
-ボタンの解説  
-- **PartsEditor** : PartsEditorに戻って作業することもできます。  
-- **Show CoM** : 3Dビューで重心座標を表示します。  
-- **Recalc CoM** : MESHデータから重心を自動計算します。  
-- **Recalc Inertia** : 慣性テンソルを再計算します。  
-- **Zero off-diag** : 慣性テンソルの結果に対して簡易的な対角化を行います。  
-  
-### 3-11.  Node Inspector: 回転軸と可動範囲の設定  
-  
-ノードに対応するユニットの回転角度や可動範囲を設定できます。  
-これはユニット自身の回転であり、回転軸はMESHの原点となります。  
-  
-- **Rotation Axis** : 回転軸を変更できます。  
-- **Angle offset(deg)** : MESH原点に設定される回転軸オフセット角度を設定します。この値は、親ノードのoutポートのAng値と共有されます。  
-- **Min Angle (deg), Max Angle(deg)** : 可動範囲の最小角度と最大角度を設定します。  
-- **Show Min** : ユニットの回転最小角度を3Dビューで表示します。  
-- **Show Max** : ユニットの回転最大角度を3Dビューで表示します。  
-- **Show Zero** : ユニットの回転角度の原点を3Dビューで表示します。  
-- **Rotation Test** : ボタンを押している間、3Dビュー上で回転の範囲をアニメーション表示します。  
-  
-### 3-12.  Node Inspector: アクチュエータのパラメータ設定  
-  
-MJCFなどに対応したアクチュエータの特性を設定できます。  
-アクチュエーターが親ノード、自ノードのどちらに属するかは問わず、親ノードと自ノードを繋ぐ回転軸（joint）についての特性となります。  
-この項目はBeta2版ではまだ検証が不十分であるため、あくまで目安としてお使いください。  
-  
-| パラメータ          | MJCF `<joint>` | MJCF `<actuator>` | MuJoCo物理的意味                 |  
-| -------------- | -------------- | ----------------- | --------------------------- |  
-| Effort         | ―              | forcerange        | アクチュエータ最大トルク                |  
-| Damping (kv)   | (MJCF非出力)      | kv                | 粘性減衰（パッシブ）+ PD制御Dゲイン（アクティブ） |  
-| Stiffness (kp) | (MJCF非出力)      | kp                | PD制御Pゲイン（アクティブのみ）           |  
-| Velocity       | (MJCF非出力)      | ―                 | MJCF出力時は未使用                 |  
-| Margin         | margin         | ―                 | リミット制約のソフトゾーン幅              |  
-| Armature       | armature       | ―                 | 慣性行列への対角加算（数値安定性 + ローター慣性）  |  
-| Frictionloss   | frictionloss   | ―                 | 乾性摩擦（クーロン摩擦）トルク             |  
-  
-### 3-13.  Node Inspector: コライダーの設定  
-  
-ColliderとしてMESHもしくはPrimitiveと呼ばれるシンプルな形状を割り当てることができます。  
-Primitiveのコライダーは前述のMesh Sourcerで設定します。  
-  
-- **Mesh Sourcer** : Mesh Sourcerに戻って作業を行います。  
-- **Colliders チェックボックス** : チェックするとコライダー有効、アンチェックで無効とします。  
-- **Attach** : MESHもしくは "x_collider.xml" ファイルをアタッチできます。  
-- **+/-** : ノードに復数のコライダーを設定する場合に、増減できます。  
+- **Massless Decoration** : When checked, the node is treated as a visual-only element with no physical properties on export.  
+- **Hide Mesh** : Hides the unit in the 3D view.  
   
 ```  
-例）下記のノードについて、Collidersのチェックボックスをオフに設定します。  
-　　l_foot_small, l_foot_large  
+Example: Set Hide Mesh for the following nodes:  
+         l_foot_small, l_foot_large  
+```  
+### 3-10. Node Inspector: Mass and Inertia Settings  
+  
+Similar to Parts Editor, you can perform simplified inertia configuration.  
+  
+Button descriptions:  
+- **Parts Editor** : Opens Parts Editor so you can go back and work there.  
+- **Show CoM** : Displays the center-of-mass coordinates in the 3D view.  
+- **Recalc CoM** : Automatically recalculates the center of mass from mesh data.  
+- **Recalc Inertia** : Recalculates the inertia tensor.  
+- **Zero off-diag** : Performs a simplified diagonalization of the inertia tensor result.  
+  
+### 3-11. Node Inspector: Rotation Axis and Range of Motion  
+  
+Configure the rotation angle and range of motion for the unit corresponding to each node.  
+This refers to the unit's own rotation, with the mesh origin as the axis.  
+  
+- **Rotation Axis** : Change the rotation axis.  
+- **Angle offset(deg)** : Sets the rotation axis offset angle at the mesh origin. This value is shared with the Ang value of the parent node's out port.  
+- **Min Angle (deg), Max Angle(deg)** : Set the minimum and maximum rotation angles.  
+- **Show Min** : Displays the minimum rotation angle in the 3D view.  
+- **Show Max** : Displays the maximum rotation angle in the 3D view.  
+- **Show Zero** : Displays the rotation origin (zero position) in the 3D view.  
+- **Rotation Test** : While the button is held, the rotation range is animated in the 3D view.  
+  
+### 3-12. Node Inspector: Actuator Parameter Settings  
+  
+You can configure actuator characteristics for MJCF and similar formats.  
+Regardless of whether the actuator belongs to the parent or the current node, these settings apply to the rotational axis (joint) connecting the parent and current node.  
+Note: As of Beta 2, this feature has not been fully validated — please use it as a reference only.  
+  
+| Parameter | MJCF `<joint>` | MJCF `<actuator>` | MuJoCo Physical Meaning |  
+| --- | --- | --- | --- |  
+| Effort | — | forcerange | Maximum actuator torque |  
+| Damping (kv) | (not output to MJCF) | kv | Viscous damping (passive) + PD control D gain (active) |  
+| Stiffness (kp) | (not output to MJCF) | kp | PD control P gain (active only) |  
+| Velocity | (not output to MJCF) | — | Not used in MJCF export |  
+| Margin | margin | — | Soft zone width for limit constraints |  
+| Armature | armature | — | Diagonal addition to the inertia matrix (numerical stability + rotor inertia) |  
+| Frictionloss | frictionloss | — | Dry friction (Coulomb friction) torque |  
+  
+### 3-13. Node Inspector: Collider Settings  
+  
+You can assign either a mesh or a simple shape called a Primitive as the Collider.  
+Primitive colliders are configured in Mesh Sourcer as described earlier.  
+  
+- **Mesh Sourcer** : Opens Mesh Sourcer for further work.  
+- **Colliders checkbox** : Check to enable the collider; uncheck to disable it.  
+- **Attach** : Attach a mesh or an "x_collider.xml" file.  
+- **+/-** : Add or remove colliders when multiple colliders are needed for a single node.  
+  
+```  
+Example: Uncheck the Colliders checkbox for the following nodes:  
+         l_foot_small, l_foot_large  
 ```  
   
-### 3-14.  右半身のミラー作成  
+### 3-14. Creating the Right Side via Mirror  
   
-左半身のノードデータをミラーにして右半身を自動作成できます。  
-また接続やノードパネルの位置についても左半身を参考に自動組み立てします。  
+You can automatically create the right side by mirroring the left-side node data.  
+Connections and node panel positions are also automatically arranged based on the left side.  
   
-- **Build r_ from l_** : ボタンを押すと、右半身の自動組み立て処理を行います。  
+- **Build r_ from l_** : Click this button to perform the automatic right-side assembly.  
   
-これでモデルは完成となります。  
-未接続のノードパネルはグレーで表示されますので、適切な親ノードに接続してください。  
-不要であればHide Meshやノードの削除で処理してください。  
+This completes the model.  
+Any unconnected node panels are displayed in gray — connect them to the appropriate parent node.  
+If they are not needed, use Hide Mesh or delete the node to handle them.  
   
-### 3-15.  URDFもしくはMJCFの出力  
+### 3-15. Exporting URDF or MJCF  
   
-ロボットモデルの出力を行います。  
+Export the robot model.  
   
-- **Export URDF** : URDFファイルを出力します。ディレクトリを生成し、その中にurdfファイルとMESHを保存します。  
-- **Export for Unity** : UnityのURDF-importerで扱える形式で出力します。  
-- **Export MJCF** : MuJoCo用のファイルとしてシーンファイルと共に出力します。  
+- **Export URDF** : Exports a URDF file. Creates a directory containing the URDF file and mesh files.  
+- **Export for Unity** : Exports in a format compatible with Unity's URDF-importer.  
+- **Export MJCF** : Exports as MuJoCo files, including a scene file.  
   
-### 3-16.  動作確認  
+### 3-16. Verification  
   
-URDFを出力した際は、**Open urdf-loaders** ボタンにより、ブラウザでCalifornia Institute of Technologyのurdf-loadersを開くことができます。出力されたdescriptionのディレクトリを丸ごとブラウザにドロップすることで、モデルが開きます。  
+After exporting URDF, you can click the **Open urdf-loaders** button to open California Institute of Technology's urdf-loaders in your browser. Drag and drop the entire exported description directory into the browser to view the model.  
   
-MJCFを出力した場合は、MuJoCoビューアーに生成されたscene.xmlファイルをドロップすることでモデルが開きます。  
+After exporting MJCF, drag and drop the generated scene.xml file into the MuJoCo viewer to open the model.  
   
-組み立てでうまくいっていない箇所があれば、Assemblerなどに戻り、モデルを修正してください。  
+If anything looks wrong with the assembly, go back to the Assembler or earlier steps to fix the model.  
   
-お疲れ様でした！  
+Congratulations — you are done!  
   
-# Import MODEL  
+## Import MODEL  
   
-おまけ機能として、既存のURDFファイルやMJCFファイルを簡易的に開くことができます。  
-Assemblerの**Import MODEL** ボタンを押すと、ダイアログボックスが現れます。  
+As a bonus feature, you can open existing URDF or MJCF files.  
+Click the **Import MODEL** button in the Assembler to open a dialog box.  
   
-- **Import URDF/SDF** : URDF系のモデルを開きます。任意の.urdfのファイルを選択してください。**Xacro**ファイルにも対応しています。またSDFを開いた時はベースとなるurdfも再選択してください。  
-- **Import MJCF** : MuJoCo用のファイルを開きます。閉リンク以外はある程度の再現性をもってAssemblerに展開されます。
-
-# 最後に  
+- **Import URDF/SDF** : Opens a URDF-based model. Select any .urdf file. **Xacro** files are also supported. When opening an SDF file, you will also need to re-select the base URDF.  
+- **Import MJCF** : Opens a MuJoCo file. Except for closed-loop linkages, models are reproduced in the Assembler with reasonable accuracy.  
   
-URDF_kitchenをお試しいただきありがとうございました。このアプリケーションが自作ロボットのモデル作成の一助となれば幸いです。  
-Beta版のため多数のバグがあると思います。ぜひご指摘いただければと思います。  
-Pythonで書かれていますので、AIコーディングによる修正や機能拡張も容易です。ぜひフォークしてお好みのURDF kitchenを作ってみてください。  
+## Final Notes  
+  
+Thank you for trying URDF kitchen. We hope this application helps you create models for your custom robots.  
+As this is a beta version, there are likely many bugs. We welcome your feedback and reports.  
+Since the application is written in Python, it is easy to modify or extend with AI-assisted coding. Feel free to fork the project and build your own version of URDF kitchen.  
