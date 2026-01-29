@@ -87,10 +87,10 @@ Githubなどで公開されているほとんどのファイルが展開でき�
 python 3.11 + M4 Mac、python 3.13 + Windows 11 の組み合わせで動作確認をしています。  
   
 ### libraryとpip  
-
-pythonは3.11か3.13の仮想空間を作成するのがおすすめです。  
+   
+pythonは3.11以上の仮想空間で実行することを推奨します。  
 以下のライブラリを導入してください。  
-
+  
 ```
 pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc  
 ```   
@@ -114,8 +114,9 @@ urdf_kitchen_utils.py, urdf_kitchen_Importer.py　は他のコードと同じデ
   
 チュートリアルは下記のファイルにまとめています。  
 https://github.com/Ninagawa123/URDF_kitchen/blob/beta2/Tutorial_JP.md  
+  
+Qiita記事もあります。  
 
-Qiita記事もあります。
 <a href="https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb">
   <img width="400" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_banner202550406.png">  
 </a>
