@@ -115,7 +115,7 @@ The following environments have been tested:
 
 ### Libraries and pip
 
-We recommend creating a Python 3.11 or 3.13 virtual environment.  
+We recommend creating a Python 3.11 virtual environment.  
 Install dependencies with:
 
 ```bash
