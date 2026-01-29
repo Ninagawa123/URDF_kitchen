@@ -1,4 +1,4 @@
-# URDF_kitchen beta2!  
+# URDF_kitchen beta2  
 <img width="600" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_beta2_banner20260101.png">  
   
 URDF_kitchenは、ロボットモデルの記述方式であるURDFやMJCFの作成をサポートするPythonツール群です。  
@@ -7,15 +7,35 @@ Meshファイルにジョイントポイントを設定し、ノードで接続�
 重量入力や重心設定、イナーシャ計算、パーツごとの着色などにも対応しています。  
   
 Beta2版ではMeshファイルとして.stlに加え新たに.obj,.daeファイルに対応しました。  
-Colliderの設定にも対応し、ColliderとしてMeshを設定できる他、立方体や円錐なども設定できるようになりました。  
+Colliderの設定にも対応し、ColliderとしてMeshを設定できる他、立方体や円柱なども設定できるようになりました。  
 おまけ機能としてURDF,MJCFを読み込むことも可能となり、既存のファイルをGUI上で調整することができます。  
     
 コードがPythonであるため、AIコーディングを活用すればユーザーが自由にUI変更やデバグ、機能拡張などをすることができます。  
+
+# Quick Start  
+
+pythonは3.11 の仮想環境で下記を実行します。  
+
+```
+pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc  
+```
+
+urdf_kitchen_Launcher.pyのある階層に移動し、下記を実行します。
+
+```
+python urdf_kitchen_Launcher.py 
+```
+
+Assemblerのボタンを押して起動します。（初回は起動まですこし時間がかかります。）
   
+Assemblerで**Import XMLs**を押し、ダイアログウインドウでsample/Roid1_assetsを選択します。  
+ロボットの部品がノードとして展開されるので、まずbase_linkのoutをドラッグし、任意のノードパネルのinと結んでください。  
+ノードのoutポイントとinポイントを数珠繋ぎに結ぶことでロボットを組み立てていきます。  
+
 # Tools  
   
 ### STEP 0 -  はじめに -  "Launcher"  
-<img width="200" alt="urdf_kitchen_beta" src="docs/URDF_kitchen_laucher_beta2_img1.png">  
+<img width="200" alt="urdf_kitchen_beta" src="docs/URDF_kitchen_launcher_beta2_img1.png">  
 MeshSourcer, PartsEditor, Assemblerの3つのツールを起動できるラウンチャーです。  
 作業はフローはMeshSourcerでパーツの下拵えをし、PartsEditorで接続部分を設定、Assemblerで組み立てて仕上げるという流れになります。  
   
@@ -57,7 +77,7 @@ https://gkjohnson.github.io/urdf-loaders/javascript/example/bundle/
 
 <img width="400" alt="urdf_kitchen_beta" src="docs/img/Assembler_img2.png">  
 
-Assemblerの左上に「Imoprt MODEL」というボタンがあります。  
+Assemblerの左上に「Import MODEL」というボタンがあります。  
 これは既存のURDF、SDF、MJCFファイルを読み込み、ノード形式で展開するものです。  
 Githubなどで公開されているほとんどのファイルが展開できます。  
 ロボット同士の外見上の合体などもできてしまいます。  
@@ -72,38 +92,30 @@ pythonは3.11か3.13の仮想空間を作成するのがおすすめです。
 以下のライブラリを導入してください。  
 
 ```
-pip install numpy  
-pip install PySide6  
-pip install vtk  
-pip install NodeGraphQt
-pip install trimesh
-pip install pycollada
-pip install networkx
-pip install xacrodoc
+pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc  
 ```   
   
 ### 実行方法  
   
 ターミナルやパワーシェルで、DLしたファイルがある場所にcdで移動し、  
 python urdf_kitchen_Launcher.py  
-でラウンチャーを起動した後、各アプリを起動します。  
-urdf_kitchen_StlSourcer.py  
+でランチャーを起動した後、各アプリを起動します。  
+urdf_kitchen_MeshSourcer.py  
 urdf_kitchen_PartsEditor.py  
 urdf_kitchen_Assembler.py  
 はpythonで直接実行することもできます。  
-urdf_kitchen_utils.py, urdf_kitchen_importer.py  は他のコードと同じディレクトリにおいてください。  
+urdf_kitchen_utils.py, urdf_kitchen_Importer.py　は他のコードと同じディレクトリにおいてください。  
   
 # バグレポート  
   
 絶賛バグフィックス中です。  
   
 # Tutorial  
+  
+チュートリアルは下記のファイルにまとめています。  
+https://github.com/Ninagawa123/URDF_kitchen/blob/beta2/Tutorial_JP.md  
 
-前回のバージョンのものですが、作業のフローは下記の記事にまとまっています。  
-公式のチュートリアルやガイドも別途製作中です。  
-  
-https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb  
-  
+Qiita記事もあります。
 <a href="https://qiita.com/Ninagawa123/items/c4643ca92e57c3a45efb">
   <img width="400" alt="urdf_kitchen_beta" src="docs/urdf_kitchen_banner202550406.png">  
 </a>
