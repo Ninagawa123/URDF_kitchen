@@ -488,15 +488,18 @@ You can configure actuator characteristics for MJCF and similar formats.
 Regardless of whether the actuator belongs to the parent or the current node, these settings apply to the rotational axis (joint) connecting the parent and current node.  
 Note: As of Beta 2, this feature has not been fully validated — please use it as a reference only.  
   
-| Parameter | MJCF `<joint>` | MJCF `<actuator>` | MuJoCo Physical Meaning |  
-| --- | --- | --- | --- |  
-| Effort | — | forcerange | Maximum actuator torque |  
-| Damping (kv) | (not output to MJCF) | kv | Viscous damping (passive) + PD control D gain (active) |  
-| Stiffness (kp) | (not output to MJCF) | kp | PD control P gain (active only) |  
-| Velocity | (not output to MJCF) | — | Not used in MJCF export |  
-| Margin | margin | — | Soft zone width for limit constraints |  
-| Armature | armature | — | Diagonal addition to the inertia matrix (numerical stability + rotor inertia) |  
-| Frictionloss | frictionloss | — | Dry friction (Coulomb friction) torque |  
+  
+| Parameter            | MJCF<br>Joint <br>Output | MJCF<br>Actuator Output | URDF <br>Output             | Import <br>Source<br>(MJCF) | Import <br>Source<br>(URDF)                          |
+| :-------------------- | :------------------------ | :----------------------- | :--------------------------- | :--------------------------- | :---------------------------------------------------- |
+| **Effort**           | —                        | `forcerange`            | `<limit effort>`            | `<actuator> forcerange`     | `<limit effort>`                                     |
+| **Velocity**         | —                        | —                       | `<limit velocity>`          | `<limit> velocity`          | `<limit velocity>`                                   |
+| **Damping(passive)** | `<joint damping>`        | —                       | `<dynamics damping>`        | `<joint damping>`           | `<dynamics damping>`                                 |
+| **Kp(stiffness)**    | —                        | `kp`                    | `<gazebo><springStiffness>` | `<actuator> kp`             | `<gazebo><springStiffness>` / `<dynamics stiffness>` |
+| **Kv**               | —                        | `kv`                    | —                           | `<actuator> kv`             | — (default value)                                    |
+| **Armature**         | `<joint armature>`       | —                       | —                           | `<joint armature>`          | — (default value)                                    |
+| **Margin**           | `<joint margin>`         | —                       | —                           | `<joint margin>`            | — (default value)                                    |
+| **Frictionloss**     | `<joint frictionloss>`   | —                       | `<dynamics friction>`       | `<joint frictionloss>`      | `<dynamics friction>` / `<dynamics frictionloss>`    |
+  
   
 ### 3-13. Node Inspector: Collider Settings  
   
