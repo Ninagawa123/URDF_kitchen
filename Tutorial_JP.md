@@ -486,16 +486,19 @@ PartsEditorと同様に、イナーシャの簡易設定ができます。
 MJCFなどに対応したアクチュエータの特性を設定できます。  
 アクチュエーターが親ノード、自ノードのどちらに属するかは問わず、親ノードと自ノードを繋ぐ回転軸（joint）についての特性となります。  
 この項目はBeta2版ではまだ検証が不十分であるため、あくまで目安としてお使いください。  
-  
-| パラメータ          | MJCF `<joint>` | MJCF `<actuator>` | MuJoCo物理的意味                 |  
-| -------------- | -------------- | ----------------- | --------------------------- |  
-| Effort         | ―              | forcerange        | アクチュエータ最大トルク                |  
-| Damping (kv)   | (MJCF非出力)      | kv                | 粘性減衰（パッシブ）+ PD制御Dゲイン（アクティブ） |  
-| Stiffness (kp) | (MJCF非出力)      | kp                | PD制御Pゲイン（アクティブのみ）           |  
-| Velocity       | (MJCF非出力)      | ―                 | MJCF出力時は未使用                 |  
-| Margin         | margin         | ―                 | リミット制約のソフトゾーン幅              |  
-| Armature       | armature       | ―                 | 慣性行列への対角加算（数値安定性 + ローター慣性）  |  
-| Frictionloss   | frictionloss   | ―                 | 乾性摩擦（クーロン摩擦）トルク             |  
+
+
+| Parameter            | MJCF<br>Joint <br>Output | MJCF<br>Actuator Output | URDF <br>Output             | Import <br>Source<br>(MJCF) | Import <br>Source<br>(URDF)                          |
+| :-------------------- | :------------------------ | :----------------------- | :--------------------------- | :--------------------------- | :---------------------------------------------------- |
+| **Effort**           | —                        | `forcerange`            | `<limit effort>`            | `<actuator> forcerange`     | `<limit effort>`                                     |
+| **Velocity**         | —                        | —                       | `<limit velocity>`          | `<limit> velocity`          | `<limit velocity>`                                   |
+| **Damping(passive)** | `<joint damping>`        | —                       | `<dynamics damping>`        | `<joint damping>`           | `<dynamics damping>`                                 |
+| **Kp(stiffness)**    | —                        | `kp`                    | `<gazebo><springStiffness>` | `<actuator> kp`             | `<gazebo><springStiffness>` / `<dynamics stiffness>` |
+| **Kv**               | —                        | `kv`                    | —                           | `<actuator> kv`             | — (default value)                                    |
+| **Armature**         | `<joint armature>`       | —                       | —                           | `<joint armature>`          | — (default value)                                    |
+| **Margin**           | `<joint margin>`         | —                       | —                           | `<joint margin>`            | — (default value)                                    |
+| **Frictionloss**     | `<joint frictionloss>`   | —                       | `<dynamics friction>`       | `<joint frictionloss>`      | `<dynamics friction>` / `<dynamics frictionloss>`    |
+ 
   
 ### 3-13.  Node Inspector: コライダーの設定  
   
