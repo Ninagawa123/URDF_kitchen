@@ -4,7 +4,7 @@ Description: A Python script to assembling files configured with urdf_kitchen_Pa
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 25, 2026
+Update.     : Jan 30, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -74,8 +74,16 @@ DEFAULT_ARMATURE = 0.01  # kg*m^2
 DEFAULT_FRICTIONLOSS = 0.01  # N*m
 DEFAULT_STIFFNESS_KP = 100.0  # N*m/rad
 DEFAULT_DAMPING_KV = 1.0  # N*m*s/rad
+DEFAULT_TIMECONST = 0.01  # sec (actuator time constant)
 DEFAULT_ANGLE_RANGE = 3.14159  # rad (+/- π)
 DEFAULT_BASE_LINK_HEIGHT = 0.5  # Default z coordinate for MJCF base_link (m)
+# MJCF <default> section values
+DEFAULT_MJCF_JOINT_DAMPING = 0.1  # Passive joint damping for MJCF <default><joint>
+DEFAULT_MJCF_GEOM_FRICTION = 0.4  # Contact friction for MJCF <default><geom>
+DEFAULT_MJCF_GEOM_MARGIN = 0.001  # Contact margin for MJCF <default><geom>
+DEFAULT_MJCF_GEOM_CONDIM = 3  # Contact dimensionality for MJCF <default><geom>
+DEFAULT_MJCF_MOTOR_CTRLRANGE = 23.7  # Motor control range (+/-) for MJCF <default><motor>
+DEFAULT_MJCF_OPTION_IMPRATIO = 100  # Impedance ratio for MJCF <option>
 DEFAULT_NODE_GRID_ENABLED = True  # Enable/disable node grid snapping
 DEFAULT_NODE_GRID_SIZE = 50  # Node grid size (pixels)
 # Legacy constants for backward compatibility (to be removed)
@@ -162,8 +170,9 @@ def init_node_properties(node, graph=None):
     # Use Settings default values (when graph is specified)
     if graph is not None:
         node.joint_effort = getattr(graph, 'default_joint_effort', DEFAULT_JOINT_EFFORT)
-        node.joint_damping = getattr(graph, 'default_damping_kv', DEFAULT_DAMPING_KV)
+        node.joint_damping = getattr(graph, 'default_joint_damping', DEFAULT_JOINT_DAMPING)
         node.joint_stiffness = getattr(graph, 'default_stiffness_kp', DEFAULT_STIFFNESS_KP)
+        node.joint_kv = getattr(graph, 'default_damping_kv', DEFAULT_DAMPING_KV)
         node.joint_velocity = getattr(graph, 'default_joint_velocity', DEFAULT_JOINT_VELOCITY)
         node.joint_margin = getattr(graph, 'default_margin', DEFAULT_MARGIN)
         node.joint_armature = getattr(graph, 'default_armature', DEFAULT_ARMATURE)
@@ -171,8 +180,9 @@ def init_node_properties(node, graph=None):
     else:
         # Use constants (for backward compatibility)
         node.joint_effort = DEFAULT_JOINT_EFFORT
-        node.joint_damping = DEFAULT_DAMPING_KV
+        node.joint_damping = DEFAULT_JOINT_DAMPING
         node.joint_stiffness = DEFAULT_STIFFNESS_KP
+        node.joint_kv = DEFAULT_DAMPING_KV
         node.joint_velocity = DEFAULT_JOINT_VELOCITY
         node.joint_margin = DEFAULT_MARGIN
         node.joint_armature = DEFAULT_ARMATURE
@@ -884,7 +894,7 @@ class InspectorWindow(QtWidgets.QWidget):
 
         content_layout.addLayout(inherit_rotation_layout)
 
-        # Effort, Damping(kv), Stiffness(kp) (left aligned)
+        # Effort, Velocity, Damping, Kp (left aligned)
         joint_params_row1 = QtWidgets.QHBoxLayout()
         joint_params_row1.setSpacing(5)
 
@@ -897,7 +907,16 @@ class InspectorWindow(QtWidgets.QWidget):
         self.effort_input.returnPressed.connect(self.update_joint_params)
         joint_params_row1.addWidget(self.effort_input)
 
-        joint_params_row1.addWidget(QtWidgets.QLabel("Damping(kv):"))
+        joint_params_row1.addWidget(QtWidgets.QLabel("Velocity:"))
+        self.velocity_input = QtWidgets.QLineEdit()
+        self.velocity_input.setValidator(QDoubleValidator(0.0, 10000.0, 2))
+        self.velocity_input.setPlaceholderText("7.0")
+        self.velocity_input.setMaximumWidth(60)
+        self.velocity_input.textChanged.connect(self.update_joint_params)
+        self.velocity_input.returnPressed.connect(self.update_joint_params)
+        joint_params_row1.addWidget(self.velocity_input)
+
+        joint_params_row1.addWidget(QtWidgets.QLabel("Damping:"))
         self.damping_input = QtWidgets.QLineEdit()
         self.damping_input.setValidator(QDoubleValidator(0.0, 10000.0, 5))
         self.damping_input.setPlaceholderText("0.18")
@@ -906,40 +925,31 @@ class InspectorWindow(QtWidgets.QWidget):
         self.damping_input.returnPressed.connect(self.update_joint_params)
         joint_params_row1.addWidget(self.damping_input)
 
-        joint_params_row1.addWidget(QtWidgets.QLabel("Stiffness(kp):"))
-        self.stiffness_input = QtWidgets.QLineEdit()
-        self.stiffness_input.setValidator(QDoubleValidator(0.0, 10000.0, 2))
-        self.stiffness_input.setPlaceholderText("50")
-        self.stiffness_input.setMaximumWidth(60)
-        self.stiffness_input.textChanged.connect(self.update_joint_params)
-        self.stiffness_input.returnPressed.connect(self.update_joint_params)
-        joint_params_row1.addWidget(self.stiffness_input)
+        joint_params_row1.addWidget(QtWidgets.QLabel("Kp:"))
+        self.kp_input = QtWidgets.QLineEdit()
+        self.kp_input.setValidator(QDoubleValidator(0.0, 10000.0, 2))
+        self.kp_input.setPlaceholderText("100")
+        self.kp_input.setMaximumWidth(60)
+        self.kp_input.textChanged.connect(self.update_joint_params)
+        self.kp_input.returnPressed.connect(self.update_joint_params)
+        joint_params_row1.addWidget(self.kp_input)
 
         joint_params_row1.addStretch()
 
         content_layout.addLayout(joint_params_row1)
 
-        # Velocity, Margin, Armature, Frictionloss (left aligned)
+        # Kv, Armature, Margin, Frictionloss (left aligned)
         joint_params_row2 = QtWidgets.QHBoxLayout()
         joint_params_row2.setSpacing(5)
 
-        joint_params_row2.addWidget(QtWidgets.QLabel("Velocity:"))
-        self.velocity_input = QtWidgets.QLineEdit()
-        self.velocity_input.setValidator(QDoubleValidator(0.0, 10000.0, 2))
-        self.velocity_input.setPlaceholderText("7.0")
-        self.velocity_input.setMaximumWidth(60)
-        self.velocity_input.textChanged.connect(self.update_joint_params)
-        self.velocity_input.returnPressed.connect(self.update_joint_params)
-        joint_params_row2.addWidget(self.velocity_input)
-
-        joint_params_row2.addWidget(QtWidgets.QLabel("Margin:"))
-        self.margin_input = QtWidgets.QLineEdit()
-        self.margin_input.setValidator(QDoubleValidator(0.0, 10000.0, 5))
-        self.margin_input.setPlaceholderText("0.0")
-        self.margin_input.setMaximumWidth(60)
-        self.margin_input.textChanged.connect(self.update_joint_params)
-        self.margin_input.returnPressed.connect(self.update_joint_params)
-        joint_params_row2.addWidget(self.margin_input)
+        joint_params_row2.addWidget(QtWidgets.QLabel("Kv:"))
+        self.kv_input = QtWidgets.QLineEdit()
+        self.kv_input.setValidator(QDoubleValidator(0.0, 10000.0, 5))
+        self.kv_input.setPlaceholderText("1.0")
+        self.kv_input.setMaximumWidth(60)
+        self.kv_input.textChanged.connect(self.update_joint_params)
+        self.kv_input.returnPressed.connect(self.update_joint_params)
+        joint_params_row2.addWidget(self.kv_input)
 
         joint_params_row2.addWidget(QtWidgets.QLabel("Armature:"))
         self.armature_input = QtWidgets.QLineEdit()
@@ -949,6 +959,15 @@ class InspectorWindow(QtWidgets.QWidget):
         self.armature_input.textChanged.connect(self.update_joint_params)
         self.armature_input.returnPressed.connect(self.update_joint_params)
         joint_params_row2.addWidget(self.armature_input)
+
+        joint_params_row2.addWidget(QtWidgets.QLabel("Margin:"))
+        self.margin_input = QtWidgets.QLineEdit()
+        self.margin_input.setValidator(QDoubleValidator(0.0, 10000.0, 5))
+        self.margin_input.setPlaceholderText("0.0")
+        self.margin_input.setMaximumWidth(60)
+        self.margin_input.textChanged.connect(self.update_joint_params)
+        self.margin_input.returnPressed.connect(self.update_joint_params)
+        joint_params_row2.addWidget(self.margin_input)
 
         joint_params_row2.addWidget(QtWidgets.QLabel("Frictionloss:"))
         self.frictionloss_input = QtWidgets.QLineEdit()
@@ -2105,19 +2124,26 @@ class InspectorWindow(QtWidgets.QWidget):
                     node.joint_velocity = DEFAULT_JOINT_VELOCITY
                 self.velocity_input.setText(str(node.joint_velocity))
 
-            # Set Damping
+            # Set Damping (passive joint damping)
             if hasattr(node, 'joint_damping'):
                 self.damping_input.setText(str(node.joint_damping))
             else:
-                node.joint_damping = DEFAULT_DAMPING_KV
+                node.joint_damping = DEFAULT_JOINT_DAMPING
                 self.damping_input.setText(str(node.joint_damping))
 
-            # Set Stiffness
+            # Set Kp (Proportional Gain)
             if hasattr(node, 'joint_stiffness'):
-                self.stiffness_input.setText(str(node.joint_stiffness))
+                self.kp_input.setText(str(node.joint_stiffness))
             else:
                 node.joint_stiffness = DEFAULT_STIFFNESS_KP
-                self.stiffness_input.setText(str(node.joint_stiffness))
+                self.kp_input.setText(str(node.joint_stiffness))
+
+            # Set Kv (Velocity Gain)
+            if hasattr(node, 'joint_kv'):
+                self.kv_input.setText(str(node.joint_kv))
+            else:
+                node.joint_kv = DEFAULT_DAMPING_KV
+                self.kv_input.setText(str(node.joint_kv))
 
             # Set Margin
             if hasattr(node, 'joint_margin'):
@@ -2522,6 +2548,34 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.armature_input.setText(format_float_no_exp(armature))
                     self.frictionloss_input.setText(format_float_no_exp(frictionloss))
 
+                # Process Joint dynamics (load with priority over limit attributes)
+                dynamics_elem = joint_elem.find('dynamics')
+                if dynamics_elem is not None:
+                    if dynamics_elem.get('damping'):
+                        self.current_node.joint_damping = float(dynamics_elem.get('damping', DEFAULT_JOINT_DAMPING))
+                        if hasattr(self, 'damping_input'):
+                            self.damping_input.setText(format_float_no_exp(self.current_node.joint_damping))
+                    if dynamics_elem.get('stiffness'):
+                        self.current_node.joint_stiffness = float(dynamics_elem.get('stiffness', DEFAULT_STIFFNESS_KP))
+                        if hasattr(self, 'kp_input'):
+                            self.kp_input.setText(format_float_no_exp(self.current_node.joint_stiffness))
+                    if dynamics_elem.get('kv'):
+                        self.current_node.joint_kv = float(dynamics_elem.get('kv', DEFAULT_DAMPING_KV))
+                        if hasattr(self, 'kv_input'):
+                            self.kv_input.setText(format_float_no_exp(self.current_node.joint_kv))
+                    if dynamics_elem.get('margin'):
+                        self.current_node.joint_margin = float(dynamics_elem.get('margin', DEFAULT_MARGIN))
+                        self.margin_input.setText(format_float_no_exp(self.current_node.joint_margin))
+                    if dynamics_elem.get('armature'):
+                        self.current_node.joint_armature = float(dynamics_elem.get('armature', DEFAULT_ARMATURE))
+                        self.armature_input.setText(format_float_no_exp(self.current_node.joint_armature))
+                    if dynamics_elem.get('frictionloss'):
+                        self.current_node.joint_frictionloss = float(dynamics_elem.get('frictionloss', DEFAULT_FRICTIONLOSS))
+                        self.frictionloss_input.setText(format_float_no_exp(self.current_node.joint_frictionloss))
+                    elif dynamics_elem.get('friction'):
+                        # URDF standard: friction attribute → joint_frictionloss
+                        self.current_node.joint_frictionloss = float(dynamics_elem.get('friction', DEFAULT_FRICTIONLOSS))
+                        self.frictionloss_input.setText(format_float_no_exp(self.current_node.joint_frictionloss))
 
             # Process points
             points = root.findall('point')
@@ -2673,7 +2727,7 @@ class InspectorWindow(QtWidgets.QWidget):
                     upper_rad = float(limit_elem.get('upper', 3.14159))
                     effort = float(limit_elem.get('effort', 10.0))
                     velocity = float(limit_elem.get('velocity', 3.0))
-                    damping = float(limit_elem.get('damping', DEFAULT_DAMPING_KV))
+                    damping = float(limit_elem.get('damping', DEFAULT_JOINT_DAMPING))
                     stiffness = float(limit_elem.get('stiffness', DEFAULT_STIFFNESS_KP))
                     margin = float(limit_elem.get('margin', DEFAULT_MARGIN))
                     armature = float(limit_elem.get('armature', DEFAULT_ARMATURE))
@@ -2697,8 +2751,8 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.velocity_input.setText(format_float_no_exp(velocity))
                     if hasattr(self, 'damping_input'):
                         self.damping_input.setText(format_float_no_exp(damping))
-                    if hasattr(self, 'stiffness_input'):
-                        self.stiffness_input.setText(format_float_no_exp(stiffness))
+                    if hasattr(self, 'kp_input'):
+                        self.kp_input.setText(format_float_no_exp(stiffness))
                     self.margin_input.setText(format_float_no_exp(margin))
                     self.armature_input.setText(format_float_no_exp(armature))
                     self.frictionloss_input.setText(format_float_no_exp(frictionloss))
@@ -2707,13 +2761,17 @@ class InspectorWindow(QtWidgets.QWidget):
                 dynamics_elem = joint_elem.find('dynamics')
                 if dynamics_elem is not None:
                     if dynamics_elem.get('damping'):
-                        self.current_node.joint_damping = float(dynamics_elem.get('damping', DEFAULT_DAMPING_KV))
+                        self.current_node.joint_damping = float(dynamics_elem.get('damping', DEFAULT_JOINT_DAMPING))
                         if hasattr(self, 'damping_input'):
                             self.damping_input.setText(format_float_no_exp(self.current_node.joint_damping))
                     if dynamics_elem.get('stiffness'):
                         self.current_node.joint_stiffness = float(dynamics_elem.get('stiffness', DEFAULT_STIFFNESS_KP))
-                        if hasattr(self, 'stiffness_input'):
-                            self.stiffness_input.setText(format_float_no_exp(self.current_node.joint_stiffness))
+                        if hasattr(self, 'kp_input'):
+                            self.kp_input.setText(format_float_no_exp(self.current_node.joint_stiffness))
+                    if dynamics_elem.get('kv'):
+                        self.current_node.joint_kv = float(dynamics_elem.get('kv', DEFAULT_DAMPING_KV))
+                        if hasattr(self, 'kv_input'):
+                            self.kv_input.setText(format_float_no_exp(self.current_node.joint_kv))
                     if dynamics_elem.get('margin'):
                         self.current_node.joint_margin = float(dynamics_elem.get('margin', DEFAULT_MARGIN))
                         self.margin_input.setText(format_float_no_exp(self.current_node.joint_margin))
@@ -2722,6 +2780,10 @@ class InspectorWindow(QtWidgets.QWidget):
                         self.armature_input.setText(format_float_no_exp(self.current_node.joint_armature))
                     if dynamics_elem.get('frictionloss'):
                         self.current_node.joint_frictionloss = float(dynamics_elem.get('frictionloss', DEFAULT_FRICTIONLOSS))
+                        self.frictionloss_input.setText(format_float_no_exp(self.current_node.joint_frictionloss))
+                    elif dynamics_elem.get('friction'):
+                        # URDF standard: friction attribute → joint_frictionloss
+                        self.current_node.joint_frictionloss = float(dynamics_elem.get('friction', DEFAULT_FRICTIONLOSS))
                         self.frictionloss_input.setText(format_float_no_exp(self.current_node.joint_frictionloss))
 
             # Process points
@@ -2923,6 +2985,176 @@ class InspectorWindow(QtWidgets.QWidget):
 
             self._save_xml_impl()
 
+    def _save_xml_impl(self):
+        """Save current node parameters to XML file in PartsEditor-compatible format"""
+        if not self.current_node:
+            return
+
+        node = self.current_node
+
+        # Determine save path
+        xml_file = getattr(node, 'xml_file', None)
+        stl_file = getattr(node, 'stl_file', None)
+
+        if xml_file and os.path.exists(os.path.dirname(xml_file)):
+            default_path = xml_file
+        elif stl_file:
+            stl_dir = os.path.dirname(stl_file)
+            stl_name = os.path.splitext(os.path.basename(stl_file))[0]
+            default_path = os.path.join(stl_dir, f"{stl_name}.xml")
+        else:
+            default_path = ""
+
+        file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save XML", default_path, "XML Files (*.xml)")
+        if not file_path:
+            return
+
+        try:
+            # --- Build XML content in PartsEditor format ---
+            node_name = node.name() or "unnamed"
+
+            # Color
+            color = getattr(node, 'node_color', [1.0, 1.0, 1.0, 1.0])
+            if len(color) < 4:
+                color = list(color) + [1.0]
+            hex_color = '#{:02X}{:02X}{:02X}'.format(
+                int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
+            rgba_str = f"{color[0]:.6f} {color[1]:.6f} {color[2]:.6f} {color[3]:.6f}"
+
+            # Center of Mass / Inertial Origin
+            inertial_origin = getattr(node, 'inertial_origin', {'xyz': [0, 0, 0], 'rpy': [0, 0, 0]})
+            com_xyz = inertial_origin.get('xyz', [0, 0, 0])
+            com_rpy = inertial_origin.get('rpy', [0, 0, 0])
+            com_str = f"{com_xyz[0]:.6f} {com_xyz[1]:.6f} {com_xyz[2]:.6f}"
+            rpy_str = f"{com_rpy[0]:.6f} {com_rpy[1]:.6f} {com_rpy[2]:.6f}"
+
+            # Mass / Volume
+            mass_val = format_float_no_exp(getattr(node, 'mass_value', 0.0))
+            volume_val = format_float_no_exp(getattr(node, 'volume_value', 0.0))
+
+            # Inertia tensor
+            inertia = getattr(node, 'inertia', DEFAULT_INERTIA_ZERO)
+            inertia_str = (
+                f'<inertia ixx="{format_float_no_exp(inertia.get("ixx", 0))}" '
+                f'ixy="{format_float_no_exp(inertia.get("ixy", 0))}" '
+                f'ixz="{format_float_no_exp(inertia.get("ixz", 0))}" '
+                f'iyy="{format_float_no_exp(inertia.get("iyy", 0))}" '
+                f'iyz="{format_float_no_exp(inertia.get("iyz", 0))}" '
+                f'izz="{format_float_no_exp(inertia.get("izz", 0))}"/>'
+            )
+
+            # Rotation axis
+            axis_id = getattr(node, 'rotation_axis', 0)
+            axis_options = ["1 0 0", "0 1 0", "0 0 1", "0 0 0"]
+            axis_vector = axis_options[axis_id] if 0 <= axis_id < len(axis_options) else "1 0 0"
+            is_fixed = (axis_id == 3)
+            joint_type = "fixed" if is_fixed else "revolute"
+
+            # Joint limits and dynamics
+            lower_rad = getattr(node, 'joint_lower', math.radians(DEFAULT_JOINT_LOWER))
+            upper_rad = getattr(node, 'joint_upper', math.radians(DEFAULT_JOINT_UPPER))
+            effort = getattr(node, 'joint_effort', DEFAULT_JOINT_EFFORT)
+            velocity = getattr(node, 'joint_velocity', DEFAULT_JOINT_VELOCITY)
+            damping = getattr(node, 'joint_damping', DEFAULT_JOINT_DAMPING)
+            stiffness = getattr(node, 'joint_stiffness', DEFAULT_STIFFNESS_KP)
+            kv = getattr(node, 'joint_kv', DEFAULT_DAMPING_KV)
+            margin = getattr(node, 'joint_margin', DEFAULT_MARGIN)
+            armature = getattr(node, 'joint_armature', DEFAULT_ARMATURE)
+            frictionloss = getattr(node, 'joint_frictionloss', DEFAULT_FRICTIONLOSS)
+
+            # Flags
+            massless = getattr(node, 'massless_decoration', False)
+            hide_mesh = getattr(node, 'hide_mesh', False)
+
+            # --- Compose XML string ---
+            xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
+<urdf_part>
+    <material name="{hex_color}">
+        <color rgba="{rgba_str}" />
+    </material>
+    <link name="{node_name}">
+        <visual>
+            <origin xyz="{com_str}" rpy="{rpy_str}"/>
+            <material name="{hex_color}" />
+        </visual>
+        <inertial>
+            <origin xyz="{com_str}" rpy="{rpy_str}"/>
+            <mass value="{mass_val}"/>
+            <volume value="{volume_val}"/>
+            {inertia_str}
+        </inertial>
+        <center_of_mass>{com_str}</center_of_mass>
+    </link>
+    <massless_decoration>{"true" if massless else "false"}</massless_decoration>
+    <hide_mesh>{"true" if hide_mesh else "false"}</hide_mesh>"""
+
+            # Points (output ports)
+            if hasattr(node, 'points') and node.points:
+                for i, pt in enumerate(node.points):
+                    xyz = pt.get('xyz', [0, 0, 0])
+                    angle = pt.get('angle', [0, 0, 0])
+                    pt_name = pt.get('name', f'point{i+1}')
+                    pt_type = pt.get('type', 'fixed')
+                    xml_content += f"""
+    <point name="{pt_name}" type="{pt_type}">
+        <point_xyz>{xyz[0]:.6f} {xyz[1]:.6f} {xyz[2]:.6f}</point_xyz>
+        <point_angle>{angle[0]:.6f} {angle[1]:.6f} {angle[2]:.6f}</point_angle>
+    </point>"""
+
+            # Joint element
+            xml_content += f"""
+    <joint type="{joint_type}">
+        <axis xyz="{axis_vector}" />"""
+
+            if not is_fixed:
+                xml_content += f"""
+        <limit lower="{format_float_no_exp(lower_rad)}" upper="{format_float_no_exp(upper_rad)}" effort="{format_float_no_exp(effort)}" velocity="{format_float_no_exp(velocity)}" />
+        <dynamics damping="{format_float_no_exp(damping)}" stiffness="{format_float_no_exp(stiffness)}" kv="{format_float_no_exp(kv)}" margin="{format_float_no_exp(margin)}" armature="{format_float_no_exp(armature)}" frictionloss="{format_float_no_exp(frictionloss)}" />"""
+
+            xml_content += """
+    </joint>"""
+
+            # Collider
+            if hasattr(node, 'colliders') and node.colliders:
+                for collider in node.colliders:
+                    if not collider.get('enabled', False):
+                        continue
+                    c_type = collider.get('type', '')
+                    if c_type == 'primitive' and collider.get('data'):
+                        # Save reference to collider XML file
+                        if stl_file:
+                            stl_dir = os.path.dirname(stl_file)
+                            stl_basename = os.path.splitext(os.path.basename(stl_file))[0]
+                            collider_xml_name = f"{stl_basename}_collider.xml"
+                            xml_content += f"""
+    <collider type="primitive" file="{collider_xml_name}" />"""
+                        break
+                    elif c_type == 'mesh' and collider.get('mesh'):
+                        mesh_path = collider['mesh']
+                        xml_dir = os.path.dirname(file_path)
+                        try:
+                            rel_path = os.path.relpath(mesh_path, xml_dir)
+                        except ValueError:
+                            rel_path = os.path.basename(mesh_path)
+                        xml_content += f"""
+    <collider type="mesh" file="{rel_path}" />"""
+                        break
+
+            xml_content += """
+</urdf_part>"""
+
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write(xml_content)
+
+            # Update node's xml_file reference
+            node.xml_file = file_path
+            print(f"Save XML completed: {file_path}")
+
+        except Exception as e:
+            print(f"Error saving XML: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def clear_all_parameters(self):
         """Reset all BaseLinkNode parameters to default values"""
@@ -2944,7 +3176,8 @@ class InspectorWindow(QtWidgets.QWidget):
         self.current_node.joint_effort = DEFAULT_JOINT_EFFORT
         self.current_node.joint_velocity = DEFAULT_JOINT_VELOCITY
         self.current_node.joint_damping = DEFAULT_JOINT_DAMPING
-        self.current_node.joint_stiffness = DEFAULT_JOINT_STIFFNESS
+        self.current_node.joint_stiffness = DEFAULT_STIFFNESS_KP
+        self.current_node.joint_kv = DEFAULT_DAMPING_KV
         self.current_node.joint_margin = DEFAULT_MARGIN
         self.current_node.joint_armature = DEFAULT_ARMATURE
         self.current_node.joint_frictionloss = DEFAULT_FRICTIONLOSS
@@ -3199,6 +3432,184 @@ class InspectorWindow(QtWidgets.QWidget):
                 return
 
             self._reload_node_files_impl()
+
+    def _reload_node_files_impl(self):
+        """Reload XML (and optionally mesh) for current node from saved files"""
+        if not self.current_node:
+            print("No node selected for reload")
+            return
+
+        node = self.current_node
+        xml_file = getattr(node, 'xml_file', None)
+
+        if not xml_file or not os.path.exists(xml_file):
+            print(f"No XML file to reload (xml_file={xml_file})")
+            # Try to derive from stl_file
+            stl_file = getattr(node, 'stl_file', None)
+            if stl_file:
+                derived_xml = os.path.splitext(stl_file)[0] + '.xml'
+                if os.path.exists(derived_xml):
+                    xml_file = derived_xml
+                    print(f"Found derived XML: {xml_file}")
+                else:
+                    print(f"Derived XML not found: {derived_xml}")
+                    return
+            else:
+                return
+
+        try:
+            tree = ET.parse(xml_file)
+            root = tree.getroot()
+
+            if root.tag != 'urdf_part':
+                print(f"Invalid XML format: Root element is '{root.tag}', expected 'urdf_part'")
+                return
+
+            xml_dir = os.path.dirname(xml_file)
+
+            # Load common properties (mass, inertia, color, collider, flags)
+            self._load_xml_common_properties(root, xml_dir)
+
+            # Process rotation axis and joint limits
+            joint_elem = root.find('joint')
+            if joint_elem is not None:
+                joint_type = joint_elem.get('type', '')
+                if joint_type == 'fixed':
+                    self.current_node.rotation_axis = 3
+                    if self.axis_group.button(3):
+                        self.axis_group.button(3).setChecked(True)
+                else:
+                    axis_elem = joint_elem.find('axis')
+                    if axis_elem is not None:
+                        axis_xyz = axis_elem.get('xyz', '1 0 0').split()
+                        axis_values = [float(x) for x in axis_xyz]
+                        if axis_values[2] == 1:
+                            self.current_node.rotation_axis = 2
+                            self.axis_group.button(2).setChecked(True)
+                        elif axis_values[1] == 1:
+                            self.current_node.rotation_axis = 1
+                            self.axis_group.button(1).setChecked(True)
+                        else:
+                            self.current_node.rotation_axis = 0
+                            self.axis_group.button(0).setChecked(True)
+
+                # Process Joint limits
+                limit_elem = joint_elem.find('limit')
+                if limit_elem is not None:
+                    lower_rad = float(limit_elem.get('lower', -3.14159))
+                    upper_rad = float(limit_elem.get('upper', 3.14159))
+                    effort = float(limit_elem.get('effort', DEFAULT_JOINT_EFFORT))
+                    velocity = float(limit_elem.get('velocity', DEFAULT_JOINT_VELOCITY))
+
+                    self.current_node.joint_lower = lower_rad
+                    self.current_node.joint_upper = upper_rad
+                    self.current_node.joint_effort = effort
+                    self.current_node.joint_velocity = velocity
+
+                    self.lower_limit_input.setText(str(round(math.degrees(lower_rad), 2)))
+                    self.upper_limit_input.setText(str(round(math.degrees(upper_rad), 2)))
+                    self.effort_input.setText(format_float_no_exp(effort))
+                    self.velocity_input.setText(format_float_no_exp(velocity))
+
+                # Process Joint dynamics (higher priority than limit attributes)
+                dynamics_elem = joint_elem.find('dynamics')
+                if dynamics_elem is not None:
+                    if dynamics_elem.get('damping'):
+                        self.current_node.joint_damping = float(dynamics_elem.get('damping', DEFAULT_JOINT_DAMPING))
+                        if hasattr(self, 'damping_input'):
+                            self.damping_input.setText(format_float_no_exp(self.current_node.joint_damping))
+                    if dynamics_elem.get('stiffness'):
+                        self.current_node.joint_stiffness = float(dynamics_elem.get('stiffness', DEFAULT_STIFFNESS_KP))
+                        if hasattr(self, 'kp_input'):
+                            self.kp_input.setText(format_float_no_exp(self.current_node.joint_stiffness))
+                    if dynamics_elem.get('kv'):
+                        self.current_node.joint_kv = float(dynamics_elem.get('kv', DEFAULT_DAMPING_KV))
+                        if hasattr(self, 'kv_input'):
+                            self.kv_input.setText(format_float_no_exp(self.current_node.joint_kv))
+                    if dynamics_elem.get('margin'):
+                        self.current_node.joint_margin = float(dynamics_elem.get('margin', DEFAULT_MARGIN))
+                        self.margin_input.setText(format_float_no_exp(self.current_node.joint_margin))
+                    if dynamics_elem.get('armature'):
+                        self.current_node.joint_armature = float(dynamics_elem.get('armature', DEFAULT_ARMATURE))
+                        self.armature_input.setText(format_float_no_exp(self.current_node.joint_armature))
+                    if dynamics_elem.get('frictionloss'):
+                        self.current_node.joint_frictionloss = float(dynamics_elem.get('frictionloss', DEFAULT_FRICTIONLOSS))
+                        self.frictionloss_input.setText(format_float_no_exp(self.current_node.joint_frictionloss))
+                    elif dynamics_elem.get('friction'):
+                        # URDF standard: friction attribute → joint_frictionloss
+                        self.current_node.joint_frictionloss = float(dynamics_elem.get('friction', DEFAULT_FRICTIONLOSS))
+                        self.frictionloss_input.setText(format_float_no_exp(self.current_node.joint_frictionloss))
+
+            # Process points
+            points = root.findall('point')
+            num_points = len(points)
+            if isinstance(self.current_node, FooNode) and num_points > 0:
+                current_ports = len(self.current_node.output_ports())
+                if current_ports > num_points:
+                    for i in range(num_points + 1, current_ports + 1):
+                        port_name = f'out_{i}'
+                        port = self.current_node.get_output(port_name)
+                        if port:
+                            port.clear_connections()
+                while current_ports < num_points:
+                    self.current_node._add_output()
+                    current_ports += 1
+                while current_ports > num_points:
+                    self.current_node.remove_output()
+                    current_ports -= 1
+
+                self.current_node.points = []
+                for point_elem in points:
+                    point_name = point_elem.get('name')
+                    point_type = point_elem.get('type')
+                    point_xyz_elem = point_elem.find('point_xyz')
+                    point_angle_elem = point_elem.find('point_angle')
+                    if point_xyz_elem is not None and point_xyz_elem.text:
+                        xyz_values = [float(x) for x in point_xyz_elem.text.strip().split()]
+                        angle_values = [0.0, 0.0, 0.0]
+                        if point_angle_elem is not None and point_angle_elem.text:
+                            try:
+                                angle_values = [float(x) for x in point_angle_elem.text.strip().split()]
+                                if len(angle_values) != 3:
+                                    angle_values = [0.0, 0.0, 0.0]
+                            except ValueError:
+                                angle_values = [0.0, 0.0, 0.0]
+                        self.current_node.points.append({
+                            'name': point_name,
+                            'type': point_type,
+                            'xyz': xyz_values,
+                            'angle': angle_values
+                        })
+
+                self.current_node.cumulative_coords = []
+                for i in range(len(self.current_node.points)):
+                    self.current_node.cumulative_coords.append(create_cumulative_coord(i))
+                self.current_node.output_count = len(self.current_node.points)
+
+            # Reload mesh if stl_file exists
+            stl_file = getattr(node, 'stl_file', None)
+            if stl_file and os.path.exists(stl_file) and self.stl_viewer:
+                self.stl_viewer.load_stl_for_node(node)
+
+            # Update UI
+            self.update_info(self.current_node)
+
+            # Update 3D view
+            if self.stl_viewer:
+                self.stl_viewer.render_to_image()
+                self.stl_viewer.refresh_collider_display()
+
+            # Recalc positions
+            if hasattr(self.current_node, 'graph') and self.current_node.graph:
+                self.current_node.graph.recalculate_all_positions()
+
+            node.xml_file = xml_file
+            print(f"Reload completed: {xml_file}")
+
+        except Exception as e:
+            print(f"Error reloading node files: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def create_port_widget(self, port_number, x=0.0, y=0.0, z=0.0, angle_x=0.0, angle_y=0.0, angle_z=0.0):
         """Create widget for Output Port"""
@@ -3483,18 +3894,21 @@ class InspectorWindow(QtWidgets.QWidget):
             # Velocity
             if self.velocity_input.text():
                 self.current_node.joint_velocity = float(self.velocity_input.text())
-            # Damping
+            # Damping (passive joint damping)
             if self.damping_input.text():
                 self.current_node.joint_damping = float(self.damping_input.text())
-            # Stiffness
-            if self.stiffness_input.text():
-                self.current_node.joint_stiffness = float(self.stiffness_input.text())
-            # Margin
-            if self.margin_input.text():
-                self.current_node.joint_margin = float(self.margin_input.text())
+            # Kp (Proportional Gain)
+            if self.kp_input.text():
+                self.current_node.joint_stiffness = float(self.kp_input.text())
+            # Kv (Velocity Gain)
+            if self.kv_input.text():
+                self.current_node.joint_kv = float(self.kv_input.text())
             # Armature
             if self.armature_input.text():
                 self.current_node.joint_armature = float(self.armature_input.text())
+            # Margin
+            if self.margin_input.text():
+                self.current_node.joint_margin = float(self.margin_input.text())
             # Frictionloss
             if self.frictionloss_input.text():
                 self.current_node.joint_frictionloss = float(self.frictionloss_input.text())
@@ -3712,10 +4126,15 @@ class InspectorWindow(QtWidgets.QWidget):
             if damping_text:
                 self.current_node.joint_damping = float(damping_text)
 
-            # Save Stiffness Stiffness
-            stiffness_text = self.stiffness_input.text()
-            if stiffness_text:
-                self.current_node.joint_stiffness = float(stiffness_text)
+            # Save Kp (Proportional Gain)
+            kp_text = self.kp_input.text()
+            if kp_text:
+                self.current_node.joint_stiffness = float(kp_text)
+
+            # Save Kv (Velocity Gain)
+            kv_text = self.kv_input.text()
+            if kv_text:
+                self.current_node.joint_kv = float(kv_text)
 
             # Save Margin Margin
             margin_text = self.margin_input.text()
@@ -3732,7 +4151,7 @@ class InspectorWindow(QtWidgets.QWidget):
             if frictionloss_text:
                 self.current_node.joint_frictionloss = float(frictionloss_text)
 
-            print(f"Joint limits set: lower={math.degrees(self.current_node.joint_lower):.2f}° ({self.current_node.joint_lower:.5f} rad), upper={math.degrees(self.current_node.joint_upper):.2f}° ({self.current_node.joint_upper:.5f} rad), effort={self.current_node.joint_effort}, velocity={self.current_node.joint_velocity}, damping={self.current_node.joint_damping}, stiffness={self.current_node.joint_stiffness}, margin={self.current_node.joint_margin}, armature={self.current_node.joint_armature}, frictionloss={self.current_node.joint_frictionloss}")
+            print(f"Joint limits set: lower={math.degrees(self.current_node.joint_lower):.2f}° ({self.current_node.joint_lower:.5f} rad), upper={math.degrees(self.current_node.joint_upper):.2f}° ({self.current_node.joint_upper:.5f} rad), effort={self.current_node.joint_effort}, velocity={self.current_node.joint_velocity}, damping={self.current_node.joint_damping}, kp={self.current_node.joint_stiffness}, kv={self.current_node.joint_kv}, margin={self.current_node.joint_margin}, armature={self.current_node.joint_armature}, frictionloss={self.current_node.joint_frictionloss}")
 
             QtWidgets.QMessageBox.information(
                 self,
@@ -3741,9 +4160,10 @@ class InspectorWindow(QtWidgets.QWidget):
                 f"Lower: {math.degrees(self.current_node.joint_lower):.2f}° ({self.current_node.joint_lower:.5f} rad)\n"
                 f"Upper: {math.degrees(self.current_node.joint_upper):.2f}° ({self.current_node.joint_upper:.5f} rad)\n"
                 f"Effort: {self.current_node.joint_effort}\n"
-                f"Damping: {self.current_node.joint_damping}\n"
-                f"Stiffness: {self.current_node.joint_stiffness}\n"
                 f"Velocity: {self.current_node.joint_velocity}\n"
+                f"Damping: {self.current_node.joint_damping}\n"
+                f"Kp: {self.current_node.joint_stiffness}\n"
+                f"Kv: {self.current_node.joint_kv}\n"
                 f"Margin: {self.current_node.joint_margin}\n"
                 f"Armature: {self.current_node.joint_armature}\n"
                 f"Frictionloss: {self.current_node.joint_frictionloss}"
@@ -4137,172 +4557,200 @@ class SettingsDialog(QtWidgets.QDialog):
         """UItextinitialize"""
         import math
         layout = QtWidgets.QVBoxLayout(self)
+        layout.setSpacing(3)
 
         # Unified button style (global constants)
         self.button_style = UNIFIED_BUTTON_STYLE
 
-        # Default joint settings default joint settings
-        group_box = QtWidgets.QGroupBox("Default Joint Settings")
-        group_layout = QtWidgets.QGridLayout()
-
+        # ===== Default Joint Settings (joint physical properties) =====
+        joint_group = QtWidgets.QGroupBox("Default Joint Settings")
+        joint_layout = QtWidgets.QGridLayout()
+        joint_layout.setVerticalSpacing(3)
         row = 0
 
-        # Default Effort
-        group_layout.addWidget(QtWidgets.QLabel("Default Effort:"), row, 0)
-        self.effort_input = QtWidgets.QLineEdit()
-        self.effort_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
-        self.effort_input.setText(f"{self.graph.default_joint_effort:.3f}")
-        self.effort_input.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-        group_layout.addWidget(self.effort_input, row, 1)
-        group_layout.addWidget(QtWidgets.QLabel("N*m"), row, 2)
-        group_layout.addWidget(QtWidgets.QLabel("Max:"), row, 3)
-        self.max_effort_input = QtWidgets.QLineEdit()
-        self.max_effort_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
-        self.max_effort_input.setText(f"{self.graph.default_max_effort:.3f}")
-        group_layout.addWidget(self.max_effort_input, row, 4)
-        group_layout.addWidget(QtWidgets.QLabel("N*m"), row, 5)
-        row += 1
-
-        # Default velocity max default velocity max
-        group_layout.addWidget(QtWidgets.QLabel("Default Velocity:"), row, 0)
-        self.velocity_rad_input = QtWidgets.QLineEdit()
-        self.velocity_rad_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
-        self.velocity_rad_input.setText(f"{self.graph.default_joint_velocity:.4f}")
-        self.velocity_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
-            self.velocity_rad_input, self.velocity_deg_input))
-        group_layout.addWidget(self.velocity_rad_input, row, 1)
-        group_layout.addWidget(QtWidgets.QLabel("rad/s"), row, 2)
-
-        self.velocity_deg_input = QtWidgets.QLineEdit()
-        self.velocity_deg_input.setValidator(QDoubleValidator(0.0, 100000.0, 3))
-        self.velocity_deg_input.setText(f"{math.degrees(self.graph.default_joint_velocity):.3f}")
-        self.velocity_deg_input.returnPressed.connect(lambda: self._convert_deg_to_rad(
-            self.velocity_deg_input, self.velocity_rad_input))
-        group_layout.addWidget(QtWidgets.QLabel("("), row, 3, QtCore.Qt.AlignmentFlag.AlignRight)
-        group_layout.addWidget(self.velocity_deg_input, row, 4)
-        group_layout.addWidget(QtWidgets.QLabel("deg/s)"), row, 5)
-        
-        # Max velocity max velocity
-        group_layout.addWidget(QtWidgets.QLabel("Max:"), row, 6, QtCore.Qt.AlignmentFlag.AlignRight)
-        self.max_velocity_rad_input = QtWidgets.QLineEdit()
-        self.max_velocity_rad_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
-        self.max_velocity_rad_input.setText(f"{self.graph.default_max_velocity:.4f}")
-        self.max_velocity_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
-            self.max_velocity_rad_input, self.max_velocity_deg_input))
-        group_layout.addWidget(self.max_velocity_rad_input, row, 7)
-        group_layout.addWidget(QtWidgets.QLabel("rad/s"), row, 8)
-
-        self.max_velocity_deg_input = QtWidgets.QLineEdit()
-        self.max_velocity_deg_input.setValidator(QDoubleValidator(0.0, 100000.0, 3))
-        self.max_velocity_deg_input.setText(f"{math.degrees(self.graph.default_max_velocity):.3f}")
-        self.max_velocity_deg_input.returnPressed.connect(lambda: self._convert_deg_to_rad(
-            self.max_velocity_deg_input, self.max_velocity_rad_input))
-        group_layout.addWidget(QtWidgets.QLabel("("), row, 9, QtCore.Qt.AlignmentFlag.AlignRight)
-        group_layout.addWidget(self.max_velocity_deg_input, row, 10)
-        group_layout.addWidget(QtWidgets.QLabel("deg/s)"), row, 11)
-        row += 1
-
-        # Default Margin
-        group_layout.addWidget(QtWidgets.QLabel("Default Margin:"), row, 0)
-        self.margin_rad_input = QtWidgets.QLineEdit()
-        self.margin_rad_input.setValidator(QDoubleValidator(0.0, 10.0, 4))
-        self.margin_rad_input.setText(f"{self.graph.default_margin:.4f}")
-        self.margin_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
-            self.margin_rad_input, self.margin_deg_input))
-        group_layout.addWidget(self.margin_rad_input, row, 1)
-        group_layout.addWidget(QtWidgets.QLabel("rad"), row, 2)
-
-        self.margin_deg_input = QtWidgets.QLineEdit()
-        self.margin_deg_input.setValidator(QDoubleValidator(0.0, 360.0, 3))
-        self.margin_deg_input.setText(f"{math.degrees(self.graph.default_margin):.3f}")
-        self.margin_deg_input.returnPressed.connect(lambda: self._convert_deg_to_rad(
-            self.margin_deg_input, self.margin_rad_input))
-        group_layout.addWidget(QtWidgets.QLabel("("), row, 3, QtCore.Qt.AlignmentFlag.AlignRight)
-        group_layout.addWidget(self.margin_deg_input, row, 4)
-        group_layout.addWidget(QtWidgets.QLabel("deg)"), row, 5)
-        row += 1
-
-        # Default Armature
-        group_layout.addWidget(QtWidgets.QLabel("Default Armature:"), row, 0)
-        self.armature_input = QtWidgets.QLineEdit()
-        self.armature_input.setValidator(QDoubleValidator(0.0, 100.0, 4))
-        self.armature_input.setText(f"{self.graph.default_armature:.4f}")
-        group_layout.addWidget(self.armature_input, row, 1)
-        group_layout.addWidget(QtWidgets.QLabel("kg*m²"), row, 2)
-        row += 1
-
-        # Default Frictionloss
-        group_layout.addWidget(QtWidgets.QLabel("Default Frictionloss:"), row, 0)
-        self.frictionloss_input = QtWidgets.QLineEdit()
-        self.frictionloss_input.setValidator(QDoubleValidator(0.0, 100.0, 4))
-        self.frictionloss_input.setText(f"{self.graph.default_frictionloss:.4f}")
-        group_layout.addWidget(self.frictionloss_input, row, 1)
-        group_layout.addWidget(QtWidgets.QLabel("N*m"), row, 2)
-        row += 1
-
-        # Default Stiffness (kp)
-        group_layout.addWidget(QtWidgets.QLabel("Default Stiffness (kp):"), row, 0)
-        self.stiffness_kp_input = QtWidgets.QLineEdit()
-        self.stiffness_kp_input.setValidator(QDoubleValidator(0.0, 10000.0, 3))
-        self.stiffness_kp_input.setText(f"{self.graph.default_stiffness_kp:.3f}")
-        group_layout.addWidget(self.stiffness_kp_input, row, 1)
-        group_layout.addWidget(QtWidgets.QLabel("N*m/rad"), row, 2)
-        row += 1
-
-        # Default Damping (kv)
-        group_layout.addWidget(QtWidgets.QLabel("Default Damping (kv):"), row, 0)
-        self.damping_kv_input = QtWidgets.QLineEdit()
-        self.damping_kv_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
-        self.damping_kv_input.setText(f"{self.graph.default_damping_kv:.3f}")
-        group_layout.addWidget(self.damping_kv_input, row, 1)
-        group_layout.addWidget(QtWidgets.QLabel("N*m*s/rad"), row, 2)
-        row += 1
-
-        # Apply to all nodes button apply all nodes
-        apply_all_button = QtWidgets.QPushButton("Apply to All Nodes")
-        apply_all_button.setStyleSheet(self.button_style)
-        apply_all_button.setAutoDefault(False)
-        apply_all_button.clicked.connect(self.apply_to_all_nodes)
-        group_layout.addWidget(apply_all_button, row, 9, 1, 3, QtCore.Qt.AlignmentFlag.AlignRight)
-        row += 1
-
         # Default Angle Range
-        group_layout.addWidget(QtWidgets.QLabel("Default Angle Range:"), row, 0)
-        group_layout.addWidget(QtWidgets.QLabel("+/-"), row, 1, QtCore.Qt.AlignmentFlag.AlignRight)
+        joint_layout.addWidget(QtWidgets.QLabel("Angle Range:"), row, 0)
+        joint_layout.addWidget(QtWidgets.QLabel("+/-"), row, 1, QtCore.Qt.AlignmentFlag.AlignRight)
         self.angle_range_rad_input = QtWidgets.QLineEdit()
         self.angle_range_rad_input.setValidator(QDoubleValidator(0.0, 10.0, 4))
         self.angle_range_rad_input.setText(f"{self.graph.default_angle_range:.4f}")
         self.angle_range_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
             self.angle_range_rad_input, self.angle_range_deg_input))
-        group_layout.addWidget(self.angle_range_rad_input, row, 2)
-        group_layout.addWidget(QtWidgets.QLabel("rad"), row, 3)
-
-        group_layout.addWidget(QtWidgets.QLabel("+/-"), row, 4, QtCore.Qt.AlignmentFlag.AlignRight)
+        joint_layout.addWidget(self.angle_range_rad_input, row, 2)
+        joint_layout.addWidget(QtWidgets.QLabel("rad"), row, 3)
+        joint_layout.addWidget(QtWidgets.QLabel("+/-"), row, 4, QtCore.Qt.AlignmentFlag.AlignRight)
         self.angle_range_deg_input = QtWidgets.QLineEdit()
         self.angle_range_deg_input.setValidator(QDoubleValidator(0.0, 360.0, 3))
         self.angle_range_deg_input.setText(f"{math.degrees(self.graph.default_angle_range):.3f}")
         self.angle_range_deg_input.returnPressed.connect(lambda: self._convert_deg_to_rad(
             self.angle_range_deg_input, self.angle_range_rad_input))
-        group_layout.addWidget(self.angle_range_deg_input, row, 5)
-        group_layout.addWidget(QtWidgets.QLabel("deg"), row, 6)
+        joint_layout.addWidget(self.angle_range_deg_input, row, 5)
+        joint_layout.addWidget(QtWidgets.QLabel("deg"), row, 6)
+        row += 1
 
-        group_box.setLayout(group_layout)
-        layout.addWidget(group_box)
+        # Default Margin
+        joint_layout.addWidget(QtWidgets.QLabel("Margin:"), row, 0)
+        self.margin_rad_input = QtWidgets.QLineEdit()
+        self.margin_rad_input.setValidator(QDoubleValidator(0.0, 10.0, 4))
+        self.margin_rad_input.setText(f"{self.graph.default_margin:.4f}")
+        self.margin_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
+            self.margin_rad_input, self.margin_deg_input))
+        joint_layout.addWidget(self.margin_rad_input, row, 1, 1, 2)
+        joint_layout.addWidget(QtWidgets.QLabel("rad"), row, 3)
+        self.margin_deg_input = QtWidgets.QLineEdit()
+        self.margin_deg_input.setValidator(QDoubleValidator(0.0, 360.0, 3))
+        self.margin_deg_input.setText(f"{math.degrees(self.graph.default_margin):.3f}")
+        self.margin_deg_input.returnPressed.connect(lambda: self._convert_deg_to_rad(
+            self.margin_deg_input, self.margin_rad_input))
+        joint_layout.addWidget(QtWidgets.QLabel("("), row, 4, QtCore.Qt.AlignmentFlag.AlignRight)
+        joint_layout.addWidget(self.margin_deg_input, row, 5)
+        joint_layout.addWidget(QtWidgets.QLabel("deg)"), row, 6)
+        row += 1
 
-        # Mjcf settings mjcf settings
+        # Default Armature
+        joint_layout.addWidget(QtWidgets.QLabel("Armature:"), row, 0)
+        self.armature_input = QtWidgets.QLineEdit()
+        self.armature_input.setValidator(QDoubleValidator(0.0, 100.0, 4))
+        self.armature_input.setText(f"{self.graph.default_armature:.4f}")
+        joint_layout.addWidget(self.armature_input, row, 1, 1, 2)
+        joint_layout.addWidget(QtWidgets.QLabel("kg*m²"), row, 3)
+        row += 1
+
+        # Default Frictionloss
+        joint_layout.addWidget(QtWidgets.QLabel("Frictionloss:"), row, 0)
+        self.frictionloss_input = QtWidgets.QLineEdit()
+        self.frictionloss_input.setValidator(QDoubleValidator(0.0, 100.0, 4))
+        self.frictionloss_input.setText(f"{self.graph.default_frictionloss:.4f}")
+        joint_layout.addWidget(self.frictionloss_input, row, 1, 1, 2)
+        joint_layout.addWidget(QtWidgets.QLabel("N*m"), row, 3)
+        row += 1
+
+        # Default Damping
+        joint_layout.addWidget(QtWidgets.QLabel("Damping:"), row, 0)
+        self.joint_damping_input = QtWidgets.QLineEdit()
+        self.joint_damping_input.setValidator(QDoubleValidator(0.0, 100000.0, 4))
+        self.joint_damping_input.setText(f"{self.graph.default_joint_damping:.4f}")
+        joint_layout.addWidget(self.joint_damping_input, row, 1, 1, 2)
+        joint_layout.addWidget(QtWidgets.QLabel("N*m*s/rad"), row, 3)
+        row += 1
+
+        # Apply to all nodes (Joint)
+        apply_joint_button = QtWidgets.QPushButton("Apply to All Nodes(Margin, Armature, Frictionloss, Damping)")
+        apply_joint_button.setStyleSheet(self.button_style)
+        apply_joint_button.setAutoDefault(False)
+        apply_joint_button.clicked.connect(self.apply_joint_to_all_nodes)
+        joint_layout.addWidget(apply_joint_button, row, 4, 1, 3, QtCore.Qt.AlignmentFlag.AlignRight)
+
+        joint_group.setLayout(joint_layout)
+        layout.addWidget(joint_group)
+
+        # ===== Default Actuator Settings (actuator / control) =====
+        act_group = QtWidgets.QGroupBox("Default Actuator Settings")
+        act_layout = QtWidgets.QGridLayout()
+        row = 0
+
+        # Effort (forcerange)
+        act_layout.addWidget(QtWidgets.QLabel("Effort(forcerange):"), row, 0)
+        self.effort_input = QtWidgets.QLineEdit()
+        self.effort_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
+        self.effort_input.setText(f"{self.graph.default_joint_effort:.3f}")
+        self.effort_input.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+        act_layout.addWidget(self.effort_input, row, 1)
+        act_layout.addWidget(QtWidgets.QLabel("N*m"), row, 2)
+        act_layout.addWidget(QtWidgets.QLabel("Max:"), row, 3)
+        self.max_effort_input = QtWidgets.QLineEdit()
+        self.max_effort_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
+        self.max_effort_input.setText(f"{self.graph.default_max_effort:.3f}")
+        act_layout.addWidget(self.max_effort_input, row, 4)
+        act_layout.addWidget(QtWidgets.QLabel("N*m"), row, 5)
+        row += 1
+
+        # Velocity
+        act_layout.addWidget(QtWidgets.QLabel("Velocity:"), row, 0)
+        self.velocity_rad_input = QtWidgets.QLineEdit()
+        self.velocity_rad_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
+        self.velocity_rad_input.setText(f"{self.graph.default_joint_velocity:.4f}")
+        self.velocity_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
+            self.velocity_rad_input, self.velocity_deg_input))
+        act_layout.addWidget(self.velocity_rad_input, row, 1)
+        act_layout.addWidget(QtWidgets.QLabel("rad/s"), row, 2)
+        self.velocity_deg_input = QtWidgets.QLineEdit()
+        self.velocity_deg_input.setValidator(QDoubleValidator(0.0, 100000.0, 3))
+        self.velocity_deg_input.setText(f"{math.degrees(self.graph.default_joint_velocity):.3f}")
+        self.velocity_deg_input.returnPressed.connect(lambda: self._convert_deg_to_rad(
+            self.velocity_deg_input, self.velocity_rad_input))
+        act_layout.addWidget(QtWidgets.QLabel("("), row, 3, QtCore.Qt.AlignmentFlag.AlignRight)
+        act_layout.addWidget(self.velocity_deg_input, row, 4)
+        act_layout.addWidget(QtWidgets.QLabel("deg/s)"), row, 5)
+        act_layout.addWidget(QtWidgets.QLabel("Max:"), row, 6, QtCore.Qt.AlignmentFlag.AlignRight)
+        self.max_velocity_rad_input = QtWidgets.QLineEdit()
+        self.max_velocity_rad_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
+        self.max_velocity_rad_input.setText(f"{self.graph.default_max_velocity:.4f}")
+        self.max_velocity_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
+            self.max_velocity_rad_input, self.max_velocity_deg_input))
+        act_layout.addWidget(self.max_velocity_rad_input, row, 7)
+        act_layout.addWidget(QtWidgets.QLabel("rad/s"), row, 8)
+        self.max_velocity_deg_input = QtWidgets.QLineEdit()
+        self.max_velocity_deg_input.setValidator(QDoubleValidator(0.0, 100000.0, 3))
+        self.max_velocity_deg_input.setText(f"{math.degrees(self.graph.default_max_velocity):.3f}")
+        self.max_velocity_deg_input.returnPressed.connect(lambda: self._convert_deg_to_rad(
+            self.max_velocity_deg_input, self.max_velocity_rad_input))
+        act_layout.addWidget(QtWidgets.QLabel("("), row, 9, QtCore.Qt.AlignmentFlag.AlignRight)
+        act_layout.addWidget(self.max_velocity_deg_input, row, 10)
+        act_layout.addWidget(QtWidgets.QLabel("deg/s)"), row, 11)
+        row += 1
+
+        # Kp (Proportional Gain)
+        act_layout.addWidget(QtWidgets.QLabel("Kp(Proportional Gain):"), row, 0)
+        self.stiffness_kp_input = QtWidgets.QLineEdit()
+        self.stiffness_kp_input.setValidator(QDoubleValidator(0.0, 10000.0, 3))
+        self.stiffness_kp_input.setText(f"{self.graph.default_stiffness_kp:.3f}")
+        act_layout.addWidget(self.stiffness_kp_input, row, 1)
+        act_layout.addWidget(QtWidgets.QLabel("N*m/rad"), row, 2)
+        row += 1
+
+        # Kv (Velocity Gain, Kd)
+        act_layout.addWidget(QtWidgets.QLabel("Kv(Velocity Gain,Kd):"), row, 0)
+        self.damping_kv_input = QtWidgets.QLineEdit()
+        self.damping_kv_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
+        self.damping_kv_input.setText(f"{self.graph.default_damping_kv:.3f}")
+        act_layout.addWidget(self.damping_kv_input, row, 1)
+        act_layout.addWidget(QtWidgets.QLabel("N*m*s/rad"), row, 2)
+        row += 1
+
+        # Timeconst
+        act_layout.addWidget(QtWidgets.QLabel("Timeconst:"), row, 0)
+        self.timeconst_input = QtWidgets.QLineEdit()
+        self.timeconst_input.setValidator(QDoubleValidator(0.0, 100.0, 4))
+        self.timeconst_input.setText(f"{self.graph.default_timeconst:.4f}")
+        act_layout.addWidget(self.timeconst_input, row, 1)
+        act_layout.addWidget(QtWidgets.QLabel("sec"), row, 2)
+        row += 1
+
+        # Apply to all nodes (Actuator)
+        apply_act_button = QtWidgets.QPushButton("Apply to All Nodes")
+        apply_act_button.setStyleSheet(self.button_style)
+        apply_act_button.setAutoDefault(False)
+        apply_act_button.clicked.connect(self.apply_actuator_to_all_nodes)
+        act_layout.addWidget(apply_act_button, row, 9, 1, 3, QtCore.Qt.AlignmentFlag.AlignRight)
+
+        act_group.setLayout(act_layout)
+        layout.addWidget(act_group)
+
+        # ===== MJCF Export Settings =====
         mjcf_group = QtWidgets.QGroupBox("MJCF Export Settings")
-        mjcf_layout = QtWidgets.QHBoxLayout()  # GridLayoutHBoxLayoutswitch
+        mjcf_layout = QtWidgets.QGridLayout()
+        mjcf_layout.setVerticalSpacing(3)
+        row = 0
 
-        # Base link base link height
-        # Default base_link height m 15px default
-        mjcf_layout.addWidget(QtWidgets.QLabel("Default base_link height (m):"))
-        mjcf_layout.addSpacing(15)  # 15pxspacing
+        # base_link height
+        mjcf_layout.addWidget(QtWidgets.QLabel("base_link height:"), row, 0)
         self.base_link_height_input = QtWidgets.QLineEdit()
         self.base_link_height_input.setValidator(QDoubleValidator(0.0, 10.0, 3))
         self.base_link_height_input.setText(f"{self.graph.default_base_link_height:.4f}")
-        self.base_link_height_input.setAlignment(QtCore.Qt.AlignmentFlag.AlignLeft)  # left-alignedfixed
-        mjcf_layout.addWidget(self.base_link_height_input)
-        mjcf_layout.addStretch()  # right margin
+        mjcf_layout.addWidget(self.base_link_height_input, row, 1)
+        mjcf_layout.addWidget(QtWidgets.QLabel("m"), row, 2)
+        row += 1
 
         mjcf_group.setLayout(mjcf_layout)
         layout.addWidget(mjcf_group)
@@ -4347,7 +4795,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         # Show color
         self.highlight_color_box = QtWidgets.QLabel()
-        self.highlight_color_box.setFixedSize(60, 30)
+        self.highlight_color_box.setFixedSize(30, 20)
         self.highlight_color_box.setStyleSheet(
             f"background-color: {self.graph.highlight_color}; border: 1px solid black;"
         )
@@ -4355,7 +4803,6 @@ class SettingsDialog(QtWidgets.QDialog):
 
         # Pick
         pick_button = QtWidgets.QPushButton("Pick")
-        pick_button.setStyleSheet(self.button_style)
         pick_button.setAutoDefault(False)  # Prevent accidental activation with the Return key
         pick_button.clicked.connect(self.pick_highlight_color)
         highlight_layout.addWidget(pick_button)
@@ -4432,17 +4879,21 @@ class SettingsDialog(QtWidgets.QDialog):
             lambda: self._format_number_input(self.armature_input, 4))
         self.frictionloss_input.editingFinished.connect(
             lambda: self._format_number_input(self.frictionloss_input, 4))
+        self.joint_damping_input.editingFinished.connect(
+            lambda: self._format_number_input(self.joint_damping_input, 4))
         self.stiffness_kp_input.editingFinished.connect(
             lambda: self._format_number_input(self.stiffness_kp_input, 3))
         self.damping_kv_input.editingFinished.connect(
             lambda: self._format_number_input(self.damping_kv_input, 3))
+        self.timeconst_input.editingFinished.connect(
+            lambda: self._format_number_input(self.timeconst_input, 4))
         self.angle_range_rad_input.editingFinished.connect(
             lambda: self._format_number_input(self.angle_range_rad_input, 4))
         self.angle_range_deg_input.editingFinished.connect(
             lambda: self._format_number_input(self.angle_range_deg_input, 3))
         self.base_link_height_input.editingFinished.connect(
             lambda: self._format_number_input(self.base_link_height_input, 4))
-        
+
         # Change current size 6
         # List
         input_fields = [
@@ -4456,8 +4907,10 @@ class SettingsDialog(QtWidgets.QDialog):
             self.margin_deg_input,
             self.armature_input,
             self.frictionloss_input,
+            self.joint_damping_input,
             self.stiffness_kp_input,
             self.damping_kv_input,
+            self.timeconst_input,
             self.angle_range_rad_input,
             self.angle_range_deg_input,
             self.base_link_height_input
@@ -4545,8 +4998,10 @@ class SettingsDialog(QtWidgets.QDialog):
             margin_rad = float(self.margin_rad_input.text())
             armature = float(self.armature_input.text())
             frictionloss = float(self.frictionloss_input.text())
+            joint_damping = float(self.joint_damping_input.text())
             stiffness_kp = float(self.stiffness_kp_input.text())
             damping_kv = float(self.damping_kv_input.text())
+            timeconst = float(self.timeconst_input.text())
             angle_range_rad = float(self.angle_range_rad_input.text())
 
             # Set apply
@@ -4557,8 +5012,10 @@ class SettingsDialog(QtWidgets.QDialog):
             self.graph.default_margin = margin_rad
             self.graph.default_armature = armature
             self.graph.default_frictionloss = frictionloss
+            self.graph.default_joint_damping = joint_damping
             self.graph.default_stiffness_kp = stiffness_kp
             self.graph.default_damping_kv = damping_kv
+            self.graph.default_timeconst = timeconst
             self.graph.default_angle_range = angle_range_rad
 
             # Mjcf
@@ -4621,67 +5078,104 @@ class SettingsDialog(QtWidgets.QDialog):
             import traceback
             traceback.print_exc()
 
-    def apply_to_all_nodes(self):
-        """textnodetextparameterstextsettext"""
+    def apply_joint_to_all_nodes(self):
+        """Apply Default Joint Settings to all nodes."""
         try:
-            # Get value
-            effort = float(self.effort_input.text())
-            velocity_rad = float(self.velocity_rad_input.text())
-            damping_kv = float(self.damping_kv_input.text())
-            stiffness_kp = float(self.stiffness_kp_input.text())
             margin_rad = float(self.margin_rad_input.text())
             armature = float(self.armature_input.text())
             frictionloss = float(self.frictionloss_input.text())
+            joint_damping = float(self.joint_damping_input.text())
 
-            # Apply value
             updated_count = 0
             for node in self.graph.all_nodes():
-                # Todo
-                if hasattr(node, 'joint_effort'):
-                    node.joint_effort = effort
-                if hasattr(node, 'joint_velocity'):
-                    node.joint_velocity = velocity_rad
-                if hasattr(node, 'joint_damping'):
-                    node.joint_damping = damping_kv
-                if hasattr(node, 'joint_stiffness'):
-                    node.joint_stiffness = stiffness_kp
                 if hasattr(node, 'joint_margin'):
                     node.joint_margin = margin_rad
                 if hasattr(node, 'joint_armature'):
                     node.joint_armature = armature
                 if hasattr(node, 'joint_frictionloss'):
                     node.joint_frictionloss = frictionloss
+                if hasattr(node, 'joint_damping'):
+                    node.joint_damping = joint_damping
                 updated_count += 1
 
-            print(f"Applied settings to {updated_count} nodes: effort={effort}, velocity={velocity_rad}, damping={damping_kv}, stiffness={stiffness_kp}, margin={margin_rad}, armature={armature}, frictionloss={frictionloss}")
+            print(f"Applied joint settings to {updated_count} nodes: margin={margin_rad}, armature={armature}, frictionloss={frictionloss}, damping={joint_damping}")
 
             QtWidgets.QMessageBox.information(
                 self,
-                "Settings Applied",
-                f"Applied settings to {updated_count} nodes:\n\n"
-                f"Effort: {effort} N*m\n"
-                f"Velocity: {velocity_rad:.4f} rad/s\n"
-                f"Damping: {damping_kv} N*m*s/rad\n"
-                f"Stiffness: {stiffness_kp} N*m/rad\n"
+                "Joint Settings Applied",
+                f"Applied joint settings to {updated_count} nodes:\n\n"
                 f"Margin: {margin_rad:.4f} rad\n"
                 f"Armature: {armature} kg*m²\n"
-                f"Frictionloss: {frictionloss} N*m"
+                f"Frictionloss: {frictionloss} N*m\n"
+                f"Damping: {joint_damping} N*m*s/rad"
             )
 
         except ValueError:
             QtWidgets.QMessageBox.warning(
                 self,
                 "Invalid Input",
-                "Please enter valid numeric values for all parameters."
+                "Please enter valid numeric values for all joint parameters."
             )
         except Exception as e:
-            print(f"Error applying settings to all nodes: {str(e)}")
+            print(f"Error applying joint settings to all nodes: {str(e)}")
             import traceback
             traceback.print_exc()
             QtWidgets.QMessageBox.warning(
                 self,
                 "Error",
-                f"An error occurred while applying settings:\n{str(e)}"
+                f"An error occurred while applying joint settings:\n{str(e)}"
+            )
+
+    def apply_actuator_to_all_nodes(self):
+        """Apply Default Actuator Settings to all nodes."""
+        try:
+            effort = float(self.effort_input.text())
+            max_effort = float(self.max_effort_input.text())
+            velocity_rad = float(self.velocity_rad_input.text())
+            max_velocity_rad = float(self.max_velocity_rad_input.text())
+            stiffness_kp = float(self.stiffness_kp_input.text())
+            damping_kv = float(self.damping_kv_input.text())
+
+            updated_count = 0
+            for node in self.graph.all_nodes():
+                if hasattr(node, 'joint_effort'):
+                    node.joint_effort = effort
+                if hasattr(node, 'joint_velocity'):
+                    node.joint_velocity = velocity_rad
+                if hasattr(node, 'joint_kv'):
+                    node.joint_kv = damping_kv
+                if hasattr(node, 'joint_stiffness'):
+                    node.joint_stiffness = stiffness_kp
+                updated_count += 1
+
+            print(f"Applied actuator settings to {updated_count} nodes: effort={effort}, max_effort={max_effort}, velocity={velocity_rad}, max_velocity={max_velocity_rad}, stiffness={stiffness_kp}, damping={damping_kv}")
+
+            QtWidgets.QMessageBox.information(
+                self,
+                "Actuator Settings Applied",
+                f"Applied actuator settings to {updated_count} nodes:\n\n"
+                f"Effort: {effort} N*m\n"
+                f"Max Effort: {max_effort} N*m\n"
+                f"Velocity: {velocity_rad:.4f} rad/s\n"
+                f"Max Velocity: {max_velocity_rad:.4f} rad/s\n"
+                f"Kp(Proportional Gain): {stiffness_kp} N*m/rad\n"
+                f"Kv(Velocity Gain,Kd): {damping_kv} N*m*s/rad"
+            )
+
+        except ValueError:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Invalid Input",
+                "Please enter valid numeric values for all actuator parameters."
+            )
+        except Exception as e:
+            print(f"Error applying actuator settings to all nodes: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Error",
+                f"An error occurred while applying actuator settings:\n{str(e)}"
             )
 
 
@@ -7358,6 +7852,7 @@ class CustomNodeGraph(NodeGraph):
         self.default_frictionloss = DEFAULT_FRICTIONLOSS
         self.default_stiffness_kp = DEFAULT_STIFFNESS_KP
         self.default_damping_kv = DEFAULT_DAMPING_KV
+        self.default_timeconst = DEFAULT_TIMECONST
         self.default_angle_range = DEFAULT_ANGLE_RANGE
 
         # Todo
@@ -7368,6 +7863,13 @@ class CustomNodeGraph(NodeGraph):
 
         # Mjcf base_link mjcf z
         self.default_base_link_height = DEFAULT_BASE_LINK_HEIGHT
+        # MJCF <default> section values
+        self.default_mjcf_joint_damping = DEFAULT_MJCF_JOINT_DAMPING
+        self.default_mjcf_geom_friction = DEFAULT_MJCF_GEOM_FRICTION
+        self.default_mjcf_geom_margin = DEFAULT_MJCF_GEOM_MARGIN
+        self.default_mjcf_geom_condim = DEFAULT_MJCF_GEOM_CONDIM
+        self.default_mjcf_motor_ctrlrange = DEFAULT_MJCF_MOTOR_CTRLRANGE
+        self.default_mjcf_option_impratio = DEFAULT_MJCF_OPTION_IMPRATIO
 
         # Set Node Grid Node Grid
         self.node_grid_enabled = DEFAULT_NODE_GRID_ENABLED
@@ -9235,11 +9737,11 @@ class CustomNodeGraph(NodeGraph):
         if hasattr(new_node, 'joint_velocity'):
             new_node.joint_velocity = self.default_joint_velocity
         if hasattr(new_node, 'joint_damping'):
-            # Settings default_damping_kv default_joint_damping settings
-            new_node.joint_damping = self.default_damping_kv
+            new_node.joint_damping = self.default_joint_damping
         if hasattr(new_node, 'joint_stiffness'):
-            # Settings default_stiffness_kp default_joint_stiffness settings
             new_node.joint_stiffness = self.default_stiffness_kp
+        if hasattr(new_node, 'joint_kv'):
+            new_node.joint_kv = self.default_damping_kv
         if hasattr(new_node, 'joint_margin'):
             new_node.joint_margin = self.default_margin
         if hasattr(new_node, 'joint_armature'):
@@ -9432,6 +9934,8 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(node_elem, "joint_damping").text = str(node.joint_damping)
         if hasattr(node, 'joint_stiffness'):
             ET.SubElement(node_elem, "joint_stiffness").text = str(node.joint_stiffness)
+        if hasattr(node, 'joint_kv'):
+            ET.SubElement(node_elem, "joint_kv").text = str(node.joint_kv)
         if hasattr(node, 'joint_margin'):
             ET.SubElement(node_elem, "joint_margin").text = str(node.joint_margin)
         if hasattr(node, 'joint_armature'):
@@ -9760,7 +10264,11 @@ class CustomNodeGraph(NodeGraph):
                     joint_stiffness_elem = node_elem.find("joint_stiffness")
                     if joint_stiffness_elem is not None:
                         base_link_sub_node.joint_stiffness = float(joint_stiffness_elem.text)
-                    
+
+                    joint_kv_elem = node_elem.find("joint_kv")
+                    if joint_kv_elem is not None:
+                        base_link_sub_node.joint_kv = float(joint_kv_elem.text)
+
                     joint_margin_elem = node_elem.find("joint_margin")
                     if joint_margin_elem is not None:
                         base_link_sub_node.joint_margin = float(joint_margin_elem.text)
@@ -10049,7 +10557,11 @@ class CustomNodeGraph(NodeGraph):
             joint_stiffness_elem = node_elem.find("joint_stiffness")
             if joint_stiffness_elem is not None:
                 node.joint_stiffness = float(joint_stiffness_elem.text)
-            
+
+            joint_kv_elem = node_elem.find("joint_kv")
+            if joint_kv_elem is not None:
+                node.joint_kv = float(joint_kv_elem.text)
+
             joint_margin_elem = node_elem.find("joint_margin")
             if joint_margin_elem is not None:
                 node.joint_margin = float(joint_margin_elem.text)
@@ -10302,7 +10814,7 @@ class CustomNodeGraph(NodeGraph):
 
             # Get TODO
             if not file_path:
-                default_filename = f"urdf_pj_{datetime.datetime.now().strftime('%Y%m%d%H%M')}.xml"
+                default_filename = f"{self.robot_name}_pj_{datetime.datetime.now().strftime('%Y%m%d%H%M')}.xml"
                 default_dir = self.last_save_dir or self.meshes_dir or os.getcwd()
                 file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
                     None,
@@ -10416,10 +10928,28 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(settings_elem, "margin").text = str(self.default_margin)
             ET.SubElement(settings_elem, "armature").text = str(self.default_armature)
             ET.SubElement(settings_elem, "frictionloss").text = str(self.default_frictionloss)
+            ET.SubElement(settings_elem, "damping_kv").text = str(self.default_damping_kv)
+            ET.SubElement(settings_elem, "timeconst").text = str(self.default_timeconst)
             print(f"Saved default joint settings: effort={self.default_joint_effort}, "
                   f"velocity={self.default_joint_velocity}, damping={self.default_joint_damping}, "
                   f"stiffness={self.default_joint_stiffness}, margin={self.default_margin}, "
-                  f"armature={self.default_armature}, frictionloss={self.default_frictionloss}")
+                  f"armature={self.default_armature}, frictionloss={self.default_frictionloss}, "
+                  f"damping_kv={self.default_damping_kv}, "
+                  f"timeconst={self.default_timeconst}")
+
+            # Save MJCF default values
+            print("\nSaving MJCF default values...")
+            mjcf_defaults_elem = ET.SubElement(root, "mjcf_defaults")
+            ET.SubElement(mjcf_defaults_elem, "option_impratio").text = str(self.default_mjcf_option_impratio)
+            ET.SubElement(mjcf_defaults_elem, "joint_damping").text = str(self.default_mjcf_joint_damping)
+            ET.SubElement(mjcf_defaults_elem, "geom_friction").text = str(self.default_mjcf_geom_friction)
+            ET.SubElement(mjcf_defaults_elem, "geom_margin").text = str(self.default_mjcf_geom_margin)
+            ET.SubElement(mjcf_defaults_elem, "geom_condim").text = str(self.default_mjcf_geom_condim)
+            ET.SubElement(mjcf_defaults_elem, "motor_ctrlrange").text = str(self.default_mjcf_motor_ctrlrange)
+            print(f"Saved MJCF defaults: impratio={self.default_mjcf_option_impratio}, "
+                  f"joint_damping={self.default_mjcf_joint_damping}, geom_friction={self.default_mjcf_geom_friction}, "
+                  f"geom_margin={self.default_mjcf_geom_margin}, geom_condim={self.default_mjcf_geom_condim}, "
+                  f"motor_ctrlrange={self.default_mjcf_motor_ctrlrange}")
 
             # Save file
             print("\nWriting to file...")
@@ -10639,6 +11169,14 @@ class CustomNodeGraph(NodeGraph):
                     if frictionloss_elem is not None and frictionloss_elem.text:
                         self.default_frictionloss = float(frictionloss_elem.text)
 
+                    damping_kv_elem = settings_elem.find("damping_kv")
+                    if damping_kv_elem is not None and damping_kv_elem.text:
+                        self.default_damping_kv = float(damping_kv_elem.text)
+
+                    timeconst_elem = settings_elem.find("timeconst")
+                    if timeconst_elem is not None and timeconst_elem.text:
+                        self.default_timeconst = float(timeconst_elem.text)
+
                     # Error :
                     friction_elem = settings_elem.find("friction")
                     if friction_elem is not None and friction_elem.text:
@@ -10650,11 +11188,43 @@ class CustomNodeGraph(NodeGraph):
                     print(f"Restored default joint settings: effort={self.default_joint_effort}, "
                           f"velocity={self.default_joint_velocity}, damping={self.default_joint_damping}, "
                           f"stiffness={self.default_joint_stiffness}, margin={self.default_margin}, "
-                          f"armature={self.default_armature}, frictionloss={self.default_frictionloss}")
+                          f"armature={self.default_armature}, frictionloss={self.default_frictionloss}, "
+                          f"damping_kv={self.default_damping_kv}")
                 except (ValueError, TypeError) as e:
                     print(f"Error parsing default joint settings, using defaults: {e}")
             else:
                 print("No default joint settings found in project file, using defaults")
+
+            # Load MJCF default values
+            mjcf_defaults_elem = root.find("mjcf_defaults")
+            if mjcf_defaults_elem is not None:
+                try:
+                    elem = mjcf_defaults_elem.find("option_impratio")
+                    if elem is not None and elem.text:
+                        self.default_mjcf_option_impratio = float(elem.text)
+                    elem = mjcf_defaults_elem.find("joint_damping")
+                    if elem is not None and elem.text:
+                        self.default_mjcf_joint_damping = float(elem.text)
+                    elem = mjcf_defaults_elem.find("geom_friction")
+                    if elem is not None and elem.text:
+                        self.default_mjcf_geom_friction = float(elem.text)
+                    elem = mjcf_defaults_elem.find("geom_margin")
+                    if elem is not None and elem.text:
+                        self.default_mjcf_geom_margin = float(elem.text)
+                    elem = mjcf_defaults_elem.find("geom_condim")
+                    if elem is not None and elem.text:
+                        self.default_mjcf_geom_condim = int(elem.text)
+                    elem = mjcf_defaults_elem.find("motor_ctrlrange")
+                    if elem is not None and elem.text:
+                        self.default_mjcf_motor_ctrlrange = float(elem.text)
+                    print(f"Restored MJCF defaults: impratio={self.default_mjcf_option_impratio}, "
+                          f"joint_damping={self.default_mjcf_joint_damping}, geom_friction={self.default_mjcf_geom_friction}, "
+                          f"geom_margin={self.default_mjcf_geom_margin}, geom_condim={self.default_mjcf_geom_condim}, "
+                          f"motor_ctrlrange={self.default_mjcf_motor_ctrlrange}")
+                except (ValueError, TypeError) as e:
+                    print(f"Error parsing MJCF defaults, using defaults: {e}")
+            else:
+                print("No MJCF defaults found in project file, using defaults")
 
             # Meshes
             print("Resolving meshes directory...")
@@ -11161,7 +11731,7 @@ class CustomNodeGraph(NodeGraph):
                         upper_rad = float(limit_elem.get('upper', 3.14159))
                         effort = float(limit_elem.get('effort', 10.0))
                         velocity = float(limit_elem.get('velocity', 3.0))
-                        damping = float(limit_elem.get('damping', DEFAULT_DAMPING_KV))
+                        damping = float(limit_elem.get('damping', DEFAULT_JOINT_DAMPING))
                         stiffness = float(limit_elem.get('stiffness', DEFAULT_STIFFNESS_KP))
                         margin = float(limit_elem.get('margin', DEFAULT_MARGIN))
                         armature = float(limit_elem.get('armature', DEFAULT_ARMATURE))
@@ -11182,15 +11752,20 @@ class CustomNodeGraph(NodeGraph):
                     dynamics_elem = joint_elem.find('dynamics')
                     if dynamics_elem is not None:
                         if dynamics_elem.get('damping'):
-                            new_node.joint_damping = float(dynamics_elem.get('damping', DEFAULT_DAMPING_KV))
+                            new_node.joint_damping = float(dynamics_elem.get('damping', DEFAULT_JOINT_DAMPING))
                         if dynamics_elem.get('stiffness'):
                             new_node.joint_stiffness = float(dynamics_elem.get('stiffness', DEFAULT_STIFFNESS_KP))
+                        if dynamics_elem.get('kv'):
+                            new_node.joint_kv = float(dynamics_elem.get('kv', DEFAULT_DAMPING_KV))
                         if dynamics_elem.get('margin'):
                             new_node.joint_margin = float(dynamics_elem.get('margin', DEFAULT_MARGIN))
                         if dynamics_elem.get('armature'):
                             new_node.joint_armature = float(dynamics_elem.get('armature', DEFAULT_ARMATURE))
                         if dynamics_elem.get('frictionloss'):
                             new_node.joint_frictionloss = float(dynamics_elem.get('frictionloss', DEFAULT_FRICTIONLOSS))
+                        elif dynamics_elem.get('friction'):
+                            # URDF standard: friction attribute → joint_frictionloss
+                            new_node.joint_frictionloss = float(dynamics_elem.get('friction', DEFAULT_FRICTIONLOSS))
                 else:
                     new_node.rotation_axis = 0
                     print("Using default rotation axis: X")
@@ -12862,12 +13437,21 @@ class CustomNodeGraph(NodeGraph):
                     # Effort velocity urdf limit
                     file.write(f'    <limit lower="{lower}" upper="{upper}" effort="{effort}" velocity="{velocity}"/>\n')
 
-                    # Damping friction dynamics
-                    damping = getattr(child_node, 'damping', 0.0)
-                    friction = getattr(child_node, 'friction', 0.0)
+                    # URDF standard <dynamics>: damping + friction only
+                    damping = getattr(child_node, 'joint_damping', 0.0)
+                    friction = getattr(child_node, 'joint_frictionloss', 0.0)
                     file.write(f'    <dynamics damping="{damping}" friction="{friction}"/>\n')
 
                     file.write('  </joint>\n')
+
+                    # Gazebo extension: springStiffness (Kp) + implicitSpringDamper
+                    kp = getattr(child_node, 'joint_stiffness', 0.0)
+                    if kp > 0:
+                        file.write(f'  <gazebo reference="{joint_name}">\n')
+                        file.write(f'    <implicitSpringDamper>true</implicitSpringDamper>\n')
+                        file.write(f'    <springStiffness>{format_float_no_exp(kp)}</springStiffness>\n')
+                        file.write(f'    <springReference>0.0</springReference>\n')
+                        file.write(f'  </gazebo>\n')
 
         except Exception as e:
             print(f"Error writing joint: {str(e)}")
@@ -13953,14 +14537,22 @@ class CustomNodeGraph(NodeGraph):
             f.write('  <compiler angle="radian" meshdir="assets" autolimits="true" />\n\n')
 
             # Option
-            f.write('  <option cone="elliptic" impratio="100" />\n\n')
+            impratio_val = self.default_mjcf_option_impratio
+            f.write(f'  <option cone="elliptic" impratio="{impratio_val:g}" />\n\n')
 
             # <default> main class default
+            jdamp = self.default_mjcf_joint_damping
+            armature_val = self.default_armature
+            floss = self.default_frictionloss
+            ctrlrange = self.default_mjcf_motor_ctrlrange
+            gfriction = self.default_mjcf_geom_friction
+            gmargin = self.default_mjcf_geom_margin
+            gcondim = self.default_mjcf_geom_condim
             f.write('  <default>\n')
             f.write('    <!-- textset -->\n')
-            f.write('    <joint damping="0.1" armature="0.01" frictionloss="0.2"/>\n')
-            f.write('    <motor ctrlrange="-23.7 23.7"/>\n')
-            f.write('    <geom friction="0.4" margin="0.001" condim="3"/>\n')
+            f.write(f'    <joint damping="{jdamp:g}" armature="{armature_val:g}" frictionloss="{floss:g}"/>\n')
+            f.write(f'    <motor ctrlrange="-{ctrlrange:g} {ctrlrange:g}"/>\n')
+            f.write(f'    <geom friction="{gfriction:g}" margin="{gmargin:g}" condim="{gcondim}"/>\n')
             
             # Default class
             f.write('    <!-- textーtext：group=0 -->\n')
@@ -14094,10 +14686,14 @@ class CustomNodeGraph(NodeGraph):
                     joint_name = joint_info['joint_name']
                     actuator_name = joint_info['motor_name'].replace('_motor', '_actuator')
                     
-                    # Todo
-                    # Kp stiffness kp:
-                    kp = joint_info.get('kp', 100.0)  # NOTE
-                    
+                    # Kp stiffness, Kv damping
+                    kp = joint_info.get('stiffness', 100.0)
+                    kv = joint_info.get('damping', 1.0)
+                    effort = joint_info.get('effort', 10.0)
+                    kp_str = format_float_no_exp(kp)
+                    kv_str = format_float_no_exp(kv)
+                    forcerange = f"-{format_float_no_exp(effort)} {format_float_no_exp(effort)}"
+
                     # Ctrlrange joint <compiler angle radian > radians output ctrlrange: compiler
                     if joint_info.get('range_values'):
                         lower, upper = joint_info['range_values']
@@ -14105,9 +14701,9 @@ class CustomNodeGraph(NodeGraph):
                     else:
                         # ±π radians
                         ctrlrange = "-3.14159 3.14159"
-                    
+
                     # Gear 1 1 1:1
-                    f.write(f'    <position name="{actuator_name}" joint="{joint_name}" gear="1" kp="{kp}" ctrlrange="{ctrlrange}"/>\n')
+                    f.write(f'    <position name="{actuator_name}" joint="{joint_name}" gear="1" kp="{kp_str}" kv="{kv_str}" forcerange="{forcerange}" forcelimited="true" ctrlrange="{ctrlrange}"/>\n')
                 f.write('  </actuator>\n\n')
 
             # sensor
@@ -14280,12 +14876,16 @@ class CustomNodeGraph(NodeGraph):
 
     def _write_mjcf_defaults(self, file_path):
         """defaults.xmltext"""
+        jdamp = self.default_mjcf_joint_damping
+        armature_val = self.default_armature
+        gcondim = self.default_mjcf_geom_condim
+        gfriction = self.default_mjcf_geom_friction
         with open(file_path, 'w') as f:
             f.write('<?xml version="1.0" ?>\n')
             f.write('<mujoco>\n')
             f.write('  <default>\n')
-            f.write('    <joint damping="0.1" armature="0.01" />\n')
-            f.write('    <geom contype="1" conaffinity="1" condim="3" friction="0.9 0.1 0.1" />\n')
+            f.write(f'    <joint damping="{jdamp:g}" armature="{armature_val:g}" />\n')
+            f.write(f'    <geom contype="1" conaffinity="1" condim="{gcondim}" friction="{gfriction:g} 0.1 0.1" />\n')
             f.write('    <motor ctrllimited="true" />\n')
             f.write('  </default>\n')
             f.write('</mujoco>\n')
@@ -15514,17 +16114,13 @@ class CustomNodeGraph(NodeGraph):
         if hasattr(child_node, 'joint_frictionloss'):
             frictionloss_str = f' frictionloss="{format_float_no_exp(child_node.joint_frictionloss)}"'
 
-        # Damping damping value damping:
+        # Damping (passive joint damping) → <joint damping="...">
         damping_str = ""
         if hasattr(child_node, 'joint_damping'):
             damping_str = f' damping="{format_float_no_exp(child_node.joint_damping)}"'
-        
-        # Stiffness stiffness value mjcf stiffness: mjcf
-        # Note joint stiffness actuator kp joint stiffness note:
-        # Actuator kp
+
+        # Stiffness / Kp → actuatorのkpで出力するため、jointには出力しない
         stiffness_str = ""
-        # if hasattr(child_node, 'joint_stiffness') and child_node.joint_stiffness > 0:
-        #     stiffness_str = f' stiffness="{format_float_no_exp(child_node.joint_stiffness)}"'
         
         # Generate ref body_angle ref: /
         # Body_angle x_rad y_rad z_rad rotation_axis
@@ -15543,7 +16139,7 @@ class CustomNodeGraph(NodeGraph):
         # Add list actuator
         joint_effort = getattr(child_node, 'joint_effort', 10.0)
         joint_stiffness = getattr(child_node, 'joint_stiffness', 100.0)
-        joint_damping = getattr(child_node, 'joint_damping', 15.0)
+        joint_damping = getattr(child_node, 'joint_kv', DEFAULT_DAMPING_KV)
         # Range ctrlrange
         # Mjcf <compiler angle radian > radians output mjcf compiler
         range_values = None
@@ -16059,7 +16655,7 @@ if __name__ == '__main__':
             "Export for Unity": None,
             "Export MJCF": None,
             "--spacer5--": None,  # Dummy key for spacer
-            "open urdf-loaders": None,
+            "Open urdf-loaders": None,
             "Settings": None
         }
 
@@ -16105,7 +16701,7 @@ if __name__ == '__main__':
         buttons["Export URDF"].clicked.connect(lambda: graph.export_urdf())
         buttons["Export for Unity"].clicked.connect(graph.export_for_unity)
         buttons["Export MJCF"].clicked.connect(graph.export_mjcf)
-        buttons["open urdf-loaders"].clicked.connect(
+        buttons["Open urdf-loaders"].clicked.connect(
             lambda: QtGui.QDesktopServices.openUrl(
                 QtCore.QUrl(
                     "https://gkjohnson.github.io/urdf-loaders/javascript/example/bundle/")

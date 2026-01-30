@@ -7,7 +7,7 @@ Description: URDF/MJCF Import functionality for URDF Kitchen.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Jan 25, 2026
+Update.     : Jan 30, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -900,6 +900,23 @@ class URDFParser:
 
         if self.verbose:
             print(f"[URDFParser] Successfully parsed {len(joints_data)} joints")
+
+        # Parse <gazebo reference="joint_name"> elements for springStiffness (Kp)
+        # URDF Gazebo extension: <springStiffness> maps to joint_stiffness (Kp)
+        gazebo_elems = root.findall('gazebo')
+        if gazebo_elems:
+            # Build joint name -> index map for quick lookup
+            joint_name_map = {jd['name']: i for i, jd in enumerate(joints_data)}
+            for gazebo_elem in gazebo_elems:
+                ref = gazebo_elem.get('reference', '')
+                if ref and ref in joint_name_map:
+                    idx = joint_name_map[ref]
+                    spring_stiffness_elem = gazebo_elem.find('springStiffness')
+                    if spring_stiffness_elem is not None and spring_stiffness_elem.text:
+                        stiffness_val = float(spring_stiffness_elem.text)
+                        joints_data[idx]['dynamics']['stiffness'] = stiffness_val
+                        if self.verbose:
+                            print(f"  [Gazebo] Joint '{ref}': springStiffness = {stiffness_val}")
 
         # Detect root links and connect to base_link
         if self.verbose:
@@ -4532,8 +4549,9 @@ def import_urdf(graph):
                         base_node.joint_upper = 0.0
                         base_node.joint_effort = DEFAULT_JOINT_EFFORT
                         base_node.joint_velocity = DEFAULT_JOINT_VELOCITY
-                        base_node.joint_damping = DEFAULT_DAMPING_KV
+                        base_node.joint_damping = DEFAULT_JOINT_DAMPING
                         base_node.joint_stiffness = DEFAULT_STIFFNESS_KP
+                        base_node.joint_kv = DEFAULT_DAMPING_KV
                         base_node.joint_margin = DEFAULT_MARGIN
                         base_node.joint_armature = DEFAULT_ARMATURE
                         base_node.joint_frictionloss = DEFAULT_FRICTIONLOSS
@@ -4842,6 +4860,9 @@ def import_urdf(graph):
                         child_node.joint_armature = joint_data['dynamics']['armature']
                     if 'frictionloss' in joint_data['dynamics']:
                         child_node.joint_frictionloss = joint_data['dynamics']['frictionloss']
+                    elif 'friction' in joint_data['dynamics']:
+                        # URDF standard: friction attribute → joint_frictionloss
+                        child_node.joint_frictionloss = joint_data['dynamics']['friction']
 
             # Connect nodes (based on joint parent-child relationships)
             print("\n=== Connecting Nodes ===")
