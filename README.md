@@ -18,7 +18,7 @@ Since the codebase is written in Python, users can freely modify the UI, fix bug
 
 ## Quick Start
 
-Please either download and extract the repository from the green button at the top right of the [/beta2 branch](https://github.com/Ninagawa123/URDF_kitchen/tree/beta2),or clone the repository with git clone and switch to the beta2 branch before getting started.
+Please either download and extract the repository from the green button at the top right of the [/beta2 branch](https://github.com/Ninagawa123/URDF_kitchen/tree/beta2), or clone the repository with git clone and switch to the beta2 branch before getting started.
 
 Create a Python 3.11 virtual environment and run:
 
