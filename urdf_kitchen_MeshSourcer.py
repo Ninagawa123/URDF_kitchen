@@ -4,7 +4,7 @@ Description: A Python script for reconfiguring the center coordinates and axis d
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 22, 2026
+Update.     : Jan 31, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -194,7 +194,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
     def __init__(self):
         QMainWindow.__init__(self)
         self.setWindowTitle("URDF kitchen - MeshSourcer v0.1.0 -")
-        self.resize(1000, 680)  # Wider window, 680px height
+        self.resize(1000, 700)  # Wider window, 680px height
 
         self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
         self.absolute_origin = [0, 0, 0]  # 大原点の設定
@@ -583,6 +583,16 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.volume_label = QLabel("Volume (m^3): 0.000000")
         self.volume_label.setMaximumWidth(380)  # Prevent horizontal expansion
         reorient_layout.addWidget(self.volume_label)
+        
+        # Width and Height表示 (horizontal layout)
+        dimensions_layout = QHBoxLayout()
+        dimensions_layout.setSpacing(10)
+        self.width_label = QLabel("Width (m): 0.000000")
+        self.height_label = QLabel("Height (m): 0.000000")
+        dimensions_layout.addWidget(self.width_label)
+        dimensions_layout.addWidget(self.height_label)
+        dimensions_layout.addStretch()  # Push to the left
+        reorient_layout.addLayout(dimensions_layout)
 
         # Center Position (from setup_points_ui)
         points_layout = self.setup_points_ui()
@@ -593,6 +603,23 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         # Clean Mesh checkbox for save operation (right-aligned)
         clean_mesh_layout = QHBoxLayout()
+        
+        # Scale buttons on the left
+        clean_mesh_layout.addWidget(QLabel("Scale :"))
+        clean_mesh_layout.addSpacing(8)
+        
+        scale_x1000_button = QPushButton("x1000")
+        scale_x1000_button.setFocusPolicy(Qt.NoFocus)
+        scale_x1000_button.clicked.connect(lambda: self.scale_mesh(1000.0))
+        scale_x1000_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        clean_mesh_layout.addWidget(scale_x1000_button)
+        
+        scale_x0001_button = QPushButton("x0.001")
+        scale_x0001_button.setFocusPolicy(Qt.NoFocus)
+        scale_x0001_button.clicked.connect(lambda: self.scale_mesh(0.001))
+        scale_x0001_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        clean_mesh_layout.addWidget(scale_x0001_button)
+        
         clean_mesh_layout.addStretch()  # Push checkbox to the right
         self.reorient_clean_mesh_checkbox = QCheckBox("Clean Mesh")
         self.reorient_clean_mesh_checkbox.setFocusPolicy(Qt.NoFocus)
@@ -652,6 +679,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         type_layout.addWidget(QLabel("Type:"))
         self.collider_type_combo = QComboBox()
         self.collider_type_combo.addItems(["box", "sphere", "cylinder", "capsule"])
+        self.collider_type_combo.setMinimumWidth(100)  
         self.collider_type_combo.setFocusPolicy(Qt.NoFocus)
         self.collider_type_combo.currentTextChanged.connect(self.on_collider_type_changed)
         type_layout.addWidget(self.collider_type_combo)
@@ -1836,7 +1864,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.model_bounds = triangulate.GetOutput().GetBounds()
         self.renderer.AddActor(self.stl_actor)
 
+        # Calculate width (X-axis) and height (Z-axis)
+        width = self.model_bounds[1] - self.model_bounds[0]
+        height = self.model_bounds[5] - self.model_bounds[4]
+
         self.volume_label.setText(f"Volume (m^3): {volume:.6f}")
+        self.width_label.setText(f"Width (m): {width:.6f}")
+        self.height_label.setText(f"Height (m): {height:.6f}")
 
         self.fit_camera_to_model()
 
@@ -1844,6 +1878,59 @@ class MainWindow(VTKViewerBase, QMainWindow):
         print(f"Bounds: [{self.model_bounds[0]:.4f}, {self.model_bounds[1]:.4f}], [{self.model_bounds[2]:.4f}, {self.model_bounds[3]:.4f}], [{self.model_bounds[4]:.4f}, {self.model_bounds[5]:.4f}]")
 
         # Render is handled by caller (e.g., load_stl_file)
+
+    def scale_mesh(self, scale_factor):
+        """Scale the mesh by the given factor"""
+        if not self.stl_actor:
+            print("No mesh loaded to scale")
+            return
+        
+        # Get current mesh data
+        current_mapper = self.stl_actor.GetMapper()
+        current_data = current_mapper.GetInput()
+        
+        # Create transform for scaling
+        transform = vtk.vtkTransform()
+        transform.Scale(scale_factor, scale_factor, scale_factor)
+        
+        # Apply transform to mesh
+        transform_filter = vtk.vtkTransformPolyDataFilter()
+        transform_filter.SetInputData(current_data)
+        transform_filter.SetTransform(transform)
+        transform_filter.Update()
+        
+        # Update mapper with scaled mesh
+        new_mapper = vtk.vtkPolyDataMapper()
+        new_mapper.SetInputConnection(transform_filter.GetOutputPort())
+        self.stl_actor.SetMapper(new_mapper)
+        
+        # Update bounds
+        scaled_data = transform_filter.GetOutput()
+        self.model_bounds = scaled_data.GetBounds()
+        
+        # Calculate new volume
+        mass_properties = vtk.vtkMassProperties()
+        mass_properties.SetInputData(scaled_data)
+        mass_properties.Update()
+        volume = mass_properties.GetVolume()
+        
+        # Calculate width (X-axis) and height (Z-axis)
+        width = self.model_bounds[1] - self.model_bounds[0]
+        height = self.model_bounds[5] - self.model_bounds[4]
+        
+        # Update labels
+        self.volume_label.setText(f"Volume (m^3): {volume:.6f}")
+        self.width_label.setText(f"Width (m): {width:.6f}")
+        self.height_label.setText(f"Height (m): {height:.6f}")
+        
+        # Update camera to fit new size
+        self.fit_camera_to_model()
+        
+        # Render the updated view
+        self.render_to_image()
+        
+        print(f"Mesh scaled by factor: {scale_factor}")
+        print(f"New bounds: [{self.model_bounds[0]:.4f}, {self.model_bounds[1]:.4f}], [{self.model_bounds[2]:.4f}, {self.model_bounds[3]:.4f}], [{self.model_bounds[4]:.4f}, {self.model_bounds[5]:.4f}]")
 
     def show_absolute_origin(self):
         sphere = vtk.vtkSphereSource()
