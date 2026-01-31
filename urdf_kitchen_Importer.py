@@ -7427,6 +7427,94 @@ class ImporterWindow(QtWidgets.QWidget):
 
 
 # ============================================================================
+# EXPORT HELPER FUNCTIONS
+# ============================================================================
+
+def convert_mesh_filename(original_filename, target_format):
+    """Convert mesh filename to the target format extension.
+
+    Args:
+        original_filename: Original mesh filename (e.g. "part.stl", "model.dae")
+        target_format: Target format extension (e.g. ".stl", ".dae")
+
+    Returns:
+        Filename with the target extension (e.g. "part.dae")
+    """
+    base_name = os.path.splitext(original_filename)[0]
+    return f"{base_name}{target_format}"
+
+
+def build_urdf_package_path(robot_name, mesh_dir_name, original_filename, mesh_format):
+    """Build URDF package:// path with the correct mesh format extension.
+
+    Args:
+        robot_name: Robot name used in the description directory
+        mesh_dir_name: Mesh directory name (e.g. "meshes")
+        original_filename: Original mesh filename
+        mesh_format: Target mesh format extension (e.g. ".stl", ".dae")
+
+    Returns:
+        Package path string (e.g. "package://robot_description/meshes/part.dae")
+    """
+    mesh_filename = convert_mesh_filename(original_filename, mesh_format)
+    return f"package://{robot_name}_description/{mesh_dir_name}/{mesh_filename}"
+
+
+def build_unity_package_path(original_filename):
+    """Build Unity-style package:// path (preserves original filename).
+
+    Args:
+        original_filename: Original mesh filename
+
+    Returns:
+        Unity package path string (e.g. "package://meshes/part.stl")
+    """
+    return f"package://meshes/{original_filename}"
+
+
+def export_mesh_to_format(source_path, dest_dir, target_format, mesh_color=None, color_manually_changed=False):
+    """Convert and save a mesh file to the target format.
+
+    Loads the source mesh, converts it, and saves to dest_dir with the target extension.
+
+    Args:
+        source_path: Absolute path to the source mesh file
+        dest_dir: Destination directory for the converted mesh
+        target_format: Target format extension (e.g. ".stl", ".dae")
+        mesh_color: Optional RGB color tuple/list for the mesh
+        color_manually_changed: Whether the color was manually set by the user
+
+    Returns:
+        tuple: (new_filename, success, error_message)
+    """
+    from urdf_kitchen_utils import load_mesh_to_polydata, save_polydata_to_mesh
+
+    original_filename = os.path.basename(source_path)
+    new_filename = convert_mesh_filename(original_filename, target_format)
+    dest_path = os.path.join(dest_dir, new_filename)
+
+    try:
+        poly_data, volume, extracted_color = load_mesh_to_polydata(source_path)
+
+        # Use extracted_color from source file as fallback when no explicit color is provided
+        effective_color = mesh_color
+        effective_color_changed = color_manually_changed
+        if effective_color is None and extracted_color is not None:
+            effective_color = extracted_color
+            effective_color_changed = True
+
+        save_polydata_to_mesh(
+            dest_path,
+            poly_data,
+            mesh_color=effective_color,
+            color_manually_changed=effective_color_changed
+        )
+        return (new_filename, True, None)
+    except Exception as e:
+        return (new_filename, False, str(e))
+
+
+# ============================================================================
 # STANDALONE EXECUTION (for testing)
 # ============================================================================
 

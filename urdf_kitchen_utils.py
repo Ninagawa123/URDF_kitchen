@@ -2310,26 +2310,60 @@ def save_polydata_to_mesh(file_path, poly_data, mesh_color=None, color_manually_
 
         faces = np.array(faces)
 
-        # Create trimesh object
+        # Create trimesh object and export geometry
         mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
-
-        # Apply color if manually changed
-        if color_manually_changed and mesh_color is not None:
-            # Convert color from 0-1 range to 0-255 range for trimesh
-            color_rgba = [
-                int(mesh_color[0] * 255),
-                int(mesh_color[1] * 255),
-                int(mesh_color[2] * 255),
-                int(mesh_color[3] * 255) if len(mesh_color) > 3 else 255
-            ]
-            mesh.visual = trimesh.visual.ColorVisuals(mesh)
-            mesh.visual.material = trimesh.visual.material.SimpleMaterial(
-                diffuse=color_rgba,
-                ambient=color_rgba,
-                specular=[50, 50, 50, 255]
-            )
-
         mesh.export(file_path)
+
+        # Determine diffuse color (0-1 range) for COLLADA material
+        if color_manually_changed and mesh_color is not None:
+            r = float(mesh_color[0])
+            g = float(mesh_color[1])
+            b = float(mesh_color[2])
+            a = float(mesh_color[3]) if len(mesh_color) > 3 else 1.0
+        else:
+            r, g, b, a = 1.0, 1.0, 1.0, 1.0
+
+        # Post-process COLLADA XML to embed correct diffuse/ambient color
+        import xml.etree.ElementTree as ET
+        ns = 'http://www.collada.org/2005/11/COLLADASchema'
+        ET.register_namespace('', ns)
+        tree = ET.parse(file_path)
+        root = tree.getroot()
+
+        color_str = f"{r:.6f} {g:.6f} {b:.6f} {a:.1f}"
+        ambient_str = f"{r * 0.3:.6f} {g * 0.3:.6f} {b * 0.3:.6f} {a:.1f}"
+        specular_str = f"{0.196:.6f} {0.196:.6f} {0.196:.6f} 1.0"
+
+        for phong in root.iter(f'{{{ns}}}phong'):
+            # Set diffuse
+            diffuse_el = phong.find(f'{{{ns}}}diffuse')
+            if diffuse_el is not None:
+                color_el = diffuse_el.find(f'{{{ns}}}color')
+                if color_el is not None:
+                    color_el.text = color_str
+
+            # Set ambient
+            ambient_el = phong.find(f'{{{ns}}}ambient')
+            if ambient_el is not None:
+                color_el = ambient_el.find(f'{{{ns}}}color')
+                if color_el is not None:
+                    color_el.text = ambient_str
+
+            # Set specular
+            specular_el = phong.find(f'{{{ns}}}specular')
+            if specular_el is not None:
+                color_el = specular_el.find(f'{{{ns}}}color')
+                if color_el is not None:
+                    color_el.text = specular_str
+
+            # Set shininess
+            shininess_el = phong.find(f'{{{ns}}}shininess')
+            if shininess_el is not None:
+                float_el = shininess_el.find(f'{{{ns}}}float')
+                if float_el is not None:
+                    float_el.text = "20.0"
+
+        tree.write(file_path, xml_declaration=False, encoding='unicode')
 
     elif file_ext == '.obj':
         # Export as OBJ using VTK

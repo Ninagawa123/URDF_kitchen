@@ -58,7 +58,13 @@ from urdf_kitchen_utils import (
 )
 
 # Import parser classes and import functions from Importer module
-from urdf_kitchen_Importer import ImporterWindow
+from urdf_kitchen_Importer import (
+    ImporterWindow,
+    convert_mesh_filename,
+    build_urdf_package_path,
+    build_unity_package_path,
+    export_mesh_to_format,
+)
 
 # M4 Mac (Apple Silicon) compatibility
 import platform
@@ -9334,35 +9340,30 @@ class CustomNodeGraph(NodeGraph):
                     source_path = node.stl_file
                     if os.path.exists(source_path):
                         stl_filename = os.path.basename(source_path)
-                        dest_path = os.path.join(meshes_dir, stl_filename)
-                        file_ext = os.path.splitext(stl_filename)[1].lower()
 
                         try:
-                            # Save TODO
-                            poly_data, volume, extracted_color = load_mesh_to_polydata(source_path)
-                            
-                            # Change TODO
-                            base_name = os.path.splitext(stl_filename)[0]
-                            new_filename = f"{base_name}{selected_format}"
-                            dest_path = os.path.join(meshes_dir, new_filename)
-                            
-                            # Get node
+                            # Get node color
                             mesh_color = None
                             color_manually_changed = False
                             if hasattr(node, 'node_color'):
                                 mesh_color = node.node_color
                                 color_manually_changed = True
-                            
-                            # Save TODO
-                            save_polydata_to_mesh(
-                                dest_path, 
-                                poly_data, 
+
+                            # Convert and save mesh using Importer helper
+                            new_filename, success, error_msg = export_mesh_to_format(
+                                source_path,
+                                meshes_dir,
+                                selected_format,
                                 mesh_color=mesh_color,
                                 color_manually_changed=color_manually_changed
                             )
-                            
-                            stl_files_copied.append(new_filename)
-                            print(f"Converted and saved mesh: {stl_filename} -> {new_filename}")
+
+                            if success:
+                                stl_files_copied.append(new_filename)
+                                print(f"Converted and saved mesh: {stl_filename} -> {new_filename}")
+                            else:
+                                stl_files_failed.append((stl_filename, error_msg))
+                                print(f"Failed to convert mesh {stl_filename}: {error_msg}")
                         except Exception as e:
                             stl_files_failed.append((stl_filename, str(e)))
                             print(f"Failed to convert mesh {stl_filename}: {str(e)}")
@@ -9388,19 +9389,23 @@ class CustomNodeGraph(NodeGraph):
 
                             if os.path.exists(collider_source_path):
                                 collider_original_filename = os.path.basename(collider_source_path)
-                                # Change TODO
-                                collider_base_name = os.path.splitext(collider_original_filename)[0]
-                                collider_new_filename = f"{collider_base_name}{selected_format}"
-                                collider_dest_path = os.path.join(meshes_dir, collider_new_filename)
+                                collider_new_filename = convert_mesh_filename(collider_original_filename, selected_format)
 
-                                # Todo
+                                # Skip if already exported
                                 if collider_new_filename not in stl_files_copied:
                                     try:
-                                        # Save TODO
-                                        collider_poly_data, collider_volume, _ = load_mesh_to_polydata(collider_source_path)
-                                        save_polydata_to_mesh(collider_dest_path, collider_poly_data)
-                                        stl_files_copied.append(collider_new_filename)
-                                        print(f"Converted and saved collider mesh: {collider_original_filename} -> {collider_new_filename}")
+                                        # Convert and save collider mesh using Importer helper
+                                        new_fn, success, error_msg = export_mesh_to_format(
+                                            collider_source_path,
+                                            meshes_dir,
+                                            selected_format
+                                        )
+                                        if success:
+                                            stl_files_copied.append(collider_new_filename)
+                                            print(f"Converted and saved collider mesh: {collider_original_filename} -> {collider_new_filename}")
+                                        else:
+                                            stl_files_failed.append((collider_original_filename, error_msg))
+                                            print(f"Failed to convert collider mesh {collider_original_filename}: {error_msg}")
                                     except Exception as e:
                                         stl_files_failed.append((collider_original_filename, str(e)))
                                         print(f"Failed to convert collider mesh {collider_original_filename}: {str(e)}")
@@ -9450,8 +9455,8 @@ class CustomNodeGraph(NodeGraph):
                 visited_nodes = set()
                 base_node = self.get_node_by_name('base_link')
                 if base_node:
-                    self._write_tree_structure(f, base_node, None, visited_nodes, materials)
-                
+                    self._write_tree_structure(f, base_node, None, visited_nodes, materials, selected_format)
+
                 f.write('</robot>\n')
 
                 print(f"URDF exported to: {urdf_file}")
@@ -9518,8 +9523,8 @@ class CustomNodeGraph(NodeGraph):
 
         if node.name() == "base_link":
             # Base_link output
-            self._write_base_link(file)
-        
+            self._write_base_link(file, mesh_format=mesh_format)
+
         # Current node link process
         for port in node.output_ports():
             for connected_port in port.connected_ports():
@@ -9530,11 +9535,11 @@ class CustomNodeGraph(NodeGraph):
                         # Output
                         self._write_joint(file, node, child_node)
                         file.write('\n')
-                        
+
                         # Next link output
                         self._write_link(file, child_node, materials, mesh_format)
                         file.write('\n')
-                    
+
                     # Process
                     self._write_tree_structure(file, child_node, node, visited_nodes, materials, mesh_format)
 
@@ -9575,7 +9580,7 @@ class CustomNodeGraph(NodeGraph):
 
         return True
 
-    def _write_base_link(self, file):
+    def _write_base_link(self, file, mesh_format=".stl", unity_mode=False):
         """base_linktext"""
         base_node = self.get_node_by_name('base_link')
 
@@ -9613,7 +9618,14 @@ class CustomNodeGraph(NodeGraph):
                         mesh_dir_name = dir_name
 
                 stl_filename = os.path.basename(base_node.stl_file)
-                package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{stl_filename}"
+
+                # Build package path with correct extension using Importer helpers
+                if unity_mode:
+                    package_path = build_unity_package_path(stl_filename)
+                else:
+                    package_path = build_urdf_package_path(
+                        self.robot_name, mesh_dir_name, stl_filename, mesh_format
+                    )
 
                 # Todo
                 file.write('    <visual>\n')
@@ -9638,7 +9650,10 @@ class CustomNodeGraph(NodeGraph):
                 file.write('    </visual>\n')
 
                 # Todo
-                self._write_urdf_collision(file, base_node, package_path, mesh_dir_name)
+                if unity_mode:
+                    self._write_urdf_collision(file, base_node, package_path, unity_mode=True)
+                else:
+                    self._write_urdf_collision(file, base_node, package_path, mesh_dir_name, mesh_format)
 
             file.write('  </link>\n\n')
         else:
@@ -13650,19 +13665,19 @@ class CustomNodeGraph(NodeGraph):
                     file.write(f'      <origin xyz="{pos[0]} {pos[1]} {pos[2]}" rpy="{rot_rad[0]} {rot_rad[1]} {rot_rad[2]}"/>\n')
                     file.write('      <geometry>\n')
 
-                    # Build collider mesh path based on mode
+                    # Build collider mesh path based on mode using Importer helpers
                     if unity_mode:
                         # Unity: use original filename with package://meshes/
                         collider_filename = os.path.basename(collider_mesh)
-                        collider_package_path = f"package://meshes/{collider_filename}"
+                        collider_package_path = build_unity_package_path(collider_filename)
                     else:
                         # Standard: convert format and use full package path
                         visual_dir = os.path.dirname(node.stl_file) if node.stl_file else ""
                         collider_absolute = os.path.join(visual_dir, collider_mesh) if visual_dir else collider_mesh
                         collider_original_filename = os.path.basename(collider_absolute)
-                        collider_base_name = os.path.splitext(collider_original_filename)[0]
-                        collider_filename = f"{collider_base_name}{mesh_format}"
-                        collider_package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{collider_filename}"
+                        collider_package_path = build_urdf_package_path(
+                            self.robot_name, mesh_dir_name, collider_original_filename, mesh_format
+                        )
 
                     mesh_scale = collider.get('mesh_scale', [1.0, 1.0, 1.0])
                     scale_attr = ''
@@ -13725,12 +13740,11 @@ class CustomNodeGraph(NodeGraph):
                         if dir_name.startswith('mesh'):
                             mesh_dir_name = dir_name
 
-                    # Todo
-                    # Change TODO
+                    # Build package path with correct extension using Importer helper
                     original_filename = os.path.basename(node.stl_file)
-                    base_name = os.path.splitext(original_filename)[0]
-                    mesh_filename = f"{base_name}{mesh_format}"
-                    package_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{mesh_filename}"
+                    package_path = build_urdf_package_path(
+                        self.robot_name, mesh_dir_name, original_filename, mesh_format
+                    )
 
                     file.write('    <visual>\n')
                     # Visual origin output visual
@@ -13759,11 +13773,11 @@ class CustomNodeGraph(NodeGraph):
                             dec_node = connected_port.node()
                             if hasattr(dec_node, 'massless_decoration') and dec_node.massless_decoration:
                                 if hasattr(dec_node, 'stl_file') and dec_node.stl_file:
-                                    # Change TODO
+                                    # Build decoration path using Importer helper
                                     dec_original = os.path.basename(dec_node.stl_file)
-                                    dec_base_name = os.path.splitext(dec_original)[0]
-                                    dec_mesh_filename = f"{dec_base_name}{mesh_format}"
-                                    dec_path = f"package://{self.robot_name}_description/{mesh_dir_name}/{dec_mesh_filename}"
+                                    dec_path = build_urdf_package_path(
+                                        self.robot_name, mesh_dir_name, dec_original, mesh_format
+                                    )
 
                                     # Get TODO
                                     origin_xyz = "0 0 0"
@@ -13825,10 +13839,9 @@ class CustomNodeGraph(NodeGraph):
             # Todo
             if hasattr(node, 'stl_file') and node.stl_file:
                 try:
-                    # Todo
+                    # Build Unity package path using Importer helper
                     stl_filename = os.path.basename(node.stl_file)
-                    # Path unity meshes
-                    package_path = f"package://meshes/{stl_filename}"
+                    package_path = build_unity_package_path(stl_filename)
 
                     file.write('    <visual>\n')
                     # Visual origin output visual
@@ -13855,7 +13868,7 @@ class CustomNodeGraph(NodeGraph):
                             if hasattr(dec_node, 'massless_decoration') and dec_node.massless_decoration:
                                 if hasattr(dec_node, 'stl_file') and dec_node.stl_file:
                                     dec_stl = os.path.basename(dec_node.stl_file)
-                                    dec_path = f"package://meshes/{dec_stl}"
+                                    dec_path = build_unity_package_path(dec_stl)
 
                                     # Get TODO
                                     origin_xyz = "0 0 0"
@@ -14014,9 +14027,9 @@ class CustomNodeGraph(NodeGraph):
             return
 
         if node.name() == "base_link":
-            # Base_link output
-            self._write_base_link(file)
-        
+            # Base_link output (Unity mode)
+            self._write_base_link(file, unity_mode=True)
+
         # Current node link process
         for port in node.output_ports():
             for connected_port in port.connected_ports():
@@ -14027,11 +14040,11 @@ class CustomNodeGraph(NodeGraph):
                         # Output
                         self._write_joint(file, node, child_node)
                         file.write('\n')
-                        
+
                         # Next link output path unity
                         self._write_link_unity(file, child_node, materials, unity_dir_name)
                         file.write('\n')
-                        
+
                         # Process
                         self._write_tree_structure_unity(file, child_node, node, visited_nodes, materials, unity_dir_name)
 
