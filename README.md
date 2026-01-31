@@ -113,33 +113,38 @@ Please adjust them manually or with AI-assisted coding if needed.
 
 The following environments have been tested:
 - Python 3.11 on macOS (M4 Mac)
-- Python 3.13 on Windows 11
-
-### Libraries and pip
-
+- Python 3.13 on Windows 11  
+  
+### Libraries and pip  
+  
 We recommend creating a Python 3.11 virtual environment.  
-Install dependencies with:
-
-```bash
-pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc
-```
-
-### Running
-
-From a terminal or PowerShell, move to the directory containing the downloaded files and run:
-
-```bash
-python urdf_kitchen_Launcher.py
-```
-
-You can also run the tools directly:
-
-- `urdf_kitchen_MeshSourcer.py`
-- `urdf_kitchen_PartsEditor.py`
-- `urdf_kitchen_Assembler.py`
-
-Ensure that `urdf_kitchen_utils.py` and `urdf_kitchen_Importer.py` are in the same directory.
-
+Install dependencies with:  
+  
+```bash  
+pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc  
+```  
+  
+### Running  
+  
+From a terminal or PowerShell, move to the directory containing the downloaded files and run:  
+  
+```  
+python urdf_kitchen_Launcher.py  
+```  
+  
+to start the launcher and launch each application.  
+(If the launcher cannot be found, please switch the repository branch from main to beta2.)  
+  
+Each application can also be launched directly with Python:  
+  
+```  
+python urdf_kitchen_MeshSourcer.py  
+python urdf_kitchen_PartsEditor.py  
+python urdf_kitchen_Assembler.py  
+```  
+  
+urdf_kitchen_utils.py and urdf_kitchen_Importer.py are module files required for running the applications, so please place them in the same directory as the other code files.
+  
 ---
 
 ## Bug Reports
