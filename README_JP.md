@@ -24,7 +24,7 @@ pythonは3.11 の仮想環境で下記を実行します。
 pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc  
 ```
 
-urdf_kitchen_Launcher.pyのある階層に移動し、下記を実行します。
+urdf_kitchen_Launcher.pyのある階層に移動し、下記を実行します。（ランチャーが見つからない場合、ブランチをmainからbeta2に切り替えてください。）  
 
 ```
 python urdf_kitchen_Launcher.py 
