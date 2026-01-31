@@ -24,7 +24,7 @@ pythonは3.11 の仮想環境で下記を実行します。
 pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc  
 ```
 
-urdf_kitchen_Launcher.pyのある階層に移動し、下記を実行します。（ランチャーが見つからない場合、ブランチをmainからbeta2に切り替えてください。）  
+urdf_kitchen_Launcher.pyのある階層に移動し、下記を実行します。  
 
 ```
 python urdf_kitchen_Launcher.py 
@@ -102,13 +102,20 @@ pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc
 ### 実行方法  
   
 ターミナルやパワーシェルで、DLしたファイルがある場所にcdで移動し、  
+```
 python urdf_kitchen_Launcher.py  
-でランチャーを起動した後、各アプリを起動します。  
-urdf_kitchen_MeshSourcer.py  
-urdf_kitchen_PartsEditor.py  
-urdf_kitchen_Assembler.py  
-はpythonで直接実行することもできます。  
-urdf_kitchen_utils.py, urdf_kitchen_Importer.py　は他のコードと同じディレクトリにおいてください。  
+```
+でランチャーを起動し、各アプリを開始します。  
+（ランチャーが見つからない場合、リポジトリのブランチをmainからbeta2に切り替えてください。）  
+
+各アプリはpythonで直接起動することもできます。
+```
+python urdf_kitchen_MeshSourcer.py  
+python urdf_kitchen_PartsEditor.py  
+python urdf_kitchen_Assembler.py  
+```
+
+urdf_kitchen_utils.py, urdf_kitchen_Importer.py はアプリの実行に必要なモジュールファイルですので他のコードと同じディレクトリにおいてください。  
   
 # バグレポート  
   
