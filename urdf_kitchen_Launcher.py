@@ -5,7 +5,7 @@ Description: Small utility window to launch URDF Kitchen applications.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Jan 22, 2026
+Update.     : Jan 31, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -25,6 +25,7 @@ import sys
 import os
 import subprocess
 import signal
+import webbrowser
 from PySide6 import QtWidgets, QtCore, QtGui
 
 
@@ -102,11 +103,11 @@ class URDFKitchenLauncher(QtWidgets.QWidget):
         """)
         layout.addWidget(separator)
 
-        # Instruction and Close buttons
-        instruction_btn = QtWidgets.QPushButton("Instruction")
-        instruction_btn.setStyleSheet(button_style)
-        instruction_btn.clicked.connect(self.show_instruction)
-        layout.addWidget(instruction_btn)
+        # Tutorial and Close buttons
+        tutorial_btn = QtWidgets.QPushButton("Tutorial")
+        tutorial_btn.setStyleSheet(button_style)
+        tutorial_btn.clicked.connect(self.open_tutorial)
+        layout.addWidget(tutorial_btn)
 
         close_btn = QtWidgets.QPushButton("Close")
         close_btn.setStyleSheet(button_style)
@@ -178,44 +179,18 @@ class URDFKitchenLauncher(QtWidgets.QWidget):
                 f"Failed to launch {app_name}:\n{str(e)}"
             )
 
-    def show_instruction(self):
-        """Show instruction message"""
-        msg_box = QtWidgets.QMessageBox(self)
-        msg_box.setWindowTitle("Instruction")
-        msg_box.setText("Hello, this is URDF Kitchen Beta2. I’m currently in the middle of a major update. Instructions are also being prepared.")
-        msg_box.setIcon(QtWidgets.QMessageBox.NoIcon)
-        msg_box.setStandardButtons(QtWidgets.QMessageBox.Ok)
-
-        # Set white background with black text for the message box
-        msg_box.setStyleSheet("""
-            QMessageBox {
-                background-color: white;
-            }
-            QLabel {
-                color: black;
-                background-color: white;
-            }
-            QPushButton {
-                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                                stop:0 #5a5a5a, stop:1 #3a3a3a);
-                color: white;
-                border: 1px solid #707070;
-                border-radius: 5px;
-                padding: 5px 15px;
-                min-width: 60px;
-            }
-            QPushButton:hover {
-                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                                stop:0 #6a6a6a, stop:1 #4a4a4a);
-            }
-            QPushButton:pressed {
-                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
-                                                stop:0 #3a3a3a, stop:1 #5a5a5a);
-            }
-        """)
-
-        msg_box.exec()
-
+    def open_tutorial(self):
+        """Open tutorial webpage in default browser"""
+        tutorial_url = "https://github.com/Ninagawa123/URDF_kitchen/blob/beta2/Tutorial_EN.md"
+        try:
+            webbrowser.open(tutorial_url)
+            print(f"Opened tutorial: {tutorial_url}")
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(
+                self,
+                "Browser Error",
+                f"Failed to open tutorial in browser:\n{str(e)}"
+            )
 
 def main():
     """Main entry point"""

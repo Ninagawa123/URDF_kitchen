@@ -4,7 +4,7 @@ Description: A Python script to assembling files configured with urdf_kitchen_Pa
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 30, 2026
+Update.     : Jan 31, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -30,7 +30,7 @@ from NodeGraphQt import NodeGraph, BaseNode
 import vtk
 from PySide6.QtWidgets import QFileDialog, QLabel
 from PySide6.QtCore import QPointF, QRegularExpression, QTimer, Qt
-from PySide6.QtGui import QDoubleValidator, QRegularExpressionValidator, QPalette, QColor, QImage, QPixmap
+from PySide6.QtGui import QDoubleValidator, QIntValidator, QRegularExpressionValidator, QPalette, QColor, QImage, QPixmap
 from PySide6.QtNetwork import QLocalSocket
 import os
 import xml.etree.ElementTree as ET
@@ -69,9 +69,9 @@ DEFAULT_JOINT_EFFORT = 1.37  # N*m
 DEFAULT_MAX_EFFORT = 1.37  # N*m
 DEFAULT_JOINT_VELOCITY = 7.0  # rad/s
 DEFAULT_MAX_VELOCITY = 7.48  # rad/s
-DEFAULT_MARGIN = 0.01  # m
+DEFAULT_MARGIN = 0.0035  # m
 DEFAULT_ARMATURE = 0.01  # kg*m^2
-DEFAULT_FRICTIONLOSS = 0.01  # N*m
+DEFAULT_FRICTIONLOSS = 0.005  # N*m
 DEFAULT_STIFFNESS_KP = 100.0  # N*m/rad
 DEFAULT_DAMPING_KV = 1.0  # N*m*s/rad
 DEFAULT_TIMECONST = 0.01  # sec (actuator time constant)
@@ -84,6 +84,8 @@ DEFAULT_MJCF_GEOM_MARGIN = 0.001  # Contact margin for MJCF <default><geom>
 DEFAULT_MJCF_GEOM_CONDIM = 3  # Contact dimensionality for MJCF <default><geom>
 DEFAULT_MJCF_MOTOR_CTRLRANGE = 23.7  # Motor control range (+/-) for MJCF <default><motor>
 DEFAULT_MJCF_OPTION_IMPRATIO = 100  # Impedance ratio for MJCF <option>
+DEFAULT_MJCF_OPTION_TIMESTEP = 0.002  # Simulation timestep for MJCF <option>
+DEFAULT_MJCF_OPTION_ITERATIONS = 30  # Solver iterations for MJCF <option>
 DEFAULT_NODE_GRID_ENABLED = True  # Enable/disable node grid snapping
 DEFAULT_NODE_GRID_SIZE = 50  # Node grid size (pixels)
 # Legacy constants for backward compatibility (to be removed)
@@ -4552,6 +4554,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.setWindowTitle("Settings")
         self.setModal(True)
         self.setup_ui()
+        self.resize(300, self.sizeHint().height())
 
     def setup_ui(self):
         """UItextinitialize"""
@@ -4566,26 +4569,33 @@ class SettingsDialog(QtWidgets.QDialog):
         joint_group = QtWidgets.QGroupBox("Default Joint Settings")
         joint_layout = QtWidgets.QGridLayout()
         joint_layout.setVerticalSpacing(3)
+        joint_layout.setHorizontalSpacing(10)
+        joint_layout.setColumnStretch(0, 0)
+        joint_layout.setColumnStretch(1, 0)
+        joint_layout.setColumnStretch(2, 0)
+        joint_layout.setColumnStretch(3, 0)
+        joint_layout.setColumnStretch(4, 0)
+        joint_layout.setColumnStretch(5, 0)
+        joint_layout.setColumnStretch(6, 1)
         row = 0
 
         # Default Angle Range
         joint_layout.addWidget(QtWidgets.QLabel("Angle Range:"), row, 0)
-        joint_layout.addWidget(QtWidgets.QLabel("+/-"), row, 1, QtCore.Qt.AlignmentFlag.AlignRight)
         self.angle_range_rad_input = QtWidgets.QLineEdit()
         self.angle_range_rad_input.setValidator(QDoubleValidator(0.0, 10.0, 4))
         self.angle_range_rad_input.setText(f"{self.graph.default_angle_range:.4f}")
         self.angle_range_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
             self.angle_range_rad_input, self.angle_range_deg_input))
-        joint_layout.addWidget(self.angle_range_rad_input, row, 2)
-        joint_layout.addWidget(QtWidgets.QLabel("rad"), row, 3)
-        joint_layout.addWidget(QtWidgets.QLabel("+/-"), row, 4, QtCore.Qt.AlignmentFlag.AlignRight)
+        joint_layout.addWidget(self.angle_range_rad_input, row, 1)
+        joint_layout.addWidget(QtWidgets.QLabel("+/-rad"), row, 2)
         self.angle_range_deg_input = QtWidgets.QLineEdit()
         self.angle_range_deg_input.setValidator(QDoubleValidator(0.0, 360.0, 3))
         self.angle_range_deg_input.setText(f"{math.degrees(self.graph.default_angle_range):.3f}")
         self.angle_range_deg_input.returnPressed.connect(lambda: self._convert_deg_to_rad(
             self.angle_range_deg_input, self.angle_range_rad_input))
-        joint_layout.addWidget(self.angle_range_deg_input, row, 5)
-        joint_layout.addWidget(QtWidgets.QLabel("deg"), row, 6)
+        joint_layout.addWidget(QtWidgets.QLabel("("), row, 3, QtCore.Qt.AlignmentFlag.AlignRight)
+        joint_layout.addWidget(self.angle_range_deg_input, row, 4)
+        joint_layout.addWidget(QtWidgets.QLabel("+/-deg)"), row, 5)
         row += 1
 
         # Default Margin
@@ -4595,16 +4605,16 @@ class SettingsDialog(QtWidgets.QDialog):
         self.margin_rad_input.setText(f"{self.graph.default_margin:.4f}")
         self.margin_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
             self.margin_rad_input, self.margin_deg_input))
-        joint_layout.addWidget(self.margin_rad_input, row, 1, 1, 2)
-        joint_layout.addWidget(QtWidgets.QLabel("rad"), row, 3)
+        joint_layout.addWidget(self.margin_rad_input, row, 1)
+        joint_layout.addWidget(QtWidgets.QLabel("rad"), row, 2)
         self.margin_deg_input = QtWidgets.QLineEdit()
         self.margin_deg_input.setValidator(QDoubleValidator(0.0, 360.0, 3))
         self.margin_deg_input.setText(f"{math.degrees(self.graph.default_margin):.3f}")
         self.margin_deg_input.returnPressed.connect(lambda: self._convert_deg_to_rad(
             self.margin_deg_input, self.margin_rad_input))
-        joint_layout.addWidget(QtWidgets.QLabel("("), row, 4, QtCore.Qt.AlignmentFlag.AlignRight)
-        joint_layout.addWidget(self.margin_deg_input, row, 5)
-        joint_layout.addWidget(QtWidgets.QLabel("deg)"), row, 6)
+        joint_layout.addWidget(QtWidgets.QLabel("("), row, 3, QtCore.Qt.AlignmentFlag.AlignRight)
+        joint_layout.addWidget(self.margin_deg_input, row, 4)
+        joint_layout.addWidget(QtWidgets.QLabel("deg)"), row, 5)
         row += 1
 
         # Default Armature
@@ -4612,8 +4622,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self.armature_input = QtWidgets.QLineEdit()
         self.armature_input.setValidator(QDoubleValidator(0.0, 100.0, 4))
         self.armature_input.setText(f"{self.graph.default_armature:.4f}")
-        joint_layout.addWidget(self.armature_input, row, 1, 1, 2)
-        joint_layout.addWidget(QtWidgets.QLabel("kg*m²"), row, 3)
+        joint_layout.addWidget(self.armature_input, row, 1)
+        joint_layout.addWidget(QtWidgets.QLabel("kg*m²"), row, 2)
         row += 1
 
         # Default Frictionloss
@@ -4621,8 +4631,8 @@ class SettingsDialog(QtWidgets.QDialog):
         self.frictionloss_input = QtWidgets.QLineEdit()
         self.frictionloss_input.setValidator(QDoubleValidator(0.0, 100.0, 4))
         self.frictionloss_input.setText(f"{self.graph.default_frictionloss:.4f}")
-        joint_layout.addWidget(self.frictionloss_input, row, 1, 1, 2)
-        joint_layout.addWidget(QtWidgets.QLabel("N*m"), row, 3)
+        joint_layout.addWidget(self.frictionloss_input, row, 1)
+        joint_layout.addWidget(QtWidgets.QLabel("N*m"), row, 2)
         row += 1
 
         # Default Damping
@@ -4630,23 +4640,30 @@ class SettingsDialog(QtWidgets.QDialog):
         self.joint_damping_input = QtWidgets.QLineEdit()
         self.joint_damping_input.setValidator(QDoubleValidator(0.0, 100000.0, 4))
         self.joint_damping_input.setText(f"{self.graph.default_joint_damping:.4f}")
-        joint_layout.addWidget(self.joint_damping_input, row, 1, 1, 2)
-        joint_layout.addWidget(QtWidgets.QLabel("N*m*s/rad"), row, 3)
+        joint_layout.addWidget(self.joint_damping_input, row, 1)
+        joint_layout.addWidget(QtWidgets.QLabel("N*m*s/rad"), row, 2)
         row += 1
 
         # Apply to all nodes (Joint)
-        apply_joint_button = QtWidgets.QPushButton("Apply to All Nodes(Margin, Armature, Frictionloss, Damping)")
+        apply_joint_button = QtWidgets.QPushButton("Apply Joint Settings to All Joints (Except Angle Range)")
         apply_joint_button.setStyleSheet(self.button_style)
         apply_joint_button.setAutoDefault(False)
         apply_joint_button.clicked.connect(self.apply_joint_to_all_nodes)
-        joint_layout.addWidget(apply_joint_button, row, 4, 1, 3, QtCore.Qt.AlignmentFlag.AlignRight)
 
-        joint_group.setLayout(joint_layout)
+        joint_vbox = QtWidgets.QVBoxLayout()
+        joint_vbox.addLayout(joint_layout)
+        joint_btn_layout = QtWidgets.QHBoxLayout()
+        joint_btn_layout.addStretch()
+        joint_btn_layout.addWidget(apply_joint_button)
+        joint_vbox.addLayout(joint_btn_layout)
+        joint_group.setLayout(joint_vbox)
         layout.addWidget(joint_group)
 
         # ===== Default Actuator Settings (actuator / control) =====
         act_group = QtWidgets.QGroupBox("Default Actuator Settings")
         act_layout = QtWidgets.QGridLayout()
+        act_layout.setColumnMinimumWidth(9, 20)
+        act_layout.setColumnStretch(9, 0)
         row = 0
 
         # Effort (forcerange)
@@ -4665,8 +4682,8 @@ class SettingsDialog(QtWidgets.QDialog):
         act_layout.addWidget(QtWidgets.QLabel("N*m"), row, 5)
         row += 1
 
-        # Velocity
-        act_layout.addWidget(QtWidgets.QLabel("Velocity:"), row, 0)
+        # Velocity (first row: rad/s)
+        act_layout.addWidget(QtWidgets.QLabel("Velocity:"), row, 0, 2, 1)
         self.velocity_rad_input = QtWidgets.QLineEdit()
         self.velocity_rad_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
         self.velocity_rad_input.setText(f"{self.graph.default_joint_velocity:.4f}")
@@ -4674,30 +4691,31 @@ class SettingsDialog(QtWidgets.QDialog):
             self.velocity_rad_input, self.velocity_deg_input))
         act_layout.addWidget(self.velocity_rad_input, row, 1)
         act_layout.addWidget(QtWidgets.QLabel("rad/s"), row, 2)
-        self.velocity_deg_input = QtWidgets.QLineEdit()
-        self.velocity_deg_input.setValidator(QDoubleValidator(0.0, 100000.0, 3))
-        self.velocity_deg_input.setText(f"{math.degrees(self.graph.default_joint_velocity):.3f}")
-        self.velocity_deg_input.returnPressed.connect(lambda: self._convert_deg_to_rad(
-            self.velocity_deg_input, self.velocity_rad_input))
-        act_layout.addWidget(QtWidgets.QLabel("("), row, 3, QtCore.Qt.AlignmentFlag.AlignRight)
-        act_layout.addWidget(self.velocity_deg_input, row, 4)
-        act_layout.addWidget(QtWidgets.QLabel("deg/s)"), row, 5)
-        act_layout.addWidget(QtWidgets.QLabel("Max:"), row, 6, QtCore.Qt.AlignmentFlag.AlignRight)
+        act_layout.addWidget(QtWidgets.QLabel("Max:"), row, 3)
         self.max_velocity_rad_input = QtWidgets.QLineEdit()
         self.max_velocity_rad_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
         self.max_velocity_rad_input.setText(f"{self.graph.default_max_velocity:.4f}")
         self.max_velocity_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
             self.max_velocity_rad_input, self.max_velocity_deg_input))
-        act_layout.addWidget(self.max_velocity_rad_input, row, 7)
-        act_layout.addWidget(QtWidgets.QLabel("rad/s"), row, 8)
+        act_layout.addWidget(self.max_velocity_rad_input, row, 4)
+        act_layout.addWidget(QtWidgets.QLabel("rad/s"), row, 5)
+        row += 1
+        
+        # Velocity (second row: deg/s with parentheses)
+        self.velocity_deg_input = QtWidgets.QLineEdit()
+        self.velocity_deg_input.setValidator(QDoubleValidator(0.0, 100000.0, 3))
+        self.velocity_deg_input.setText(f"{math.degrees(self.graph.default_joint_velocity):.3f}")
+        self.velocity_deg_input.returnPressed.connect(lambda: self._convert_deg_to_rad(
+            self.velocity_deg_input, self.velocity_rad_input))
+        act_layout.addWidget(self.velocity_deg_input, row, 1)
+        act_layout.addWidget(QtWidgets.QLabel("(deg/s)"), row, 2)
         self.max_velocity_deg_input = QtWidgets.QLineEdit()
         self.max_velocity_deg_input.setValidator(QDoubleValidator(0.0, 100000.0, 3))
         self.max_velocity_deg_input.setText(f"{math.degrees(self.graph.default_max_velocity):.3f}")
         self.max_velocity_deg_input.returnPressed.connect(lambda: self._convert_deg_to_rad(
             self.max_velocity_deg_input, self.max_velocity_rad_input))
-        act_layout.addWidget(QtWidgets.QLabel("("), row, 9, QtCore.Qt.AlignmentFlag.AlignRight)
-        act_layout.addWidget(self.max_velocity_deg_input, row, 10)
-        act_layout.addWidget(QtWidgets.QLabel("deg/s)"), row, 11)
+        act_layout.addWidget(self.max_velocity_deg_input, row, 4)
+        act_layout.addWidget(QtWidgets.QLabel("(deg/s)"), row, 5)
         row += 1
 
         # Kp (Proportional Gain)
@@ -4728,28 +4746,56 @@ class SettingsDialog(QtWidgets.QDialog):
         row += 1
 
         # Apply to all nodes (Actuator)
-        apply_act_button = QtWidgets.QPushButton("Apply to All Nodes")
+        apply_act_button = QtWidgets.QPushButton("Apply Actuator Settings to All Actuators")
         apply_act_button.setStyleSheet(self.button_style)
         apply_act_button.setAutoDefault(False)
         apply_act_button.clicked.connect(self.apply_actuator_to_all_nodes)
-        act_layout.addWidget(apply_act_button, row, 9, 1, 3, QtCore.Qt.AlignmentFlag.AlignRight)
 
-        act_group.setLayout(act_layout)
+        act_vbox = QtWidgets.QVBoxLayout()
+        act_vbox.addLayout(act_layout)
+        act_btn_layout = QtWidgets.QHBoxLayout()
+        act_btn_layout.addStretch()
+        act_btn_layout.addWidget(apply_act_button)
+        act_vbox.addLayout(act_btn_layout)
+        act_group.setLayout(act_vbox)
         layout.addWidget(act_group)
 
         # ===== MJCF Export Settings =====
         mjcf_group = QtWidgets.QGroupBox("MJCF Export Settings")
         mjcf_layout = QtWidgets.QGridLayout()
         mjcf_layout.setVerticalSpacing(3)
+        mjcf_layout.setColumnStretch(0, 0)
+        mjcf_layout.setColumnStretch(1, 0)
+        mjcf_layout.setColumnStretch(2, 1)
         row = 0
 
         # base_link height
         mjcf_layout.addWidget(QtWidgets.QLabel("base_link height:"), row, 0)
         self.base_link_height_input = QtWidgets.QLineEdit()
+        self.base_link_height_input.setFixedWidth(100)
         self.base_link_height_input.setValidator(QDoubleValidator(0.0, 10.0, 3))
         self.base_link_height_input.setText(f"{self.graph.default_base_link_height:.4f}")
         mjcf_layout.addWidget(self.base_link_height_input, row, 1)
         mjcf_layout.addWidget(QtWidgets.QLabel("m"), row, 2)
+        row += 1
+
+        # timestep
+        mjcf_layout.addWidget(QtWidgets.QLabel("timestep:"), row, 0)
+        self.mjcf_timestep_input = QtWidgets.QLineEdit()
+        self.mjcf_timestep_input.setFixedWidth(100)
+        self.mjcf_timestep_input.setValidator(QDoubleValidator(0.0001, 1.0, 6))
+        self.mjcf_timestep_input.setText(f"{self.graph.default_mjcf_option_timestep:g}")
+        mjcf_layout.addWidget(self.mjcf_timestep_input, row, 1)
+        mjcf_layout.addWidget(QtWidgets.QLabel("s"), row, 2)
+        row += 1
+
+        # iterations
+        mjcf_layout.addWidget(QtWidgets.QLabel("iterations:"), row, 0)
+        self.mjcf_iterations_input = QtWidgets.QLineEdit()
+        self.mjcf_iterations_input.setFixedWidth(100)
+        self.mjcf_iterations_input.setValidator(QIntValidator(1, 10000))
+        self.mjcf_iterations_input.setText(str(self.graph.default_mjcf_option_iterations))
+        mjcf_layout.addWidget(self.mjcf_iterations_input, row, 1)
         row += 1
 
         mjcf_group.setLayout(mjcf_layout)
@@ -4787,6 +4833,9 @@ class SettingsDialog(QtWidgets.QDialog):
         grid_group.setLayout(grid_layout)
         layout.addWidget(grid_group)
 
+        # Mesh Highlight and Collision Color (side by side)
+        color_row_layout = QtWidgets.QHBoxLayout()
+
         # Mesh highlight mesh highlight
         highlight_group = QtWidgets.QGroupBox("Mesh Highlight")
         highlight_layout = QtWidgets.QHBoxLayout()
@@ -4809,7 +4858,7 @@ class SettingsDialog(QtWidgets.QDialog):
 
         highlight_layout.addStretch()
         highlight_group.setLayout(highlight_layout)
-        layout.addWidget(highlight_group)
+        color_row_layout.addWidget(highlight_group)
 
         # Collision color collision color
         collision_group = QtWidgets.QGroupBox("Collision Color")
@@ -4838,7 +4887,9 @@ class SettingsDialog(QtWidgets.QDialog):
         collision_layout.addStretch()
 
         collision_group.setLayout(collision_layout)
-        layout.addWidget(collision_group)
+        color_row_layout.addWidget(collision_group)
+
+        layout.addLayout(color_row_layout)
 
         # Button
         button_layout = QtWidgets.QHBoxLayout()
@@ -4894,8 +4945,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.base_link_height_input.editingFinished.connect(
             lambda: self._format_number_input(self.base_link_height_input, 4))
 
-        # Change current size 6
-        # List
+        # Set default width for input fields (resizable)
         input_fields = [
             self.effort_input,
             self.max_effort_input,
@@ -4915,17 +4965,13 @@ class SettingsDialog(QtWidgets.QDialog):
             self.angle_range_deg_input,
             self.base_link_height_input
         ]
-        
-        # Set current size 6
+
         for field in input_fields:
-            # Get current 100
             current_width = field.sizeHint().width()
             if current_width <= 0:
-                current_width = 100  # Default value
-            # Set size 6
+                current_width = 100
             new_width = int(current_width * 0.6)
-            field.setMaximumWidth(new_width)
-            field.setMinimumWidth(new_width)
+            field.setFixedWidth(new_width)
 
     def pick_highlight_color(self):
         """textーtextーtextーtext"""
@@ -5021,6 +5067,10 @@ class SettingsDialog(QtWidgets.QDialog):
             # Mjcf
             base_link_height = float(self.base_link_height_input.text())
             self.graph.default_base_link_height = base_link_height
+            mjcf_timestep = float(self.mjcf_timestep_input.text())
+            self.graph.default_mjcf_option_timestep = mjcf_timestep
+            mjcf_iterations = int(self.mjcf_iterations_input.text())
+            self.graph.default_mjcf_option_iterations = mjcf_iterations
 
             # Node node grid
             grid_enabled = self.grid_enabled_checkbox.isChecked()
@@ -6372,6 +6422,10 @@ class STLViewerWidget(QtWidgets.QWidget):
         wireframe_on = self.wireframe_toggle.isChecked()
 
         for node, actor in self.stl_actors.items():
+            # Skip nodes with hide_mesh enabled - they should stay hidden
+            if hasattr(node, 'hide_mesh') and node.hide_mesh:
+                continue
+            
             if mesh_on and wireframe_on:
                 # +
                 actor.SetVisibility(True)
@@ -7870,6 +7924,8 @@ class CustomNodeGraph(NodeGraph):
         self.default_mjcf_geom_condim = DEFAULT_MJCF_GEOM_CONDIM
         self.default_mjcf_motor_ctrlrange = DEFAULT_MJCF_MOTOR_CTRLRANGE
         self.default_mjcf_option_impratio = DEFAULT_MJCF_OPTION_IMPRATIO
+        self.default_mjcf_option_timestep = DEFAULT_MJCF_OPTION_TIMESTEP
+        self.default_mjcf_option_iterations = DEFAULT_MJCF_OPTION_ITERATIONS
 
         # Set Node Grid Node Grid
         self.node_grid_enabled = DEFAULT_NODE_GRID_ENABLED
@@ -10946,10 +11002,13 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(mjcf_defaults_elem, "geom_margin").text = str(self.default_mjcf_geom_margin)
             ET.SubElement(mjcf_defaults_elem, "geom_condim").text = str(self.default_mjcf_geom_condim)
             ET.SubElement(mjcf_defaults_elem, "motor_ctrlrange").text = str(self.default_mjcf_motor_ctrlrange)
+            ET.SubElement(mjcf_defaults_elem, "option_timestep").text = str(self.default_mjcf_option_timestep)
+            ET.SubElement(mjcf_defaults_elem, "option_iterations").text = str(self.default_mjcf_option_iterations)
             print(f"Saved MJCF defaults: impratio={self.default_mjcf_option_impratio}, "
                   f"joint_damping={self.default_mjcf_joint_damping}, geom_friction={self.default_mjcf_geom_friction}, "
                   f"geom_margin={self.default_mjcf_geom_margin}, geom_condim={self.default_mjcf_geom_condim}, "
-                  f"motor_ctrlrange={self.default_mjcf_motor_ctrlrange}")
+                  f"motor_ctrlrange={self.default_mjcf_motor_ctrlrange}, "
+                  f"timestep={self.default_mjcf_option_timestep}, iterations={self.default_mjcf_option_iterations}")
 
             # Save file
             print("\nWriting to file...")
@@ -11217,10 +11276,17 @@ class CustomNodeGraph(NodeGraph):
                     elem = mjcf_defaults_elem.find("motor_ctrlrange")
                     if elem is not None and elem.text:
                         self.default_mjcf_motor_ctrlrange = float(elem.text)
+                    elem = mjcf_defaults_elem.find("option_timestep")
+                    if elem is not None and elem.text:
+                        self.default_mjcf_option_timestep = float(elem.text)
+                    elem = mjcf_defaults_elem.find("option_iterations")
+                    if elem is not None and elem.text:
+                        self.default_mjcf_option_iterations = int(elem.text)
                     print(f"Restored MJCF defaults: impratio={self.default_mjcf_option_impratio}, "
                           f"joint_damping={self.default_mjcf_joint_damping}, geom_friction={self.default_mjcf_geom_friction}, "
                           f"geom_margin={self.default_mjcf_geom_margin}, geom_condim={self.default_mjcf_geom_condim}, "
-                          f"motor_ctrlrange={self.default_mjcf_motor_ctrlrange}")
+                          f"motor_ctrlrange={self.default_mjcf_motor_ctrlrange}, "
+                          f"timestep={self.default_mjcf_option_timestep}, iterations={self.default_mjcf_option_iterations}")
                 except (ValueError, TypeError) as e:
                     print(f"Error parsing MJCF defaults, using defaults: {e}")
             else:
@@ -13336,6 +13402,19 @@ class CustomNodeGraph(NodeGraph):
             if self.stl_viewer:
                 self.stl_viewer.refresh_collider_display()
 
+            # Apply hide_mesh states after building r_ nodes
+            print("\nApplying hide_mesh states after building r_ nodes...")
+            if self.stl_viewer:
+                for node in self.all_nodes():
+                    if hasattr(node, 'hide_mesh') and node.hide_mesh:
+                        if node in self.stl_viewer.stl_actors:
+                            actor = self.stl_viewer.stl_actors[node]
+                            actor.SetVisibility(False)
+                            print(f"Applied hide_mesh: {node.name()} - mesh hidden")
+                
+                # Update 3D view
+                self.stl_viewer.render_to_image()
+
             print(f"\nSuccessfully created {len(l_to_r_mapping)} right side nodes from left side")
 
         except Exception as e:
@@ -14538,20 +14617,22 @@ class CustomNodeGraph(NodeGraph):
 
             # Option
             impratio_val = self.default_mjcf_option_impratio
-            f.write(f'  <option cone="elliptic" impratio="{impratio_val:g}" />\n\n')
+            timestep_val = self.default_mjcf_option_timestep
+            iterations_val = self.default_mjcf_option_iterations
+            f.write(f'  <option timestep="{timestep_val:g}" iterations="{iterations_val}" cone="elliptic" impratio="{impratio_val:g}" />\n\n')
 
             # <default> main class default
             jdamp = self.default_mjcf_joint_damping
             armature_val = self.default_armature
             floss = self.default_frictionloss
-            ctrlrange = self.default_mjcf_motor_ctrlrange
+            timeconst_val = self.default_timeconst
             gfriction = self.default_mjcf_geom_friction
             gmargin = self.default_mjcf_geom_margin
             gcondim = self.default_mjcf_geom_condim
             f.write('  <default>\n')
             f.write('    <!-- textset -->\n')
             f.write(f'    <joint damping="{jdamp:g}" armature="{armature_val:g}" frictionloss="{floss:g}"/>\n')
-            f.write(f'    <motor ctrlrange="-{ctrlrange:g} {ctrlrange:g}"/>\n')
+            f.write(f'    <position inheritrange="1" timeconst="{timeconst_val:g}"/>\n')
             f.write(f'    <geom friction="{gfriction:g}" margin="{gmargin:g}" condim="{gcondim}"/>\n')
             
             # Default class
@@ -14702,8 +14783,8 @@ class CustomNodeGraph(NodeGraph):
                         # ±π radians
                         ctrlrange = "-3.14159 3.14159"
 
-                    # Gear 1 1 1:1
-                    f.write(f'    <position name="{actuator_name}" joint="{joint_name}" gear="1" kp="{kp_str}" kv="{kv_str}" forcerange="{forcerange}" forcelimited="true" ctrlrange="{ctrlrange}"/>\n')
+                    # Gear 1 1 1:1 (ctrlrange removed - using inheritrange from default)
+                    f.write(f'    <position name="{actuator_name}" joint="{joint_name}" gear="1" kp="{kp_str}" kv="{kv_str}" forcerange="{forcerange}" forcelimited="true"/>\n')
                 f.write('  </actuator>\n\n')
 
             # sensor
@@ -14878,6 +14959,7 @@ class CustomNodeGraph(NodeGraph):
         """defaults.xmltext"""
         jdamp = self.default_mjcf_joint_damping
         armature_val = self.default_armature
+        timeconst_val = self.default_timeconst
         gcondim = self.default_mjcf_geom_condim
         gfriction = self.default_mjcf_geom_friction
         with open(file_path, 'w') as f:
@@ -14886,7 +14968,7 @@ class CustomNodeGraph(NodeGraph):
             f.write('  <default>\n')
             f.write(f'    <joint damping="{jdamp:g}" armature="{armature_val:g}" />\n')
             f.write(f'    <geom contype="1" conaffinity="1" condim="{gcondim}" friction="{gfriction:g} 0.1 0.1" />\n')
-            f.write('    <motor ctrllimited="true" />\n')
+            f.write(f'    <position inheritrange="1" timeconst="{timeconst_val:g}"/>\n')
             f.write('  </default>\n')
             f.write('</mujoco>\n')
         print(f"Created defaults file: {file_path}")

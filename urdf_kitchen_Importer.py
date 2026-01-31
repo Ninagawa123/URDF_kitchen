@@ -7,7 +7,7 @@ Description: URDF/MJCF Import functionality for URDF Kitchen.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Jan 30, 2026
+Update.     : Jan 31, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -1723,6 +1723,51 @@ class SDFParser:
                     if velocity is not None:
                         limit['velocity'] = float(velocity.text) if velocity.text else 3.0
             
+            # Parse dynamics (SDF: <axis><dynamics>)
+            dynamics = {'damping': 0.0, 'friction': 0.0}
+            if axis_elem is not None:
+                dynamics_elem = axis_elem.find('dynamics')
+                if dynamics_elem is not None:
+                    # Parse damping
+                    damping_elem = dynamics_elem.find('damping')
+                    if damping_elem is not None and damping_elem.text:
+                        try:
+                            dynamics['damping'] = float(damping_elem.text)
+                            if self.verbose:
+                                print(f"  Joint '{joint_name}': damping = {dynamics['damping']}")
+                        except ValueError:
+                            pass
+                    
+                    # Parse friction
+                    friction_elem = dynamics_elem.find('friction')
+                    if friction_elem is not None and friction_elem.text:
+                        try:
+                            dynamics['friction'] = float(friction_elem.text)
+                            if self.verbose:
+                                print(f"  Joint '{joint_name}': friction = {dynamics['friction']}")
+                        except ValueError:
+                            pass
+                    
+                    # Parse spring_stiffness (Kp)
+                    spring_stiffness_elem = dynamics_elem.find('spring_stiffness')
+                    if spring_stiffness_elem is not None and spring_stiffness_elem.text:
+                        try:
+                            dynamics['stiffness'] = float(spring_stiffness_elem.text)
+                            if self.verbose:
+                                print(f"  Joint '{joint_name}': spring_stiffness (Kp) = {dynamics['stiffness']}")
+                        except ValueError:
+                            pass
+                    
+                    # Parse spring_reference (reference position for spring)
+                    spring_reference_elem = dynamics_elem.find('spring_reference')
+                    if spring_reference_elem is not None and spring_reference_elem.text:
+                        try:
+                            dynamics['spring_reference'] = float(spring_reference_elem.text)
+                            if self.verbose:
+                                print(f"  Joint '{joint_name}': spring_reference = {dynamics['spring_reference']}")
+                        except ValueError:
+                            pass
+            
             joint_data = {
                 'name': joint_name,
                 'type': urdf_joint_type,
@@ -1732,7 +1777,7 @@ class SDFParser:
                 'origin_rpy': origin_rpy,
                 'axis': axis,
                 'limit': limit,
-                'dynamics': {'damping': 0.0, 'friction': 0.0},
+                'dynamics': dynamics,
                 'gearbox_reference_body': gearbox_reference_body,  # Only set for gearbox type
                 'gearbox_ratio': gearbox_ratio  # Only meaningful for gearbox type
             }
@@ -2083,6 +2128,12 @@ class MJCFParser:
         if self.verbose:
             print(f"Parsed {len(closed_loop_joints)} closed-loop joints from equality section")
 
+        # Parse actuators
+        actuators_data = self._parse_actuators(root, default_classes, angle_unit)
+
+        if self.verbose:
+            print(f"Parsed {len(actuators_data)} actuators")
+
         # Build IR structure
         ir = self._build_ir(root, robot_name, eulerseq, default_classes, meshes_data, 
                            bodies_data, joints_data, mjcf_file_path)
@@ -2095,6 +2146,7 @@ class MJCFParser:
             'eulerseq': eulerseq,
             'default_classes': default_classes,
             'closed_loop_joints': closed_loop_joints,  # Add closed-loop joint information
+            'actuators': actuators_data,  # Add actuator parameters
             'ir': ir  # New IR structure
         }
 
@@ -2243,6 +2295,62 @@ class MJCFParser:
                     # if self.verbose:
                     #     print(f"  Default class '{class_name}' mesh scale: {class_defaults['mesh_scale']}")
 
+            # Get actuator defaults (position, motor, general)
+            for actuator_type in ['position', 'motor', 'general']:
+                actuator_elem = default_elem.find(actuator_type)
+                if actuator_elem is not None:
+                    actuator_defaults = {}
+                    
+                    # Common attributes for all actuator types
+                    for attr in ['kp', 'kv', 'dampratio', 'timeconst', 'inheritrange']:
+                        attr_str = actuator_elem.get(attr)
+                        if attr_str:
+                            try:
+                                actuator_defaults[attr] = float(attr_str)
+                            except ValueError:
+                                pass
+                    
+                    # Range attributes
+                    forcerange_str = actuator_elem.get('forcerange')
+                    if forcerange_str:
+                        try:
+                            range_vals = [float(v) for v in forcerange_str.split()]
+                            if len(range_vals) == 2:
+                                actuator_defaults['forcerange'] = range_vals
+                        except ValueError:
+                            pass
+                    
+                    ctrlrange_str = actuator_elem.get('ctrlrange')
+                    if ctrlrange_str:
+                        try:
+                            range_vals = [float(v) for v in ctrlrange_str.split()]
+                            if len(range_vals) == 2:
+                                actuator_defaults['ctrlrange'] = range_vals
+                        except ValueError:
+                            pass
+                    
+                    # General actuator specific attributes
+                    if actuator_type == 'general':
+                        gainprm_str = actuator_elem.get('gainprm')
+                        if gainprm_str:
+                            try:
+                                actuator_defaults['gainprm'] = [float(v) for v in gainprm_str.split()]
+                            except ValueError:
+                                pass
+                        
+                        biasprm_str = actuator_elem.get('biasprm')
+                        if biasprm_str:
+                            try:
+                                actuator_defaults['biasprm'] = [float(v) for v in biasprm_str.split()]
+                            except ValueError:
+                                pass
+                    
+                    # Store actuator defaults
+                    if actuator_defaults:
+                        if 'actuators' not in class_defaults:
+                            class_defaults['actuators'] = {}
+                        class_defaults['actuators'][actuator_type] = actuator_defaults
+
             # Save class (use None for global default if no class name)
             # Global default (no class name) is also saved with None key
             key = class_name if class_name else None
@@ -2263,6 +2371,105 @@ class MJCFParser:
         #     print(f"Parsed {len(default_classes)} default classes")
 
         return default_classes
+
+    def _parse_actuators(self, root, default_classes, angle_unit='degree'):
+        """Parse actuator elements from MJCF.
+        
+        Args:
+            root: XML root element
+            default_classes: Dictionary of default class settings
+            angle_unit: 'degree' or 'radian' from compiler angle attribute
+        
+        Returns:
+            Dictionary mapping joint names to actuator parameters
+        """
+        actuators_data = {}
+        
+        # Find actuator section
+        actuator_section = root.find('actuator')
+        if actuator_section is None:
+            return actuators_data
+        
+        # Parse each actuator element (position, motor, general, etc.)
+        for actuator_elem in actuator_section:
+            actuator_type = actuator_elem.tag
+            joint_name = actuator_elem.get('joint')
+            
+            if not joint_name:
+                continue  # Skip actuators without joint reference
+            
+            # Get class for this actuator
+            actuator_class = actuator_elem.get('class')
+            
+            # Start with defaults from class (if specified)
+            actuator_params = {}
+            
+            # Apply class defaults (check class hierarchy)
+            if actuator_class and actuator_class in default_classes:
+                class_def = default_classes[actuator_class]
+                if 'actuators' in class_def and actuator_type in class_def['actuators']:
+                    actuator_params.update(class_def['actuators'][actuator_type])
+            
+            # Apply global defaults (if no class or class doesn't have actuator defaults)
+            if None in default_classes:
+                global_def = default_classes[None]
+                if 'actuators' in global_def and actuator_type in global_def['actuators']:
+                    # Only apply if not already set by class
+                    for key, value in global_def['actuators'][actuator_type].items():
+                        if key not in actuator_params:
+                            actuator_params[key] = value
+            
+            # Override with element-specific attributes
+            for attr in ['kp', 'kv', 'dampratio', 'timeconst', 'inheritrange', 'gear']:
+                attr_str = actuator_elem.get(attr)
+                if attr_str:
+                    try:
+                        actuator_params[attr] = float(attr_str)
+                    except ValueError:
+                        pass
+            
+            # Range attributes
+            forcerange_str = actuator_elem.get('forcerange')
+            if forcerange_str:
+                try:
+                    range_vals = [float(v) for v in forcerange_str.split()]
+                    if len(range_vals) == 2:
+                        actuator_params['forcerange'] = range_vals
+                except ValueError:
+                    pass
+            
+            ctrlrange_str = actuator_elem.get('ctrlrange')
+            if ctrlrange_str:
+                try:
+                    range_vals = [float(v) for v in ctrlrange_str.split()]
+                    if len(range_vals) == 2:
+                        actuator_params['ctrlrange'] = range_vals
+                except ValueError:
+                    pass
+            
+            # General actuator specific attributes
+            if actuator_type == 'general':
+                gainprm_str = actuator_elem.get('gainprm')
+                if gainprm_str:
+                    try:
+                        actuator_params['gainprm'] = [float(v) for v in gainprm_str.split()]
+                    except ValueError:
+                        pass
+                
+                biasprm_str = actuator_elem.get('biasprm')
+                if biasprm_str:
+                    try:
+                        actuator_params['biasprm'] = [float(v) for v in biasprm_str.split()]
+                    except ValueError:
+                        pass
+            
+            # Store actuator type
+            actuator_params['actuator_type'] = actuator_type
+            
+            # Store in dictionary (keyed by joint name)
+            actuators_data[joint_name] = actuator_params
+        
+        return actuators_data
 
     def _parse_with_includes(self, mjcf_file_path, working_dir=None):
         """Parse MJCF file with include resolution.
@@ -5488,6 +5695,7 @@ def import_mjcf(graph):
             eulerseq = mjcf_data['eulerseq']
             default_classes = mjcf_data['default_classes']
             closed_loop_joints = mjcf_data.get('closed_loop_joints', [])  # Get closed-loop joint info
+            actuators_data = mjcf_data.get('actuators', {})  # Get actuator parameters
 
             # Convert bodies_data from list to dictionary (using name as key)
             bodies_data = {}
@@ -6383,6 +6591,62 @@ def import_mjcf(graph):
                     if 'margin' in joint_data['dynamics']:
                         child_node.joint_margin = joint_data['dynamics']['margin']
                         print(f"  Set joint_margin: {child_node.joint_margin}")
+
+                # Set actuator parameters (from MJCF <actuator> section)
+                joint_name = joint_data.get('name')
+                if joint_name and joint_name in actuators_data:
+                    actuator_params = actuators_data[joint_name]
+                    actuator_type = actuator_params.get('actuator_type', 'position')
+                    print(f"  Found actuator for joint '{joint_name}' (type: {actuator_type})")
+                    
+                    # Set Kp (proportional gain)
+                    if 'kp' in actuator_params:
+                        child_node.joint_stiffness = actuator_params['kp']
+                        print(f"  Set joint_stiffness (kp): {child_node.joint_stiffness}")
+                    
+                    # Set Kv (velocity gain / derivative gain)
+                    if 'kv' in actuator_params:
+                        child_node.joint_kv = actuator_params['kv']
+                        print(f"  Set joint_kv: {child_node.joint_kv}")
+                    
+                    # Set dampratio as joint_damping
+                    if 'dampratio' in actuator_params:
+                        # dampratio is used to calculate damping coefficient
+                        # For now, use it directly as joint_damping
+                        child_node.joint_damping = actuator_params['dampratio']
+                        print(f"  Set joint_damping (dampratio): {child_node.joint_damping}")
+                    
+                    # Set forcerange as joint_effort
+                    if 'forcerange' in actuator_params:
+                        forcerange = actuator_params['forcerange']
+                        # Use the maximum absolute value as effort limit
+                        max_force = max(abs(forcerange[0]), abs(forcerange[1]))
+                        child_node.joint_effort = max_force
+                        print(f"  Set joint_effort (forcerange): {child_node.joint_effort}")
+                    
+                    # Set ctrlrange as joint limits (if not already set)
+                    if 'ctrlrange' in actuator_params:
+                        ctrlrange = actuator_params['ctrlrange']
+                        # Only set if joint limits are not already defined
+                        if not hasattr(child_node, 'joint_lower') or child_node.joint_lower is None:
+                            child_node.joint_lower = ctrlrange[0]
+                            print(f"  Set joint_lower (ctrlrange): {child_node.joint_lower}")
+                        if not hasattr(child_node, 'joint_upper') or child_node.joint_upper is None:
+                            child_node.joint_upper = ctrlrange[1]
+                            print(f"  Set joint_upper (ctrlrange): {child_node.joint_upper}")
+                    
+                    # For motor type, use ctrlrange as forcerange
+                    if actuator_type == 'motor' and 'ctrlrange' in actuator_params:
+                        ctrlrange = actuator_params['ctrlrange']
+                        max_torque = max(abs(ctrlrange[0]), abs(ctrlrange[1]))
+                        child_node.joint_effort = max_torque
+                        print(f"  Set joint_effort (motor ctrlrange): {child_node.joint_effort}")
+                    
+                    # Store timeconst in graph (for Settings panel)
+                    if 'timeconst' in actuator_params:
+                        if not hasattr(graph, 'mjcf_timeconst'):
+                            graph.mjcf_timeconst = actuator_params['timeconst']
+                            print(f"  Set graph.mjcf_timeconst: {graph.mjcf_timeconst}")
 
                 # Set stiffness
                 if 'stiffness' in joint_data:
