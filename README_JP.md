@@ -36,6 +36,18 @@ Assemblerで**Import XMLs**を押し、ダイアログウインドウでsample/R
 ロボットの部品がノードとして展開されるので、まずbase_linkのoutをドラッグし、任意のノードパネルのinと結んでください。  
 ノードのoutポイントとinポイントを数珠繋ぎに結ぶことでロボットを組み立てていきます。  
 
+uvを使う場合は以下のコマンドで環境の再現をします。
+
+```
+uv sync
+```
+
+urdf_kitchen_Launcher.pyのある階層に移動し、下記を実行します。  
+
+```
+uv run urdf_kitchen_Launcher.py 
+```
+
 # Tools  
   
 ### STEP 0 -  はじめに -  "Launcher"  
