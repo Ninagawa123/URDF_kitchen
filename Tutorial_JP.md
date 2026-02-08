@@ -30,6 +30,18 @@ pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc
 python urdf_kitchen_Launcher.py  
 ```  
   
+>uvを使う場合は pip install... の代わりに以下のコマンドで環境を再現します。
+>
+>```
+>uv sync
+>```
+>
+>urdf_kitchen_Launcher.pyのある階層に移動し、下記を実行します。  
+>
+>```
+>uv run urdf_kitchen_Launcher.py 
+>```
+  
 ランチャーが起動し、MeshSourcer, PartsEditor, Assemblerが使えるようになります。  
   
 ---  
