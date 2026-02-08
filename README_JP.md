@@ -30,23 +30,23 @@ urdf_kitchen_Launcher.pyのある階層に移動し、下記を実行します�
 python urdf_kitchen_Launcher.py 
 ```
 
+>uvを使う場合は以下のコマンドで環境の再現をします。
+>
+>```
+>uv sync
+>```
+>
+>urdf_kitchen_Launcher.pyのある階層に移動し、下記を実行します。  
+>
+>```
+>uv run urdf_kitchen_Launcher.py 
+>```
+  
 Assemblerのボタンを押して起動します。（初回は起動まですこし時間がかかります。）
   
 Assemblerで**Import XMLs**を押し、ダイアログウインドウでsample/Roid1_assetsを選択します。  
 ロボットの部品がノードとして展開されるので、まずbase_linkのoutをドラッグし、任意のノードパネルのinと結んでください。  
 ノードのoutポイントとinポイントを数珠繋ぎに結ぶことでロボットを組み立てていきます。  
-
-uvを使う場合は以下のコマンドで環境の再現をします。
-
-```
-uv sync
-```
-
-urdf_kitchen_Launcher.pyのある階層に移動し、下記を実行します。  
-
-```
-uv run urdf_kitchen_Launcher.py 
-```
 
 # Tools  
   
