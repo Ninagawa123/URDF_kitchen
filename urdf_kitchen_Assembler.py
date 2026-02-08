@@ -414,6 +414,65 @@ class ClosedLoopJointNode(BaseNode):
         else:
             pass
 
+
+class NumericLineEdit(QtWidgets.QLineEdit):
+    """
+    Custom QLineEdit for numeric input fields.
+    - Only allows digits, minus sign, and decimal point
+    - Never displays exponential notation
+    - Emits valueChanged signal when value is confirmed (Enter or focus out)
+    """
+    valueChanged = QtCore.Signal(float)
+
+    def __init__(self, parent=None):
+        super(NumericLineEdit, self).__init__(parent)
+        # Regex validator: optional minus, digits, optional decimal point with digits
+        regex = QRegularExpression(r"^-?\d*\.?\d*$")
+        self.setValidator(QRegularExpressionValidator(regex, self))
+        # Connect editingFinished to handle focus out and Enter key
+        self.editingFinished.connect(self._on_editing_finished)
+        self._last_value = None
+
+    def _on_editing_finished(self):
+        """Called when editing is finished (Enter key or focus out)"""
+        try:
+            value = float(self.text()) if self.text() else 0.0
+            if self._last_value != value:
+                self._last_value = value
+                self.valueChanged.emit(value)
+        except ValueError:
+            pass
+
+    def setValue(self, value):
+        """Set value with normal notation (no exponential)"""
+        self._last_value = value
+        self.setText(format_float_no_exp(value))
+
+    def value(self):
+        """Get current value as float"""
+        try:
+            return float(self.text()) if self.text() else 0.0
+        except ValueError:
+            return 0.0
+
+
+def create_numeric_input(width=75, placeholder="0.0"):
+    """
+    Factory function to create a properly configured NumericLineEdit.
+
+    Args:
+        width: Fixed width of the input field
+        placeholder: Placeholder text
+
+    Returns:
+        NumericLineEdit instance
+    """
+    input_field = NumericLineEdit()
+    input_field.setFixedWidth(width)
+    input_field.setPlaceholderText(placeholder)
+    return input_field
+
+
 class InspectorWindow(QtWidgets.QWidget):
     
     def __init__(self, parent=None, stl_viewer=None):
@@ -549,6 +608,7 @@ class InspectorWindow(QtWidgets.QWidget):
         content_layout.addSpacing(3)
 
         # Inertial Origin section (x, y, z, r, p, y in one row)
+        # Uses NumericLineEdit for proper numeric validation and no exponential notation
         origin_layout = QtWidgets.QHBoxLayout()
 
         # x
@@ -556,12 +616,9 @@ class InspectorWindow(QtWidgets.QWidget):
         x_label.setFixedWidth(10)
         x_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         origin_layout.addWidget(x_label)
-        self.inertial_x_input = QtWidgets.QLineEdit()
-        self.inertial_x_input.setFixedWidth(75)
-        self.inertial_x_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 6))
-        self.inertial_x_input.setPlaceholderText("0.0")
+        self.inertial_x_input = create_numeric_input(width=75)
         self.inertial_x_input.textChanged.connect(self.update_inertial_origin)
-        self.inertial_x_input.returnPressed.connect(self.update_inertial_origin)
+        self.inertial_x_input.editingFinished.connect(self.update_inertial_origin)
         origin_layout.addWidget(self.inertial_x_input)
         origin_layout.addSpacing(5)
 
@@ -570,12 +627,9 @@ class InspectorWindow(QtWidgets.QWidget):
         y_label.setFixedWidth(10)
         y_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         origin_layout.addWidget(y_label)
-        self.inertial_y_input = QtWidgets.QLineEdit()
-        self.inertial_y_input.setFixedWidth(75)
-        self.inertial_y_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 6))
-        self.inertial_y_input.setPlaceholderText("0.0")
+        self.inertial_y_input = create_numeric_input(width=75)
         self.inertial_y_input.textChanged.connect(self.update_inertial_origin)
-        self.inertial_y_input.returnPressed.connect(self.update_inertial_origin)
+        self.inertial_y_input.editingFinished.connect(self.update_inertial_origin)
         origin_layout.addWidget(self.inertial_y_input)
         origin_layout.addSpacing(5)
 
@@ -584,12 +638,9 @@ class InspectorWindow(QtWidgets.QWidget):
         z_label.setFixedWidth(10)
         z_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         origin_layout.addWidget(z_label)
-        self.inertial_z_input = QtWidgets.QLineEdit()
-        self.inertial_z_input.setFixedWidth(75)
-        self.inertial_z_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 6))
-        self.inertial_z_input.setPlaceholderText("0.0")
+        self.inertial_z_input = create_numeric_input(width=75)
         self.inertial_z_input.textChanged.connect(self.update_inertial_origin)
-        self.inertial_z_input.returnPressed.connect(self.update_inertial_origin)
+        self.inertial_z_input.editingFinished.connect(self.update_inertial_origin)
         origin_layout.addWidget(self.inertial_z_input)
         origin_layout.addSpacing(5)
 
@@ -598,12 +649,9 @@ class InspectorWindow(QtWidgets.QWidget):
         r_label.setFixedWidth(10)
         r_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         origin_layout.addWidget(r_label)
-        self.inertial_r_input = QtWidgets.QLineEdit()
-        self.inertial_r_input.setFixedWidth(60)
-        self.inertial_r_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 6))
-        self.inertial_r_input.setPlaceholderText("0.0")
+        self.inertial_r_input = create_numeric_input(width=60)
         self.inertial_r_input.textChanged.connect(self.update_inertial_origin)
-        self.inertial_r_input.returnPressed.connect(self.update_inertial_origin)
+        self.inertial_r_input.editingFinished.connect(self.update_inertial_origin)
         origin_layout.addWidget(self.inertial_r_input)
         origin_layout.addSpacing(5)
 
@@ -612,12 +660,9 @@ class InspectorWindow(QtWidgets.QWidget):
         p_label.setFixedWidth(10)
         p_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         origin_layout.addWidget(p_label)
-        self.inertial_p_input = QtWidgets.QLineEdit()
-        self.inertial_p_input.setFixedWidth(60)
-        self.inertial_p_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 6))
-        self.inertial_p_input.setPlaceholderText("0.0")
+        self.inertial_p_input = create_numeric_input(width=60)
         self.inertial_p_input.textChanged.connect(self.update_inertial_origin)
-        self.inertial_p_input.returnPressed.connect(self.update_inertial_origin)
+        self.inertial_p_input.editingFinished.connect(self.update_inertial_origin)
         origin_layout.addWidget(self.inertial_p_input)
         origin_layout.addSpacing(5)
 
@@ -626,12 +671,9 @@ class InspectorWindow(QtWidgets.QWidget):
         y_rpy_label.setFixedWidth(10)
         y_rpy_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         origin_layout.addWidget(y_rpy_label)
-        self.inertial_y_rpy_input = QtWidgets.QLineEdit()
-        self.inertial_y_rpy_input.setFixedWidth(60)
-        self.inertial_y_rpy_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 6))
-        self.inertial_y_rpy_input.setPlaceholderText("0.0")
+        self.inertial_y_rpy_input = create_numeric_input(width=60)
         self.inertial_y_rpy_input.textChanged.connect(self.update_inertial_origin)
-        self.inertial_y_rpy_input.returnPressed.connect(self.update_inertial_origin)
+        self.inertial_y_rpy_input.editingFinished.connect(self.update_inertial_origin)
         origin_layout.addWidget(self.inertial_y_rpy_input)
 
         origin_layout.addStretch()  # Right margin
@@ -639,6 +681,7 @@ class InspectorWindow(QtWidgets.QWidget):
         content_layout.addSpacing(3)
 
         # Inertia Tensor section (ixx, ixy, ixz in row 1, iyy, iyz, izz in row 2)
+        # Uses NumericLineEdit for proper numeric validation and no exponential notation
         inertia_layout = QtWidgets.QVBoxLayout()
 
         # Row 1: ixx, ixy, ixz
@@ -649,12 +692,9 @@ class InspectorWindow(QtWidgets.QWidget):
         ixx_label.setFixedWidth(25)
         ixx_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         inertia_row1.addWidget(ixx_label)
-        self.ixx_input = QtWidgets.QLineEdit()
-        self.ixx_input.setFixedWidth(140)
-        self.ixx_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 6))
-        self.ixx_input.setPlaceholderText("0.0")
+        self.ixx_input = create_numeric_input(width=140)
         self.ixx_input.textChanged.connect(self.update_inertia)
-        self.ixx_input.returnPressed.connect(self.update_inertia)
+        self.ixx_input.editingFinished.connect(self.update_inertia)
         inertia_row1.addWidget(self.ixx_input)
         inertia_row1.addSpacing(5)
 
@@ -663,12 +703,9 @@ class InspectorWindow(QtWidgets.QWidget):
         ixy_label.setFixedWidth(25)
         ixy_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         inertia_row1.addWidget(ixy_label)
-        self.ixy_input = QtWidgets.QLineEdit()
-        self.ixy_input.setFixedWidth(140)
-        self.ixy_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 6))
-        self.ixy_input.setPlaceholderText("0.0")
+        self.ixy_input = create_numeric_input(width=140)
         self.ixy_input.textChanged.connect(self.update_inertia)
-        self.ixy_input.returnPressed.connect(self.update_inertia)
+        self.ixy_input.editingFinished.connect(self.update_inertia)
         inertia_row1.addWidget(self.ixy_input)
         inertia_row1.addSpacing(5)
 
@@ -677,12 +714,9 @@ class InspectorWindow(QtWidgets.QWidget):
         ixz_label.setFixedWidth(25)
         ixz_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         inertia_row1.addWidget(ixz_label)
-        self.ixz_input = QtWidgets.QLineEdit()
-        self.ixz_input.setFixedWidth(140)
-        self.ixz_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 6))
-        self.ixz_input.setPlaceholderText("0.0")
+        self.ixz_input = create_numeric_input(width=140)
         self.ixz_input.textChanged.connect(self.update_inertia)
-        self.ixz_input.returnPressed.connect(self.update_inertia)
+        self.ixz_input.editingFinished.connect(self.update_inertia)
         inertia_row1.addWidget(self.ixz_input)
         inertia_row1.addStretch()  # Right margin
         inertia_layout.addLayout(inertia_row1)
@@ -695,12 +729,9 @@ class InspectorWindow(QtWidgets.QWidget):
         iyy_label.setFixedWidth(25)
         iyy_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         inertia_row2.addWidget(iyy_label)
-        self.iyy_input = QtWidgets.QLineEdit()
-        self.iyy_input.setFixedWidth(140)
-        self.iyy_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 6))
-        self.iyy_input.setPlaceholderText("0.0")
+        self.iyy_input = create_numeric_input(width=140)
         self.iyy_input.textChanged.connect(self.update_inertia)
-        self.iyy_input.returnPressed.connect(self.update_inertia)
+        self.iyy_input.editingFinished.connect(self.update_inertia)
         inertia_row2.addWidget(self.iyy_input)
         inertia_row2.addSpacing(5)
 
@@ -709,12 +740,9 @@ class InspectorWindow(QtWidgets.QWidget):
         iyz_label.setFixedWidth(25)
         iyz_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         inertia_row2.addWidget(iyz_label)
-        self.iyz_input = QtWidgets.QLineEdit()
-        self.iyz_input.setFixedWidth(140)
-        self.iyz_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 6))
-        self.iyz_input.setPlaceholderText("0.0")
+        self.iyz_input = create_numeric_input(width=140)
         self.iyz_input.textChanged.connect(self.update_inertia)
-        self.iyz_input.returnPressed.connect(self.update_inertia)
+        self.iyz_input.editingFinished.connect(self.update_inertia)
         inertia_row2.addWidget(self.iyz_input)
         inertia_row2.addSpacing(5)
 
@@ -723,12 +751,9 @@ class InspectorWindow(QtWidgets.QWidget):
         izz_label.setFixedWidth(25)
         izz_label.setAlignment(Qt.AlignmentFlag.AlignRight)
         inertia_row2.addWidget(izz_label)
-        self.izz_input = QtWidgets.QLineEdit()
-        self.izz_input.setFixedWidth(140)
-        self.izz_input.setValidator(QDoubleValidator(-1000.0, 1000.0, 6))
-        self.izz_input.setPlaceholderText("0.0")
+        self.izz_input = create_numeric_input(width=140)
         self.izz_input.textChanged.connect(self.update_inertia)
-        self.izz_input.returnPressed.connect(self.update_inertia)
+        self.izz_input.editingFinished.connect(self.update_inertia)
         inertia_row2.addWidget(self.izz_input)
         inertia_row2.addStretch()  # Right margin
         inertia_layout.addLayout(inertia_row2)
@@ -1956,21 +1981,23 @@ class InspectorWindow(QtWidgets.QWidget):
 
     def _set_inertial_origin_ui(self, xyz, rpy):
         """Set values to Inertial Origin UI input fields (display with high precision, no exponential notation)"""
-        self.inertial_x_input.setText(format_float_no_exp(xyz[0]))
-        self.inertial_y_input.setText(format_float_no_exp(xyz[1]))
-        self.inertial_z_input.setText(format_float_no_exp(xyz[2]))
-        self.inertial_r_input.setText(format_float_no_exp(rpy[0]))
-        self.inertial_p_input.setText(format_float_no_exp(rpy[1]))
-        self.inertial_y_rpy_input.setText(format_float_no_exp(rpy[2]))
+        # Use setValue for NumericLineEdit to properly track last value and prevent signal loops
+        self.inertial_x_input.setValue(xyz[0])
+        self.inertial_y_input.setValue(xyz[1])
+        self.inertial_z_input.setValue(xyz[2])
+        self.inertial_r_input.setValue(rpy[0])
+        self.inertial_p_input.setValue(rpy[1])
+        self.inertial_y_rpy_input.setValue(rpy[2])
 
     def _set_inertia_ui(self, inertia_dict):
         """Set values to Inertia Tensor UI input fields (display with high precision, no exponential notation)"""
-        self.ixx_input.setText(format_float_no_exp(inertia_dict.get('ixx', 0.0)))
-        self.ixy_input.setText(format_float_no_exp(inertia_dict.get('ixy', 0.0)))
-        self.ixz_input.setText(format_float_no_exp(inertia_dict.get('ixz', 0.0)))
-        self.iyy_input.setText(format_float_no_exp(inertia_dict.get('iyy', 0.0)))
-        self.iyz_input.setText(format_float_no_exp(inertia_dict.get('iyz', 0.0)))
-        self.izz_input.setText(format_float_no_exp(inertia_dict.get('izz', 0.0)))
+        # Use setValue for NumericLineEdit to properly track last value and prevent signal loops
+        self.ixx_input.setValue(inertia_dict.get('ixx', 0.0))
+        self.ixy_input.setValue(inertia_dict.get('ixy', 0.0))
+        self.ixz_input.setValue(inertia_dict.get('ixz', 0.0))
+        self.iyy_input.setValue(inertia_dict.get('iyy', 0.0))
+        self.iyz_input.setValue(inertia_dict.get('iyz', 0.0))
+        self.izz_input.setValue(inertia_dict.get('izz', 0.0))
 
     def _set_color_ui(self, color_values):
         """Set values to color UI input fields (RGB or RGBA)"""
@@ -2286,8 +2313,12 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.current_node.graph.recalculate_all_positions()
 
     def closeEvent(self, event):
-        """Handle window close event"""
+        """Handle window close event - saves all pending values before closing"""
         try:
+            # Save all inertial values before closing
+            if self.current_node:
+                self._save_all_inertial_values()
+
             # Clear highlight
             if self.stl_viewer:
                 self.stl_viewer.clear_highlight()
@@ -2309,6 +2340,42 @@ class InspectorWindow(QtWidgets.QWidget):
         except Exception as e:
             print(f"Error in closeEvent: {str(e)}")
             event.accept()
+
+    def _save_all_inertial_values(self):
+        """Save all inertial input field values to the current node"""
+        if not self.current_node:
+            return
+
+        try:
+            # Save Inertial Origin (x, y, z, r, p, y)
+            origin_xyz = [
+                float(self.inertial_x_input.text()) if self.inertial_x_input.text() else 0.0,
+                float(self.inertial_y_input.text()) if self.inertial_y_input.text() else 0.0,
+                float(self.inertial_z_input.text()) if self.inertial_z_input.text() else 0.0
+            ]
+            origin_rpy = [
+                float(self.inertial_r_input.text()) if self.inertial_r_input.text() else 0.0,
+                float(self.inertial_p_input.text()) if self.inertial_p_input.text() else 0.0,
+                float(self.inertial_y_rpy_input.text()) if self.inertial_y_rpy_input.text() else 0.0
+            ]
+            if not hasattr(self.current_node, 'inertial_origin'):
+                self.current_node.inertial_origin = {}
+            self.current_node.inertial_origin['xyz'] = origin_xyz
+            self.current_node.inertial_origin['rpy'] = origin_rpy
+
+            # Save Inertia Tensor (ixx, ixy, ixz, iyy, iyz, izz)
+            inertia_values = {
+                'ixx': float(self.ixx_input.text()) if self.ixx_input.text() else 0.0,
+                'ixy': float(self.ixy_input.text()) if self.ixy_input.text() else 0.0,
+                'ixz': float(self.ixz_input.text()) if self.ixz_input.text() else 0.0,
+                'iyy': float(self.iyy_input.text()) if self.iyy_input.text() else 0.0,
+                'iyz': float(self.iyz_input.text()) if self.iyz_input.text() else 0.0,
+                'izz': float(self.izz_input.text()) if self.izz_input.text() else 0.0
+            }
+            self.current_node.inertia = inertia_values
+
+        except ValueError as e:
+            print(f"Warning: Could not save some inertial values: {e}")
 
     def _load_xml_common_properties(self, root, xml_dir):
         """Load common properties from XML file (shared by load_xml and load_xml_with_stl)
@@ -15719,10 +15786,77 @@ class CustomNodeGraph(NodeGraph):
             if not fix_base_to_ground:
                 file.write(f'{indent_str}  <freejoint />\n')
 
-            # Moving body freejoint inertial check
+            # Output inertial for root body (freejoint body needs proper inertia)
             has_inertial = False
             if hasattr(node, 'mass_value') and node.mass_value > 0:
-                has_inertial = True
+                MIN_MASS = 0.001
+                mass = max(node.mass_value, MIN_MASS)
+
+                if hasattr(node, 'inertia') and isinstance(node.inertia, dict) and node.inertia:
+                    # Get Inertial Origin (CoM position and rotation)
+                    com_pos = "0 0 0"
+                    rpy = [0.0, 0.0, 0.0]
+
+                    if hasattr(node, 'inertial_origin') and isinstance(node.inertial_origin, dict):
+                        xyz = node.inertial_origin.get('xyz', [0.0, 0.0, 0.0])
+                        com_pos = f"{format_float_no_exp(xyz[0])} {format_float_no_exp(xyz[1])} {format_float_no_exp(xyz[2])}"
+                        rpy = node.inertial_origin.get('rpy', [0.0, 0.0, 0.0])
+
+                    # Transform inertia from inertial frame to body frame
+                    I_body = self._transform_inertia_to_body_frame(node.inertia, rpy)
+                    I_body = self._ensure_symmetric_positive_definite(I_body)
+
+                    # Apply minimum threshold for MuJoCo
+                    ZERO_THRESHOLD = 1e-12
+                    for i in range(3):
+                        if abs(I_body[i, i]) < ZERO_THRESHOLD:
+                            I_body[i, i] = ZERO_THRESHOLD
+
+                    # Ensure symmetry
+                    I_body = 0.5 * (I_body + I_body.T)
+
+                    # Triangle inequality corrections for valid inertia tensor
+                    Ixx, Iyy, Izz = I_body[0, 0], I_body[1, 1], I_body[2, 2]
+                    epsilon = 1e-8
+                    for _ in range(5):
+                        violations = 0
+                        if Ixx + Iyy < Izz - epsilon:
+                            violations += 1
+                            target_sum = Izz + epsilon
+                            if Ixx + Iyy > 0:
+                                Ixx = target_sum * Ixx / (Ixx + Iyy)
+                                Iyy = target_sum - Ixx
+                            else:
+                                Ixx = Iyy = target_sum / 2.0
+                        if Iyy + Izz < Ixx - epsilon:
+                            violations += 1
+                            target_sum = Ixx + epsilon
+                            if Iyy + Izz > 0:
+                                Iyy = target_sum * Iyy / (Iyy + Izz)
+                                Izz = target_sum - Iyy
+                            else:
+                                Iyy = Izz = target_sum / 2.0
+                        if Izz + Ixx < Iyy - epsilon:
+                            violations += 1
+                            target_sum = Iyy + epsilon
+                            if Izz + Ixx > 0:
+                                Izz = target_sum * Izz / (Izz + Ixx)
+                                Ixx = target_sum - Izz
+                            else:
+                                Izz = Ixx = target_sum / 2.0
+                        if violations == 0:
+                            break
+
+                    I_body[0, 0], I_body[1, 1], I_body[2, 2] = Ixx, Iyy, Izz
+                    I_body = 0.5 * (I_body + I_body.T)
+
+                    # Format for MJCF fullinertia
+                    fullinertia_str = self._format_inertia_for_mjcf(I_body)
+                    mass_str = format_float_no_exp(mass)
+
+                    file.write(f'{indent_str}  <inertial pos="{com_pos}" mass="{mass_str}" fullinertia="{fullinertia_str}" />\n')
+                    has_inertial = True
+                    print(f"  [MJCF Root] Added inertial for root body: mass={mass_str}")
 
             # If geom
             if not is_all_defaults:
