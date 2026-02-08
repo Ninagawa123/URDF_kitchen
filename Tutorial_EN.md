@@ -32,6 +32,18 @@ Navigate to the directory containing the six files (urdf_kitchen_Launcher.py, ur
 python urdf_kitchen_Launcher.py  
 ```  
   
+>If you use `uv`, you can reproduce the environment with:
+>
+>```bash
+>uv sync
+>```
+>
+>Move to the directory containing `urdf_kitchen_Launcher.py` and run:
+>
+>```bash
+>uv run urdf_kitchen_Launcher.py
+>```
+
 The launcher will start, giving you access to Mesh Sourcer, Parts Editor, and Assembler.  
   
 ---  
