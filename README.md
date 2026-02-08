@@ -39,6 +39,21 @@ Robot parts will be expanded as nodes.
 Drag the `out` port of `base_link` and connect it to the `in` port of any node.  
 By chaining `out` and `in` ports, you can assemble the robot model.
 
+If you use `uv`, you can reproduce the environment with:
+
+```bash
+uv sync
+```
+
+Move to the directory containing `urdf_kitchen_Launcher.py` and run:
+
+```bash
+uv run urdf_kitchen_Launcher.py
+```
+
+
+
+
 ---
 
 ## Tools
