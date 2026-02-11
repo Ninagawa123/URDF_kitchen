@@ -7,7 +7,7 @@ Description: URDF/MJCF Import functionality for URDF Kitchen.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Jan 31, 2026
+Update.     : Feb 11, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
