@@ -52,6 +52,7 @@ from urdf_kitchen_utils import (
 
 DEFAULT_JOINT_EFFORT = 1.37  # N*m
 DEFAULT_JOINT_VELOCITY = 7.0  # rad/s
+DEFAULT_JOINT_DAMPING = 0.18  # N*m*s/rad
 DEFAULT_MARGIN = 0.01  # m
 DEFAULT_ARMATURE = 0.01  # kg*m^2
 DEFAULT_FRICTIONLOSS = 0.01  # N*m
@@ -99,6 +100,92 @@ class URDFParser:
         """
         self.verbose = verbose
 
+    def _extract_xacro_package_names(self, xacro_file_path, visited=None):
+        """Extract package names referenced in xacro file and its includes.
+
+        Scans xacro file for $(find package_name) and package://package_name/...
+        patterns, recursively including referenced xacro files.
+
+        Args:
+            xacro_file_path: Path to xacro file
+            visited: Set of already visited file paths (for recursion)
+
+        Returns:
+            Set of package names found in the xacro file tree
+        """
+        import re
+
+        if visited is None:
+            visited = set()
+
+        xacro_file_abs = os.path.abspath(xacro_file_path)
+        if xacro_file_abs in visited:
+            return set()
+        visited.add(xacro_file_abs)
+
+        package_names = set()
+
+        if not os.path.exists(xacro_file_abs):
+            return package_names
+
+        try:
+            with open(xacro_file_abs, 'r', encoding='utf-8') as f:
+                content = f.read()
+        except Exception as e:
+            if self.verbose:
+                print(f"  Warning: Could not read xacro file {xacro_file_abs}: {e}")
+            return package_names
+
+        # Pattern for $(find package_name)
+        find_pattern = r'\$\(find\s+([a-zA-Z_][a-zA-Z0-9_]*)\)'
+        for match in re.finditer(find_pattern, content):
+            package_names.add(match.group(1))
+
+        # Pattern for package://package_name/...
+        pkg_pattern = r'package://([a-zA-Z_][a-zA-Z0-9_]*)[/"]'
+        for match in re.finditer(pkg_pattern, content):
+            package_names.add(match.group(1))
+
+        # Find xacro:include references and recursively scan
+        # Pattern: <xacro:include filename="..." />
+        include_pattern = r'<xacro:include\s+filename="([^"]+)"'
+        xacro_dir = os.path.dirname(xacro_file_abs)
+
+        for match in re.finditer(include_pattern, content):
+            include_path = match.group(1)
+
+            # Try to resolve the include path
+            resolved_include = None
+
+            # If it contains $(find ...), try to resolve
+            if '$(find' in include_path:
+                # Extract package name and relative path
+                find_match = re.search(find_pattern, include_path)
+                if find_match:
+                    pkg_name = find_match.group(1)
+                    # Try to find the package root
+                    pkg_root = find_package_root(xacro_file_abs, pkg_name, verbose=False)
+                    if pkg_root:
+                        # Replace $(find pkg_name) with package root
+                        resolved_include = re.sub(
+                            find_pattern,
+                            pkg_root,
+                            include_path
+                        )
+            else:
+                # Relative path from current xacro file
+                resolved_include = os.path.join(xacro_dir, include_path)
+
+            if resolved_include and os.path.exists(resolved_include):
+                # Recursively scan included file
+                child_packages = self._extract_xacro_package_names(resolved_include, visited)
+                package_names.update(child_packages)
+
+        if self.verbose and package_names:
+            print(f"  Found package references in {os.path.basename(xacro_file_abs)}: {package_names}")
+
+        return package_names
+
     def _expand_xacro(self, xacro_file_path):
         """Expand xacro file to URDF XML string using xacrodoc.
 
@@ -121,12 +208,33 @@ class URDFParser:
         # Try xacrodoc library
         try:
             from xacrodoc import XacroDoc
-            
+            import xacrodoc as xd
+
             if self.verbose:
                 print("Using xacrodoc library")
-            
-            # Create XacroDoc object from xacro file
+
             xacro_file_abs = os.path.abspath(xacro_file_path)
+
+            # Extract package names referenced in xacro and register with xacrodoc
+            package_names = self._extract_xacro_package_names(xacro_file_abs)
+            if package_names:
+                package_cache = {}
+                for pkg_name in package_names:
+                    pkg_root = find_package_root(xacro_file_abs, pkg_name, verbose=self.verbose)
+                    if pkg_root:
+                        package_cache[pkg_name] = pkg_root
+                        if self.verbose:
+                            print(f"  Registered package: {pkg_name} -> {pkg_root}")
+                    else:
+                        if self.verbose:
+                            print(f"  Warning: Could not find package root for: {pkg_name}")
+
+                if package_cache:
+                    xd.packages.update_package_cache(package_cache)
+                    if self.verbose:
+                        print(f"  Updated xacrodoc package cache with {len(package_cache)} packages")
+
+            # Create XacroDoc object from xacro file
             doc = XacroDoc.from_file(xacro_file_abs)
 
             # Convert to URDF string
@@ -4373,15 +4481,51 @@ def import_urdf(graph):
             
             # Check if links and joints are not empty
             if len(links_data) == 0:
+                # Detect if this is an include-only xacro file
+                file_basename = os.path.basename(urdf_file).lower()
+                file_dir = os.path.dirname(urdf_file)
+                is_include_only = False
+                suggested_main_file = None
+
+                # Check if file is likely an include-only helper file
+                include_keywords = ['common', 'macro', 'transmission', 'gazebo', 'material']
+                if any(kw in file_basename for kw in include_keywords):
+                    is_include_only = True
+
+                # Search for main xacro file in robots/ directory
+                parent_dir = os.path.dirname(file_dir)
+                robots_dir = os.path.join(parent_dir, 'robots')
+                if os.path.isdir(robots_dir):
+                    for f in os.listdir(robots_dir):
+                        if f.endswith('.xacro') or f.endswith('.urdf.xacro'):
+                            suggested_main_file = os.path.join(robots_dir, f)
+                            is_include_only = True
+                            break
+
+                if is_include_only:
+                    msg = (
+                        f"No links were found in this file.\n\n"
+                        f"This file appears to be an include-only xacro file\n"
+                        f"(contains macros, properties, or gazebo definitions only).\n\n"
+                        f"Please open the main xacro file instead."
+                    )
+                    if suggested_main_file:
+                        msg += f"\n\nSuggested main file:\n{suggested_main_file}"
+                    msg += f"\n\nCurrent file: {urdf_file}"
+                else:
+                    msg = (
+                        f"No links were found in the URDF file.\n\n"
+                        f"This might indicate:\n"
+                        f"1. The xacro file was not properly expanded\n"
+                        f"2. The URDF structure is invalid\n"
+                        f"3. The file is empty or corrupted\n\n"
+                        f"File: {urdf_file}"
+                    )
+
                 QtWidgets.QMessageBox.warning(
                     graph.widget,
                     "No Links Found",
-                    f"No links were found in the URDF file.\n\n"
-                    f"This might indicate:\n"
-                    f"1. The xacro file was not properly expanded\n"
-                    f"2. The URDF structure is invalid\n"
-                    f"3. The file is empty or corrupted\n\n"
-                    f"File: {urdf_file}"
+                    msg
                 )
                 return False
             
