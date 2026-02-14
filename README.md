@@ -14,7 +14,7 @@ As a bonus feature, existing URDF and MJCF files can be imported and adjusted wi
 
 Since the codebase is written in Python, users can freely modify the UI, fix bugs, or extend functionality using AI-assisted coding.
 
-[![ShortDemoVideo](https://github.com/Ninagawa123/URDF_kitchen/blob/beta2/docs/img/video.png)](https://youtu.be/bFbzFkxpJYs?si=5_F-aAvivPTxLGRe)
+[ShortDemoVideo](https://youtu.be/bFbzFkxpJYs?si=5_F-aAvivPTxLGRe)
 
 ---
 
