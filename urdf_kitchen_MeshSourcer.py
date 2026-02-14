@@ -244,6 +244,9 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.mouse_pressed = False
         self.last_mouse_pos = None
         self.vtk_display.installEventFilter(self)
+        
+
+
 
         left_layout.addWidget(self.vtk_display)
         main_layout.addWidget(left_widget, 70)
@@ -301,7 +304,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         right_layout.addSpacing(10)
         self.setup_reorient_mesh_ui(right_layout)
-
+        ###################### Mesh Rotation #########################
+        right_layout.addSpacing(10)
+        self.setup_mesh_bake_ui(right_layout) 
+        ###############################################################
         right_layout.addSpacing(10)
         self.setup_collider_ui(right_layout)
 
@@ -1860,6 +1866,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
         mapper.SetInputConnection(triangulate.GetOutputPort())
         self.stl_actor = vtk.vtkActor()
         self.stl_actor.SetMapper(mapper)
+        ################# introduce a mesh transform (preview only) ####################
+        self.mesh_transform = vtk.vtkTransform()
+        self.mesh_transform.Identity()
+        self.stl_actor.SetUserTransform(self.mesh_transform)
+        ################################################################################
 
         self.model_bounds = triangulate.GetOutput().GetBounds()
         self.renderer.AddActor(self.stl_actor)
@@ -3423,6 +3434,183 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         self.update_axes_widget(x_axis, y_axis, z_axis)
         self.reset_camera()
+
+    ############################### Mesh rotation helpers ###############################
+    def setup_mesh_bake_ui(self, layout):
+        """Setup Mesh Bake UI group box (controllers only)"""
+        from PySide6.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QDoubleSpinBox, QPushButton
+        from PySide6.QtCore import Qt
+
+        group = QGroupBox("Mesh Bake")
+        v = QVBoxLayout()
+        v.setSpacing(4)
+        v.setContentsMargins(8, 8, 8, 8)
+
+        def add_spin_row(name, default=0.0):
+            row = QHBoxLayout()
+            row.setSpacing(6)
+
+            lab = QLabel(name)
+            lab.setMinimumWidth(55)
+
+            sp = QDoubleSpinBox()
+            sp.setRange(-360.0, 360.0)
+            sp.setDecimals(1)
+            sp.setSingleStep(5.0)
+            sp.setValue(default)
+            sp.setKeyboardTracking(False)
+            sp.setAlignment(Qt.AlignRight)
+            sp.setMaximumWidth(120)
+
+            row.addWidget(lab)
+            row.addWidget(sp)
+            row.addStretch()
+            v.addLayout(row)
+            return sp
+
+        # Rotation inputs (degrees)
+        self.mesh_bake_roll = add_spin_row("Roll", 0.0)
+        self.mesh_bake_pitch = add_spin_row("Pitch", 0.0)
+        self.mesh_bake_yaw = add_spin_row("Yaw", 0.0)
+
+        # Button row 1
+        row1 = QHBoxLayout()
+        row1.setSpacing(6)
+
+        self.mesh_apply_view_btn = QPushButton("Apply to View")
+        self.mesh_apply_view_btn.setFocusPolicy(Qt.NoFocus)
+
+        self.mesh_reset_xform_btn = QPushButton("Reset Xform")
+        self.mesh_reset_xform_btn.setFocusPolicy(Qt.NoFocus)
+
+        row1.addWidget(self.mesh_apply_view_btn)
+        row1.addWidget(self.mesh_reset_xform_btn)
+        v.addLayout(row1)
+
+        # Button row 2
+        row2 = QHBoxLayout()
+        row2.setSpacing(6)
+
+        self.mesh_bake_btn = QPushButton("Bake into Mesh")
+        self.mesh_bake_btn.setFocusPolicy(Qt.NoFocus)
+
+        self.mesh_from_view_btn = QPushButton("From View")
+        self.mesh_from_view_btn.setFocusPolicy(Qt.NoFocus)
+
+        row2.addWidget(self.mesh_bake_btn)
+        row2.addWidget(self.mesh_from_view_btn)
+        v.addLayout(row2)
+
+        # Wire signals to stub handlers (implement later)
+        self.mesh_apply_view_btn.clicked.connect(self.on_mesh_apply_to_view_clicked)
+        self.mesh_reset_xform_btn.clicked.connect(self.on_mesh_reset_transform_clicked)
+        self.mesh_bake_btn.clicked.connect(self.on_mesh_bake_clicked)
+        self.mesh_from_view_btn.clicked.connect(self.on_mesh_from_view_clicked)
+
+        # Return focus to vtk_display after clicking (consistent with your UI)
+        for b in (self.mesh_apply_view_btn, self.mesh_reset_xform_btn, self.mesh_bake_btn, self.mesh_from_view_btn):
+            b.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+
+        group.setLayout(v)
+        layout.addWidget(group)
+    def on_mesh_apply_to_view_clicked(self):
+        roll = float(self.mesh_bake_roll.value())
+        pitch = float(self.mesh_bake_pitch.value())
+        yaw = float(self.mesh_bake_yaw.value())
+        print(f"[MeshBake] Apply to View: roll={roll}, pitch={pitch}, yaw={yaw}")
+        # TODO: rotate actor for preview (visual only)
+
+    def on_mesh_reset_transform_clicked(self):
+        print("[MeshBake] Reset Transform")
+        # TODO: reset actor transform to identity
+
+    def on_mesh_bake_clicked(self):
+        roll = float(self.mesh_bake_roll.value())
+        pitch = float(self.mesh_bake_pitch.value())
+        yaw = float(self.mesh_bake_yaw.value())
+        print(f"[MeshBake] Bake into Mesh: roll={roll}, pitch={pitch}, yaw={yaw}")
+        # TODO: actually bake into polydata and update mapper
+
+    def on_mesh_from_view_clicked(self):
+        print("[MeshBake] From View")
+        # TODO: read current mesh transform and fill spinboxes
+    
+    ############################### End Mesh rotation helpers ###############################
+    ############################ Transformation helpers ############################
+    def on_mesh_apply_to_view_clicked(self): # This sets the actor transform using your spinboxes.
+        if not hasattr(self, "mesh_transform"):
+            return
+
+        r = self.mesh_bake_roll.value()
+        p = self.mesh_bake_pitch.value()
+        y = self.mesh_bake_yaw.value()
+
+        self.mesh_transform.Identity()
+        self.mesh_transform.RotateX(r)
+        self.mesh_transform.RotateY(p)
+        self.mesh_transform.RotateZ(y)
+
+        #self.vtk_display.GetRenderWindow().Render()
+        self.render_to_image()
+    def on_mesh_reset_transform_clicked(self): # Reset Transform
+        if not hasattr(self, "mesh_transform"):
+            return
+
+        self.mesh_transform.Identity()
+        self.mesh_bake_roll.setValue(0.0)
+        self.mesh_bake_pitch.setValue(0.0)
+        self.mesh_bake_yaw.setValue(0.0)
+
+        #self.vtk_display.GetRenderWindow().Render()
+        self.render_to_image()
+
+    def on_mesh_from_view_clicked(self): #Reads actor orientation back into UI.
+        if not hasattr(self, "mesh_transform"):
+            return
+
+        mat = self.mesh_transform.GetMatrix()
+
+        import math
+        # Extract XYZ Euler angles (VTK uses degrees internally)
+        pitch = math.asin(-mat.GetElement(2, 0))
+        roll = math.atan2(mat.GetElement(2, 1), mat.GetElement(2, 2))
+        yaw = math.atan2(mat.GetElement(1, 0), mat.GetElement(0, 0))
+
+        self.mesh_bake_roll.setValue(math.degrees(roll))
+        self.mesh_bake_pitch.setValue(math.degrees(pitch))
+        self.mesh_bake_yaw.setValue(math.degrees(yaw))
+
+    def on_mesh_bake_clicked(self): # Bakes the current transform into the mesh geometry.
+        if not hasattr(self, "mesh_transform"):
+            return
+
+        poly = self.stl_actor.GetMapper().GetInput()
+        if poly is None:
+            return
+
+        tf = vtk.vtkTransformPolyDataFilter()
+        tf.SetInputData(poly)
+        tf.SetTransform(self.mesh_transform)
+        tf.Update()
+
+        baked = vtk.vtkPolyData()
+        baked.ShallowCopy(tf.GetOutput())
+
+        # Replace mapper input with baked geometry
+        self.stl_actor.GetMapper().SetInputData(baked)
+        self.stl_actor.GetMapper().Update()
+
+        # Reset transform so it doesn't double-apply
+        self.mesh_transform.Identity()
+        self.mesh_bake_roll.setValue(0.0)
+        self.mesh_bake_pitch.setValue(0.0)
+        self.mesh_bake_yaw.setValue(0.0)
+
+        #self.vtk_display.GetRenderWindow().Render()
+        self.render_to_image()
+
+        print("[MeshBake] Geometry baked successfully.")
+
 
 # signal_handler moved to urdf_kitchen_utils.py
 # Now using setup_signal_handlers()
