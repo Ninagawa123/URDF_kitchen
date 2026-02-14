@@ -14,6 +14,8 @@ Colliderの設定にも対応し、ColliderとしてMeshを設定できる他、
     
 コードがPythonであるため、AIコーディングを活用すればユーザーが自由にUI変更やデバグ、機能拡張などをすることができます。  
 
+[短いデモビデオ](https://youtu.be/bFbzFkxpJYs?si=5_F-aAvivPTxLGRe)
+
 # Quick Start  
 
 リポジトリの[/beta2](https://github.com/Ninagawa123/URDF_kitchen/tree/beta2)の右上の緑ボタンからダウンロードして展開するか、git clone後にブランチをbeta2に切り替えてから始めてください。
