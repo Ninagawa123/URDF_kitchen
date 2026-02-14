@@ -4,7 +4,7 @@ Description: A Python script for reconfiguring the center coordinates and axis d
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 31, 2026
+Update.     : Feb 15, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -39,7 +39,8 @@ except ImportError:
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QMainWindow, QVBoxLayout, QWidget,
     QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout,
-    QComboBox, QGroupBox, QScrollArea, QButtonGroup, QRadioButton, QSizePolicy
+    QComboBox, QGroupBox, QScrollArea, QButtonGroup, QRadioButton, QSizePolicy,
+    QDoubleSpinBox
 )
 from PySide6.QtCore import QTimer, Qt, QObject, QRegularExpression
 from PySide6.QtGui import QRegularExpressionValidator
@@ -197,12 +198,12 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.resize(1000, 700)  # Wider window, 680px height
 
         self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
-        self.absolute_origin = [0, 0, 0]  # 大原点の設定
-        self.initial_camera_position = [10, 0, 0]  # 初期カメラ位置
-        self.initial_camera_focal_point = [0, 0, 0]  # 初期焦点
-        self.initial_camera_view_up = [0, 0, 1]  # 初期の上方向
+        self.absolute_origin = [0, 0, 0]  # Absolute origin setting
+        self.initial_camera_position = [10, 0, 0]  # Initial camera position
+        self.initial_camera_focal_point = [0, 0, 0]  # Initial focal point
+        self.initial_camera_view_up = [0, 0, 1]  # Initial view up direction
 
-        self.num_points = 1  # ポイントの数を1に設定
+        self.num_points = 1  # Set number of points to 1
         self.point_coords = [list(self.absolute_origin) for _ in range(self.num_points)]
         self.point_actors = [None] * self.num_points
         self.point_checkboxes = []
@@ -211,19 +212,19 @@ class MainWindow(VTKViewerBase, QMainWindow):
         # Track loaded STL file path for save dialog defaults
         self.current_stl_path = None
 
-        # メインウィジェットとレイアウトの設定（横分割）
+        # Main widget and layout setup (horizontal split)
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
 
         self.set_ui_style()
 
-        # 左側：3Dビュー
+        # Left side: 3D view
         left_widget = QWidget()
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        # STL表示画面 - Use QLabel instead of QVTKRenderWindowInteractor for M4 Mac compatibility
+        # STL display - Use QLabel instead of QVTKRenderWindowInteractor for M4 Mac compatibility
         self.vtk_display = QLabel()
         self.vtk_display.setMinimumSize(600, 600)
         self.vtk_display.setStyleSheet("""
@@ -304,10 +305,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         right_layout.addSpacing(10)
         self.setup_reorient_mesh_ui(right_layout)
-        ###################### Mesh Rotation #########################
-        right_layout.addSpacing(10)
-        self.setup_mesh_bake_ui(right_layout) 
-        ###############################################################
         right_layout.addSpacing(10)
         self.setup_collider_ui(right_layout)
 
@@ -318,14 +315,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         # Delay VTK setup until after window is shown
         self.vtk_initialized = False
-        self.vtk_fully_ready = False  # VTK初期化完了フラグ
-        self.pending_file_to_load = None  # 初期化後に読み込むファイル
+        self.vtk_fully_ready = False  # VTK initialization complete flag
+        self.pending_file_to_load = None  # File to load after initialization
 
         self.model_bounds = None
         self.stl_actor = None
         self.current_rotation = 0
 
-        self.stl_center = list(self.absolute_origin)  # STLモデルの中心を大原点に初期化
+        self.stl_center = list(self.absolute_origin)  # Initialize STL model center to absolute origin
 
         # Wireframe mode state
         self.wireframe_mode = False
@@ -398,7 +395,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         try:
             QTimer.singleShot(200, self.render_to_image)
             QTimer.singleShot(300, lambda: self.vtk_display.setFocus())
-            # VTK初期化完了後、保留中のファイルがあれば読み込む
+            # After VTK initialization, load pending file if any
             QTimer.singleShot(400, self._load_pending_file)
         except Exception as e:
             print(f"ERROR in VTK final step: {e}")
@@ -458,6 +455,27 @@ class MainWindow(VTKViewerBase, QMainWindow):
             QMainWindow {
                 background-color: #2b2b2b;
             }
+            QDoubleSpinBox {                                                                                                                                                                
+                min-height: 20px;
+                background-color: #3a3a3a;                                                                                                                                                  
+                color: #ffffff;                                                                                                                                                             
+                border: 1px solid #5a5a5a;                                                                                                                                                  
+                border-radius: 3px;                                                                                                                                                               
+            }     
+            QDoubleSpinBox::up-arrow {                                                                                                                                                      
+                width: 14px;                                                                                                                                                                
+                height: 14px;                                                                                                                                                               
+            }                                                                                                                                                                               
+            QDoubleSpinBox::down-arrow {                                                                                                                                                    
+                width: 14px;                                                                                                                                                                
+                height: 14px;                                                                                                                                                               
+            }      
+            QDoubleSpinBox::up-button {                                                                                                                                                     
+                width: 24px;                                                                                                                                                                
+            }                                                                                                                                                                               
+            QDoubleSpinBox::down-button {                                                                                                                                                   
+                width: 24px;                                                                                                                                                                
+            }         
             QScrollArea {
                 background-color: #2b2b2b;
                 border: none;
@@ -475,7 +493,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 border: 1px solid #707070;
                 border-radius: 5px;
                 padding: 3px 8px;
-                min-height: 20px;
+                min-height: 16px;
             }
             QPushButton:hover {
                 background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
@@ -585,12 +603,12 @@ class MainWindow(VTKViewerBase, QMainWindow):
         reorient_layout.setSpacing(4)  # Reduce vertical spacing
         reorient_layout.setContentsMargins(8, 8, 8, 8)  # Reduce margins
 
-        # Volume表示
+        # Volume display
         self.volume_label = QLabel("Volume (m^3): 0.000000")
         self.volume_label.setMaximumWidth(380)  # Prevent horizontal expansion
         reorient_layout.addWidget(self.volume_label)
         
-        # Width and Height表示 (horizontal layout)
+        # Width and Height display (horizontal layout)
         dimensions_layout = QHBoxLayout()
         dimensions_layout.setSpacing(10)
         self.width_label = QLabel("Width (m): 0.000000")
@@ -634,6 +652,31 @@ class MainWindow(VTKViewerBase, QMainWindow):
         reorient_layout.addLayout(clean_mesh_layout)
 
         # Add spacing after Clean Mesh checkbox
+        reorient_layout.addSpacing(2)
+
+        # Rotation inputs (degrees) - all in one row
+        rpy_row = QHBoxLayout()
+        rpy_row.setSpacing(4)
+        rpy_row.addWidget(QLabel("Rotation:"))
+        for name, attr in [("Roll:", "mesh_bake_roll"), (" Pitch:", "mesh_bake_pitch"), (" Yaw:", "mesh_bake_yaw")]:
+            lab = QLabel(name)
+            sp = QDoubleSpinBox()
+            sp.setRange(-360.0, 360.0)
+            sp.setDecimals(1)
+            sp.setSingleStep(5.0)
+            sp.setValue(0.0)
+            sp.setKeyboardTracking(False)
+            sp.setAlignment(Qt.AlignRight)
+            sp.setMaximumWidth(60)
+            sp.setStyleSheet("color: white;")
+            sp.valueChanged.connect(self.on_mesh_apply_to_view_clicked)
+            setattr(self, attr, sp)
+            rpy_row.addWidget(lab)
+            rpy_row.addWidget(sp)
+        rpy_row.addStretch()
+        reorient_layout.addLayout(rpy_row)
+
+        # Add spacing after R/P/Y
         reorient_layout.addSpacing(2)
 
         # Save, Reset Marker, and Set Front as X buttons (horizontal layout)
@@ -1613,7 +1656,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.camera_controller.reset_camera(position=[10, 0, 0], view_up=[0, 0, 1])
         self.camera_rotation = [0, 0, 0]
         self.current_rotation = 0
-        # 回転アニメーションの状態をリセット
+        # Reset rotation animation state
         if hasattr(self, 'animation_timer') and self.animation_timer.isActive():
             self.animation_timer.stop()
         self.is_animating = False
@@ -1639,13 +1682,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
         renderer = self.renderer
         camera = renderer.GetActiveCamera()
 
-        # スクリーン座標からワールド座標への変換
+        # Convert screen coordinates to world coordinates
         coordinate = vtk.vtkCoordinate()
         coordinate.SetCoordinateSystemToDisplay()
         coordinate.SetValue(x, y, 0)
         world_pos = coordinate.GetComputedWorldValue(renderer)
 
-        # カメラの向きに基づいて、z座標を現在のポイントのz座標に保つ
+        # Keep z coordinate based on camera direction
         camera_pos = np.array(camera.GetPosition())
         focal_point = np.array(camera.GetFocalPoint())
         view_direction = focal_point - camera_pos
@@ -1669,11 +1712,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
             self.point_inputs[index][i].setText(f"{coord:.8f}")
 
     def update_properties(self):
-        # 優先順位: Mass > Volume > Inertia > Density
+        # Priority: Mass > Volume > Inertia > Density
         priority_order = ['mass', 'volume', 'inertia', 'density']
         values = {}
 
-        # チェックされているプロパティの値を取得
+        # Get values of checked properties
         for prop in priority_order:
             checkbox = getattr(self, f"{prop}_checkbox")
             input_field = getattr(self, f"{prop}_input")
@@ -1684,7 +1727,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                     print(f"Invalid input for {prop}")
                     return
 
-        # 値の計算
+        # Calculate values
         if 'mass' in values and 'volume' in values:
             values['density'] = values['mass'] / values['volume']
         elif 'mass' in values and 'density' in values:
@@ -1692,10 +1735,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
         elif 'volume' in values and 'density' in values:
             values['mass'] = values['volume'] * values['density']
 
-        # Inertia計算は削除（精密計算が必要な場合はcalculate_inertia_with_trimesh使用）
-        # 簡略化された立方体仮定の計算は使用しない
+        # Inertia calculation removed (use calculate_inertia_with_trimesh for precise calculation)
+        # Do not use simplified cube assumption calculation
 
-        # 結果を入力フィールドに反映
+        # Apply results to input fields
         for prop in priority_order:
             input_field = getattr(self, f"{prop}_input")
             if prop in values:
@@ -1750,7 +1793,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         if not hasattr(self, 'text_actors'):
             self.text_actors = []
 
-        # 左上のテキスト
+        # Top-left text
         text_actor_top = vtk.vtkTextActor()
         text_actor_top.SetInput(
             "[W/S]: Up/Down Rotate\n"
@@ -1762,15 +1805,15 @@ class MainWindow(VTKViewerBase, QMainWindow):
             "[Shift + Drag]: Move View\n"
         )
         text_actor_top.GetTextProperty().SetFontSize(14)
-        text_actor_top.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # 水色
+        text_actor_top.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # Light blue
         text_actor_top.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
-        text_actor_top.SetPosition(0.03, 0.97)  # 左上に配置
+        text_actor_top.SetPosition(0.03, 0.97)  # Position at top-left
         text_actor_top.GetTextProperty().SetJustificationToLeft()
         text_actor_top.GetTextProperty().SetVerticalJustificationToTop()
         self.renderer.AddActor(text_actor_top)
         self.text_actors.append(text_actor_top)
 
-        # 左下のテキスト
+        # Bottom-left text
         self.text_actor_bottom = vtk.vtkTextActor()
         # Default instruction text (for point editing mode)
         self.default_instruction_text = (
@@ -1787,9 +1830,9 @@ class MainWindow(VTKViewerBase, QMainWindow):
         )
         self.text_actor_bottom.SetInput(self.default_instruction_text)
         self.text_actor_bottom.GetTextProperty().SetFontSize(14)
-        self.text_actor_bottom.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # 水色
+        self.text_actor_bottom.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # Light blue
         self.text_actor_bottom.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
-        self.text_actor_bottom.SetPosition(0.03, 0.03)  # 左下に配置
+        self.text_actor_bottom.SetPosition(0.03, 0.03)  # Position at bottom-left
         self.text_actor_bottom.GetTextProperty().SetJustificationToLeft()
         self.text_actor_bottom.GetTextProperty().SetVerticalJustificationToBottom()
         self.renderer.AddActor(self.text_actor_bottom)
@@ -1819,7 +1862,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             try:
                 self.show_stl(file_path)
-                # 読み込み直後はRと同じカメラ初期化を行う（WASDの90度回転を正確にするため）
+                # Initialize camera same as R key after loading (for accurate WASD 90-degree rotation)
                 self.reset_camera()
 
                 # Reset all Center Position points to origin
@@ -3332,7 +3375,16 @@ class MainWindow(VTKViewerBase, QMainWindow):
             origin_index = next(i for i, actor in enumerate(self.point_actors) if actor and actor.GetVisibility())
             origin_point = self.point_coords[origin_index]
 
+            # Get rotation values from spinboxes
+            roll = self.mesh_bake_roll.value() if hasattr(self, 'mesh_bake_roll') else 0.0
+            pitch = self.mesh_bake_pitch.value() if hasattr(self, 'mesh_bake_pitch') else 0.0
+            yaw = self.mesh_bake_yaw.value() if hasattr(self, 'mesh_bake_yaw') else 0.0
+
             transform = vtk.vtkTransform()
+            # Apply rotation first (around origin), then translate
+            transform.RotateX(roll)
+            transform.RotateY(pitch)
+            transform.RotateZ(yaw)
             transform.Translate(-origin_point[0], -origin_point[1], -origin_point[2])
 
             transform_filter = vtk.vtkTransformPolyDataFilter()
@@ -3435,107 +3487,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.update_axes_widget(x_axis, y_axis, z_axis)
         self.reset_camera()
 
-    ############################### Mesh rotation helpers ###############################
-    def setup_mesh_bake_ui(self, layout):
-        """Setup Mesh Bake UI group box (controllers only)"""
-        from PySide6.QtWidgets import QGroupBox, QVBoxLayout, QHBoxLayout, QLabel, QDoubleSpinBox, QPushButton
-        from PySide6.QtCore import Qt
-
-        group = QGroupBox("Mesh Bake")
-        v = QVBoxLayout()
-        v.setSpacing(4)
-        v.setContentsMargins(8, 8, 8, 8)
-
-        def add_spin_row(name, default=0.0):
-            row = QHBoxLayout()
-            row.setSpacing(6)
-
-            lab = QLabel(name)
-            lab.setMinimumWidth(55)
-
-            sp = QDoubleSpinBox()
-            sp.setRange(-360.0, 360.0)
-            sp.setDecimals(1)
-            sp.setSingleStep(5.0)
-            sp.setValue(default)
-            sp.setKeyboardTracking(False)
-            sp.setAlignment(Qt.AlignRight)
-            sp.setMaximumWidth(120)
-
-            row.addWidget(lab)
-            row.addWidget(sp)
-            row.addStretch()
-            v.addLayout(row)
-            return sp
-
-        # Rotation inputs (degrees)
-        self.mesh_bake_roll = add_spin_row("Roll", 0.0)
-        self.mesh_bake_pitch = add_spin_row("Pitch", 0.0)
-        self.mesh_bake_yaw = add_spin_row("Yaw", 0.0)
-
-        # Button row 1
-        row1 = QHBoxLayout()
-        row1.setSpacing(6)
-
-        self.mesh_apply_view_btn = QPushButton("Apply to View")
-        self.mesh_apply_view_btn.setFocusPolicy(Qt.NoFocus)
-
-        self.mesh_reset_xform_btn = QPushButton("Reset Xform")
-        self.mesh_reset_xform_btn.setFocusPolicy(Qt.NoFocus)
-
-        row1.addWidget(self.mesh_apply_view_btn)
-        row1.addWidget(self.mesh_reset_xform_btn)
-        v.addLayout(row1)
-
-        # Button row 2
-        row2 = QHBoxLayout()
-        row2.setSpacing(6)
-
-        self.mesh_bake_btn = QPushButton("Bake into Mesh")
-        self.mesh_bake_btn.setFocusPolicy(Qt.NoFocus)
-
-        self.mesh_from_view_btn = QPushButton("From View")
-        self.mesh_from_view_btn.setFocusPolicy(Qt.NoFocus)
-
-        row2.addWidget(self.mesh_bake_btn)
-        row2.addWidget(self.mesh_from_view_btn)
-        v.addLayout(row2)
-
-        # Wire signals to stub handlers (implement later)
-        self.mesh_apply_view_btn.clicked.connect(self.on_mesh_apply_to_view_clicked)
-        self.mesh_reset_xform_btn.clicked.connect(self.on_mesh_reset_transform_clicked)
-        self.mesh_bake_btn.clicked.connect(self.on_mesh_bake_clicked)
-        self.mesh_from_view_btn.clicked.connect(self.on_mesh_from_view_clicked)
-
-        # Return focus to vtk_display after clicking (consistent with your UI)
-        for b in (self.mesh_apply_view_btn, self.mesh_reset_xform_btn, self.mesh_bake_btn, self.mesh_from_view_btn):
-            b.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
-
-        group.setLayout(v)
-        layout.addWidget(group)
-    def on_mesh_apply_to_view_clicked(self):
-        roll = float(self.mesh_bake_roll.value())
-        pitch = float(self.mesh_bake_pitch.value())
-        yaw = float(self.mesh_bake_yaw.value())
-        print(f"[MeshBake] Apply to View: roll={roll}, pitch={pitch}, yaw={yaw}")
-        # TODO: rotate actor for preview (visual only)
-
-    def on_mesh_reset_transform_clicked(self):
-        print("[MeshBake] Reset Transform")
-        # TODO: reset actor transform to identity
-
-    def on_mesh_bake_clicked(self):
-        roll = float(self.mesh_bake_roll.value())
-        pitch = float(self.mesh_bake_pitch.value())
-        yaw = float(self.mesh_bake_yaw.value())
-        print(f"[MeshBake] Bake into Mesh: roll={roll}, pitch={pitch}, yaw={yaw}")
-        # TODO: actually bake into polydata and update mapper
-
-    def on_mesh_from_view_clicked(self):
-        print("[MeshBake] From View")
-        # TODO: read current mesh transform and fill spinboxes
-    
-    ############################### End Mesh rotation helpers ###############################
     ############################ Transformation helpers ############################
     def on_mesh_apply_to_view_clicked(self): # This sets the actor transform using your spinboxes.
         if not hasattr(self, "mesh_transform"):
@@ -3552,64 +3503,6 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         #self.vtk_display.GetRenderWindow().Render()
         self.render_to_image()
-    def on_mesh_reset_transform_clicked(self): # Reset Transform
-        if not hasattr(self, "mesh_transform"):
-            return
-
-        self.mesh_transform.Identity()
-        self.mesh_bake_roll.setValue(0.0)
-        self.mesh_bake_pitch.setValue(0.0)
-        self.mesh_bake_yaw.setValue(0.0)
-
-        #self.vtk_display.GetRenderWindow().Render()
-        self.render_to_image()
-
-    def on_mesh_from_view_clicked(self): #Reads actor orientation back into UI.
-        if not hasattr(self, "mesh_transform"):
-            return
-
-        mat = self.mesh_transform.GetMatrix()
-
-        import math
-        # Extract XYZ Euler angles (VTK uses degrees internally)
-        pitch = math.asin(-mat.GetElement(2, 0))
-        roll = math.atan2(mat.GetElement(2, 1), mat.GetElement(2, 2))
-        yaw = math.atan2(mat.GetElement(1, 0), mat.GetElement(0, 0))
-
-        self.mesh_bake_roll.setValue(math.degrees(roll))
-        self.mesh_bake_pitch.setValue(math.degrees(pitch))
-        self.mesh_bake_yaw.setValue(math.degrees(yaw))
-
-    def on_mesh_bake_clicked(self): # Bakes the current transform into the mesh geometry.
-        if not hasattr(self, "mesh_transform"):
-            return
-
-        poly = self.stl_actor.GetMapper().GetInput()
-        if poly is None:
-            return
-
-        tf = vtk.vtkTransformPolyDataFilter()
-        tf.SetInputData(poly)
-        tf.SetTransform(self.mesh_transform)
-        tf.Update()
-
-        baked = vtk.vtkPolyData()
-        baked.ShallowCopy(tf.GetOutput())
-
-        # Replace mapper input with baked geometry
-        self.stl_actor.GetMapper().SetInputData(baked)
-        self.stl_actor.GetMapper().Update()
-
-        # Reset transform so it doesn't double-apply
-        self.mesh_transform.Identity()
-        self.mesh_bake_roll.setValue(0.0)
-        self.mesh_bake_pitch.setValue(0.0)
-        self.mesh_bake_yaw.setValue(0.0)
-
-        #self.vtk_display.GetRenderWindow().Render()
-        self.render_to_image()
-
-        print("[MeshBake] Geometry baked successfully.")
 
 
 # signal_handler moved to urdf_kitchen_utils.py
@@ -3627,7 +3520,7 @@ if __name__ == "__main__":
     # Create QApplication
     app = QApplication(sys.argv)
 
-    # Ctrl+Cのシグナルハンドラを設定（utils関数使用）
+    # Set up Ctrl+C signal handler (using utils function)
     setup_signal_handlers(verbose=False)
 
     try:
@@ -3638,7 +3531,6 @@ if __name__ == "__main__":
         app.installEventFilter(global_filter)
 
         # Move window to center of screen
-        from PySide6.QtGui import QScreen
         screen = QApplication.primaryScreen()
         if screen:
             screen_geometry = screen.geometry()
@@ -3647,7 +3539,7 @@ if __name__ == "__main__":
             window_geometry.moveCenter(center_point)
             window.move(window_geometry.topLeft())
 
-        # コマンドライン引数でファイルが指定された場合は、ウィンドウを最前面に表示
+        # If file is specified via command line argument, show window in foreground
         if len(sys.argv) > 1:
             file_path = sys.argv[1]
             if os.path.exists(file_path):
@@ -3670,7 +3562,7 @@ if __name__ == "__main__":
         traceback.print_exc()
         sys.exit(1)
 
-    # シグナル処理用タイマー（utils関数使用）
+    # Signal processing timer (using utils function)
     timer = setup_signal_processing_timer(app)
 
     sys.exit(app.exec())
