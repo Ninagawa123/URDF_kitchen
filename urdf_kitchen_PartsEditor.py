@@ -4,7 +4,7 @@ Description: A Python script for configuring connection points of parts for urdf
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 24, 2026
+Update.     : Feb 17, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -2626,10 +2626,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 mesh.export(mirrored_stl_path)
 
             else:
-                # Export as STL using VTK
+                # Export as STL using VTK (binary format)
                 writer = vtk.vtkSTLWriter()
                 writer.SetFileName(mirrored_stl_path)
                 writer.SetInputData(normal_generator.GetOutput())
+                writer.SetFileTypeToBinary()
                 writer.Write()
 
             # Get inertia tensor and apply mirror transformation
