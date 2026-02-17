@@ -159,7 +159,9 @@ Use this when you need to adjust the mesh origin coordinates or swap coordinate 
   
 With the Target Marker Position checkbox enabled, use the arrow keys to move the purple marker that sets the new origin. The marker moves in 10 mm increments relative to the screen, 1 mm with Shift held, and 0.1 mm with Ctrl held. You can also type coordinates directly into the input fields.  
 Rotate the 3D view with A/S/D/W and move the marker to the desired origin position.  
-  
+
+- **Scale** : Set the mesh scale to 1000x (0.001).    
+- **Rotation** : Rotate the mesh itself.  
 - **Reset Marker** : Resets the marker position to 0, 0, 0.  
 - **Set Front as X** : Reassigns the coordinate axes so that the current front-facing direction in the 3D view becomes the X axis.  
 - **Save** : Saves the mesh with the current axis orientation and marker position as the new origin.  
