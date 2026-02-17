@@ -14637,7 +14637,9 @@ class CustomNodeGraph(NodeGraph):
             
             # Create 3 scene xml include 3. scene.xml
             scene_path = os.path.join(mjcf_dir, "scene.xml")
-            self._write_mjcf_scene(scene_path, robot_file_basename, model_z_height, base_link_height, fix_base_to_ground)
+            # 実際のルートボディ名を決定（_write_mjcf_bodyと同じロジック）
+            root_body_name = "base_link" if rename_to_base_link else self._sanitize_name(root_node.name())
+            self._write_mjcf_scene(scene_path, robot_file_basename, model_z_height, base_link_height, fix_base_to_ground, root_body_name)
 
             print(f"MJCF export completed: {robot_file_path}")
             print(f"Total mesh files copied: {len(node_to_mesh)}")
@@ -15171,7 +15173,7 @@ class CustomNodeGraph(NodeGraph):
             traceback.print_exc()
             return 0.5
 
-    def _write_mjcf_scene(self, file_path, robot_file_basename, model_z_height=None, base_link_height=None, fix_base_to_ground=False):
+    def _write_mjcf_scene(self, file_path, robot_file_basename, model_z_height=None, base_link_height=None, fix_base_to_ground=False, root_body_name="base_link"):
         """scene.xmltext(textinclude)
         
         Args:
@@ -15204,7 +15206,7 @@ class CustomNodeGraph(NodeGraph):
             # Note base_link note: body
             if fix_base_to_ground:
                 f.write('  <equality>\n')
-                f.write('    <weld name="fix_base_to_ground" body1="base_link" body2="world"/>\n')
+                f.write(f'    <weld name="fix_base_to_ground" body1="{root_body_name}" body2="world"/>\n')
                 f.write('  </equality>\n\n')
 
             f.write(f'  <statistic center="0 0 {camera_center_z:.6f}" extent="{max(0.8, model_z_height * 1.2 if model_z_height else 0.8):.6f}"/>\n\n')
