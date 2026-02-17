@@ -4,7 +4,7 @@ Description: A Python script to assembling files configured with urdf_kitchen_Pa
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Jan 31, 2026
+Update.     : Feb 17, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -64,6 +64,7 @@ from urdf_kitchen_Importer import (
     build_urdf_package_path,
     build_unity_package_path,
     export_mesh_to_format,
+    simplify_mesh_to_threshold,
 )
 
 # M4 Mac (Apple Silicon) compatibility
@@ -92,6 +93,7 @@ DEFAULT_MJCF_MOTOR_CTRLRANGE = 23.7  # Motor control range (+/-) for MJCF <defau
 DEFAULT_MJCF_OPTION_IMPRATIO = 100  # Impedance ratio for MJCF <option>
 DEFAULT_MJCF_OPTION_TIMESTEP = 0.002  # Simulation timestep for MJCF <option>
 DEFAULT_MJCF_OPTION_ITERATIONS = 30  # Solver iterations for MJCF <option>
+DEFAULT_MJCF_MESH_SIMPLIFY_THRESHOLD = 50000  # Face count threshold for mesh simplification warning
 DEFAULT_NODE_GRID_ENABLED = True  # Enable/disable node grid snapping
 DEFAULT_NODE_GRID_SIZE = 50  # Node grid size (pixels)
 # Legacy constants for backward compatibility (to be removed)
@@ -4619,6 +4621,24 @@ class InspectorWindow(QtWidgets.QWidget):
 
         print(f"Zeroed off-diagonal inertia elements for node: {self.current_node.name()}")
 
+
+def normalize_number_input(text):
+    """全角数字・記号を半角に変換するヘルパー関数"""
+    # 全角数字 → 半角数字
+    fullwidth_digits = '０１２３４５６７８９'
+    halfwidth_digits = '0123456789'
+    # 全角記号 → 半角記号
+    fullwidth_symbols = '．ー−＋'
+    halfwidth_symbols = '.--+'
+
+    result = text
+    for fw, hw in zip(fullwidth_digits, halfwidth_digits):
+        result = result.replace(fw, hw)
+    for fw, hw in zip(fullwidth_symbols, halfwidth_symbols):
+        result = result.replace(fw, hw)
+    return result.strip()
+
+
 class SettingsDialog(QtWidgets.QDialog):
     """settext"""
     def __init__(self, graph, parent=None):
@@ -4852,23 +4872,47 @@ class SettingsDialog(QtWidgets.QDialog):
         mjcf_layout.addWidget(QtWidgets.QLabel("m"), row, 2)
         row += 1
 
-        # timestep
-        mjcf_layout.addWidget(QtWidgets.QLabel("timestep:"), row, 0)
+        # timestep and solver iterations in one row
+        sim_row_widget = QtWidgets.QWidget()
+        sim_row_layout = QtWidgets.QHBoxLayout(sim_row_widget)
+        sim_row_layout.setContentsMargins(0, 0, 0, 0)
+
+        sim_row_layout.addWidget(QtWidgets.QLabel("Timestep:"))
         self.mjcf_timestep_input = QtWidgets.QLineEdit()
-        self.mjcf_timestep_input.setFixedWidth(100)
+        self.mjcf_timestep_input.setFixedWidth(60)
         self.mjcf_timestep_input.setValidator(QDoubleValidator(0.0001, 1.0, 6))
         self.mjcf_timestep_input.setText(f"{self.graph.default_mjcf_option_timestep:g}")
-        mjcf_layout.addWidget(self.mjcf_timestep_input, row, 1)
-        mjcf_layout.addWidget(QtWidgets.QLabel("s"), row, 2)
-        row += 1
+        sim_row_layout.addWidget(self.mjcf_timestep_input)
+        sim_row_layout.addWidget(QtWidgets.QLabel("s"))
 
-        # iterations
-        mjcf_layout.addWidget(QtWidgets.QLabel("iterations:"), row, 0)
+        sim_row_layout.addWidget(QtWidgets.QLabel("  Solver iterations:"))
         self.mjcf_iterations_input = QtWidgets.QLineEdit()
-        self.mjcf_iterations_input.setFixedWidth(100)
+        self.mjcf_iterations_input.setFixedWidth(50)
         self.mjcf_iterations_input.setValidator(QIntValidator(1, 10000))
         self.mjcf_iterations_input.setText(str(self.graph.default_mjcf_option_iterations))
-        mjcf_layout.addWidget(self.mjcf_iterations_input, row, 1)
+        sim_row_layout.addWidget(self.mjcf_iterations_input)
+
+        sim_row_layout.addStretch()
+        mjcf_layout.addWidget(sim_row_widget, row, 0, 1, 3)
+        row += 1
+
+        # Mesh simplification threshold
+        mjcf_layout.addWidget(QtWidgets.QLabel("Mesh simplify threshold:"), row, 0)
+        self.mjcf_mesh_simplify_input = QtWidgets.QLineEdit()
+        self.mjcf_mesh_simplify_input.setFixedWidth(100)
+        self.mjcf_mesh_simplify_input.setValidator(QIntValidator(1000, 10000000))
+        self.mjcf_mesh_simplify_input.setText(str(self.graph.default_mjcf_mesh_simplify_threshold))
+        mjcf_layout.addWidget(self.mjcf_mesh_simplify_input, row, 1)
+        mjcf_layout.addWidget(QtWidgets.QLabel("faces"), row, 2)
+        row += 1
+
+        # Description label for mesh simplification
+        simplify_desc = QtWidgets.QLabel(
+            "If mesh exceeds this face count, prompt to simplify to this limit."
+        )
+        simplify_desc.setStyleSheet("color: gray; font-size: 11px;")
+        simplify_desc.setWordWrap(True)
+        mjcf_layout.addWidget(simplify_desc, row, 0, 1, 3)
         row += 1
 
         mjcf_group.setLayout(mjcf_layout)
@@ -5109,19 +5153,19 @@ class SettingsDialog(QtWidgets.QDialog):
     def accept_settings(self):
         """settext"""
         try:
-            # Get TODO
-            effort = float(self.effort_input.text())
-            max_effort = float(self.max_effort_input.text())
-            velocity_rad = float(self.velocity_rad_input.text())
-            max_velocity_rad = float(self.max_velocity_rad_input.text())
-            margin_rad = float(self.margin_rad_input.text())
-            armature = float(self.armature_input.text())
-            frictionloss = float(self.frictionloss_input.text())
-            joint_damping = float(self.joint_damping_input.text())
-            stiffness_kp = float(self.stiffness_kp_input.text())
-            damping_kv = float(self.damping_kv_input.text())
-            timeconst = float(self.timeconst_input.text())
-            angle_range_rad = float(self.angle_range_rad_input.text())
+            # Get TODO (全角→半角変換を適用)
+            effort = float(normalize_number_input(self.effort_input.text()))
+            max_effort = float(normalize_number_input(self.max_effort_input.text()))
+            velocity_rad = float(normalize_number_input(self.velocity_rad_input.text()))
+            max_velocity_rad = float(normalize_number_input(self.max_velocity_rad_input.text()))
+            margin_rad = float(normalize_number_input(self.margin_rad_input.text()))
+            armature = float(normalize_number_input(self.armature_input.text()))
+            frictionloss = float(normalize_number_input(self.frictionloss_input.text()))
+            joint_damping = float(normalize_number_input(self.joint_damping_input.text()))
+            stiffness_kp = float(normalize_number_input(self.stiffness_kp_input.text()))
+            damping_kv = float(normalize_number_input(self.damping_kv_input.text()))
+            timeconst = float(normalize_number_input(self.timeconst_input.text()))
+            angle_range_rad = float(normalize_number_input(self.angle_range_rad_input.text()))
 
             # Set apply
             self.graph.default_joint_effort = effort
@@ -5138,16 +5182,18 @@ class SettingsDialog(QtWidgets.QDialog):
             self.graph.default_angle_range = angle_range_rad
 
             # Mjcf
-            base_link_height = float(self.base_link_height_input.text())
+            base_link_height = float(normalize_number_input(self.base_link_height_input.text()))
             self.graph.default_base_link_height = base_link_height
-            mjcf_timestep = float(self.mjcf_timestep_input.text())
+            mjcf_timestep = float(normalize_number_input(self.mjcf_timestep_input.text()))
             self.graph.default_mjcf_option_timestep = mjcf_timestep
-            mjcf_iterations = int(self.mjcf_iterations_input.text())
+            mjcf_iterations = int(normalize_number_input(self.mjcf_iterations_input.text()))
             self.graph.default_mjcf_option_iterations = mjcf_iterations
+            mjcf_mesh_simplify = int(normalize_number_input(self.mjcf_mesh_simplify_input.text()))
+            self.graph.default_mjcf_mesh_simplify_threshold = mjcf_mesh_simplify
 
             # Node node grid
             grid_enabled = self.grid_enabled_checkbox.isChecked()
-            grid_size = int(self.grid_size_input.text())
+            grid_size = int(normalize_number_input(self.grid_size_input.text()))
             self.graph.node_grid_enabled = grid_enabled
             self.graph.node_grid_size = grid_size
 
@@ -5168,7 +5214,7 @@ class SettingsDialog(QtWidgets.QDialog):
         """textnodetext"""
         try:
             # Get Grid current value Grid Size
-            grid_size = int(self.grid_size_input.text())
+            grid_size = int(normalize_number_input(self.grid_size_input.text()))
 
             # Run all node
             snapped_count = 0
@@ -7999,6 +8045,7 @@ class CustomNodeGraph(NodeGraph):
         self.default_mjcf_option_impratio = DEFAULT_MJCF_OPTION_IMPRATIO
         self.default_mjcf_option_timestep = DEFAULT_MJCF_OPTION_TIMESTEP
         self.default_mjcf_option_iterations = DEFAULT_MJCF_OPTION_ITERATIONS
+        self.default_mjcf_mesh_simplify_threshold = DEFAULT_MJCF_MESH_SIMPLIFY_THRESHOLD
 
         # Set Node Grid Node Grid
         self.node_grid_enabled = DEFAULT_NODE_GRID_ENABLED
@@ -11086,6 +11133,7 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(mjcf_defaults_elem, "motor_ctrlrange").text = str(self.default_mjcf_motor_ctrlrange)
             ET.SubElement(mjcf_defaults_elem, "option_timestep").text = str(self.default_mjcf_option_timestep)
             ET.SubElement(mjcf_defaults_elem, "option_iterations").text = str(self.default_mjcf_option_iterations)
+            ET.SubElement(mjcf_defaults_elem, "mesh_simplify_threshold").text = str(self.default_mjcf_mesh_simplify_threshold)
             print(f"Saved MJCF defaults: impratio={self.default_mjcf_option_impratio}, "
                   f"joint_damping={self.default_mjcf_joint_damping}, geom_friction={self.default_mjcf_geom_friction}, "
                   f"geom_margin={self.default_mjcf_geom_margin}, geom_condim={self.default_mjcf_geom_condim}, "
@@ -11364,6 +11412,9 @@ class CustomNodeGraph(NodeGraph):
                     elem = mjcf_defaults_elem.find("option_iterations")
                     if elem is not None and elem.text:
                         self.default_mjcf_option_iterations = int(elem.text)
+                    elem = mjcf_defaults_elem.find("mesh_simplify_threshold")
+                    if elem is not None and elem.text:
+                        self.default_mjcf_mesh_simplify_threshold = int(elem.text)
                     print(f"Restored MJCF defaults: impratio={self.default_mjcf_option_impratio}, "
                           f"joint_damping={self.default_mjcf_joint_damping}, geom_friction={self.default_mjcf_geom_friction}, "
                           f"geom_margin={self.default_mjcf_geom_margin}, geom_condim={self.default_mjcf_geom_condim}, "
@@ -14242,6 +14293,11 @@ class CustomNodeGraph(NodeGraph):
             node_to_mesh_scale_key = {}  # node → (mesh_filename, scale_tuple)
             collider_file_to_name = {}  # → （）
             mesh_counter = 0
+            skipped_meshes = []  # List to track meshes skipped due to face count limit (>1,000,000)
+            high_face_meshes = []  # List to track meshes exceeding simplify threshold
+            simplified_meshes = []  # List to track successfully simplified meshes (name, original_faces, new_faces)
+            simplify_high_face_meshes = None  # None=not asked yet, True=simplify, False=keep original
+            mesh_simplify_threshold = self.default_mjcf_mesh_simplify_threshold  # Get from settings
 
             # Determine which intermediate nodes should be skipped
             # (base_link is always skipped, base_link_sub is skipped if base_link_mjcf exists)
@@ -14269,7 +14325,9 @@ class CustomNodeGraph(NodeGraph):
                     # Get TODO
                     original_filename = os.path.basename(mesh_file_path)
                     file_ext = os.path.splitext(original_filename)[1].lower()
-                    
+                    # Output filename (always .obj for MJCF export)
+                    output_filename = os.path.splitext(original_filename)[0] + '.obj'
+
                     # Check
                     supported_extensions = ['.stl', '.dae', '.obj']
                     if file_ext not in supported_extensions:
@@ -14328,9 +14386,39 @@ class CustomNodeGraph(NodeGraph):
                         if num_faces < 1:
                             print(f"Warning: Skipping mesh '{original_filename}' - no faces found (file may be empty or invalid)")
                             continue
-                        elif num_faces > 200000:
-                            print(f"Warning: Skipping mesh '{original_filename}' - too many faces: {num_faces} (MuJoCo limit: 200000)")
+                        elif num_faces > 1000000:
+                            print(f"Warning: Skipping mesh '{original_filename}' - too many faces: {num_faces} (limit: 1,000,000)")
+                            skipped_meshes.append((output_filename, num_faces))
                             continue
+                        elif num_faces > mesh_simplify_threshold:
+                            print(f"Note: Mesh '{original_filename}' has {num_faces} faces (exceeds threshold {mesh_simplify_threshold:,})")
+
+                            # Ask user once whether to simplify high-face meshes
+                            if simplify_high_face_meshes is None:
+                                reply = QtWidgets.QMessageBox.question(
+                                    self.widget,
+                                    "High Face Count Detected",
+                                    f"Mesh '{original_filename}' has {num_faces:,} faces.\n\n"
+                                    f"This exceeds the threshold of {mesh_simplify_threshold:,} faces.\n\n"
+                                    f"Do you want to automatically simplify meshes exceeding {mesh_simplify_threshold:,} faces?\n"
+                                    f"(This will apply to all high-face meshes in this export)",
+                                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                                    QtWidgets.QMessageBox.Yes
+                                )
+                                simplify_high_face_meshes = (reply == QtWidgets.QMessageBox.Yes)
+
+                            if simplify_high_face_meshes:
+                                # Use simplify_mesh_to_threshold from Importer
+                                mesh, orig_faces, final_faces, success = simplify_mesh_to_threshold(
+                                    mesh, mesh_simplify_threshold, num_rays=200, verbose=True
+                                )
+                                num_faces = final_faces
+                                if success:
+                                    simplified_meshes.append((output_filename, orig_faces, final_faces))
+                                else:
+                                    high_face_meshes.append((output_filename, final_faces))
+                            else:
+                                high_face_meshes.append((output_filename, num_faces))
 
                         # If mesh y y
                         if needs_y_mirror:
@@ -14482,8 +14570,8 @@ class CustomNodeGraph(NodeGraph):
                                     if num_faces < 1:
                                         print(f"Warning: Skipping collider mesh '{collider_mesh_path}' - no faces found")
                                         continue
-                                    elif num_faces > 200000:
-                                        print(f"Warning: Skipping collider mesh '{collider_mesh_path}' - too many faces: {num_faces}")
+                                    elif num_faces > 1000000:
+                                        print(f"Warning: Skipping collider mesh '{collider_mesh_path}' - too many faces: {num_faces} (limit: 1,000,000)")
                                         continue
                                     
                                     # Generate OBJ
@@ -14554,9 +14642,8 @@ class CustomNodeGraph(NodeGraph):
             print(f"MJCF export completed: {robot_file_path}")
             print(f"Total mesh files copied: {len(node_to_mesh)}")
 
-            QtWidgets.QMessageBox.information(
-                self.widget,
-                "Export Successful",
+            # Build dialog message
+            base_msg = (
                 f"MJCF files have been exported successfully:\n\n"
                 f"{mjcf_dir}/\n"
                 f"├─ {dir_name}.xml (robot)\n"
@@ -14564,9 +14651,68 @@ class CustomNodeGraph(NodeGraph):
                 f"└─ assets/ ({len(node_to_mesh)} mesh files)"
             )
 
+            # Add simplified meshes info
+            info_parts = []
+            if simplified_meshes:
+                simplified_list = "\n".join([f"  • {name}: {orig:,} → {new:,} faces" for name, orig, new in simplified_meshes])
+                total_original = sum(orig for _, orig, _ in simplified_meshes)
+                total_final = sum(new for _, _, new in simplified_meshes)
+                info_parts.append(
+                    f"✓ {len(simplified_meshes)} mesh(es) simplified:\n"
+                    f"{simplified_list}\n"
+                    f"  Total: {total_original:,} → {total_final:,} faces"
+                )
+
+            # Check for warnings
+            has_warnings = skipped_meshes or high_face_meshes
+            warning_parts = []
+
+            if skipped_meshes:
+                skipped_list = "\n".join([f"  • {name} ({faces:,} faces)" for name, faces in skipped_meshes])
+                total_skipped_faces = sum(faces for _, faces in skipped_meshes)
+                warning_parts.append(
+                    f"⚠ {len(skipped_meshes)} mesh(es) SKIPPED (exceeds 1,000,000 faces):\n"
+                    f"{skipped_list}\n"
+                    f"  Total: {total_skipped_faces:,} faces"
+                )
+
+            if high_face_meshes:
+                high_face_list = "\n".join([f"  • {name} ({faces:,} faces)" for name, faces in high_face_meshes])
+                total_high_faces = sum(faces for _, faces in high_face_meshes)
+                warning_parts.append(
+                    f"⚠ {len(high_face_meshes)} mesh(es) exceed threshold ({mesh_simplify_threshold:,} faces):\n"
+                    f"{high_face_list}\n"
+                    f"  Total: {total_high_faces:,} faces\n"
+                    f"Consider simplifying these meshes for better performance."
+                )
+
+            # Build full message
+            all_parts = info_parts + warning_parts
+            if has_warnings:
+                full_msg = base_msg + "\n\n" + "\n\n".join(all_parts)
+                self._show_scrollable_message_dialog(
+                    "Export Completed with Warnings",
+                    full_msg,
+                    is_warning=True
+                )
+            elif simplified_meshes:
+                full_msg = base_msg + "\n\n" + "\n\n".join(all_parts)
+                self._show_scrollable_message_dialog(
+                    "Export Successful",
+                    full_msg,
+                    is_warning=False
+                )
+            else:
+                self._show_scrollable_message_dialog(
+                    "Export Successful",
+                    base_msg,
+                    is_warning=False
+                )
+
             return True
 
         except Exception as e:
+            import traceback
             error_msg = f"Error exporting MJCF: {str(e)}"
             print(error_msg)
             traceback.print_exc()
@@ -14577,6 +14723,52 @@ class CustomNodeGraph(NodeGraph):
                 error_msg
             )
             return False
+
+    def _show_scrollable_message_dialog(self, title, message, is_warning=False):
+        """Show a scrollable message dialog with max height of 600px."""
+        dialog = QtWidgets.QDialog(self.widget)
+        dialog.setWindowTitle(title)
+        dialog.setMinimumWidth(450)
+        dialog.setMaximumHeight(600)
+
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        # Create scroll area
+        scroll_area = QtWidgets.QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+
+        # Content widget inside scroll area
+        content_widget = QtWidgets.QWidget()
+        content_layout = QtWidgets.QHBoxLayout(content_widget)
+        content_layout.setContentsMargins(10, 10, 10, 10)
+
+        # Icon
+        icon_label = QtWidgets.QLabel()
+        style = dialog.style()
+        if is_warning:
+            icon = style.standardIcon(QtWidgets.QStyle.SP_MessageBoxWarning)
+        else:
+            icon = style.standardIcon(QtWidgets.QStyle.SP_MessageBoxInformation)
+        icon_label.setPixmap(icon.pixmap(48, 48))
+        icon_label.setAlignment(QtCore.Qt.AlignTop)
+        content_layout.addWidget(icon_label)
+
+        # Message text
+        text_label = QtWidgets.QLabel(message)
+        text_label.setWordWrap(True)
+        text_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        content_layout.addWidget(text_label, 1)
+
+        scroll_area.setWidget(content_widget)
+        layout.addWidget(scroll_area, 1)
+
+        # OK button
+        button_box = QtWidgets.QDialogButtonBox(QtWidgets.QDialogButtonBox.Ok)
+        button_box.accepted.connect(dialog.accept)
+        layout.addWidget(button_box)
+
+        dialog.exec_()
 
     def _sanitize_name(self, name):
         """MuJoCotext(text、text、text)"""
@@ -16589,34 +16781,24 @@ def load_project(graph):
             # Position
             graph.recalculate_all_positions()
             
-            # Apply node node STL 3D
-            print("\n[DEBUG] Applying colors to 3D view after STL loading...")
+            # Apply node colors to 3D view after STL loading
             if hasattr(graph, 'stl_viewer') and graph.stl_viewer:
                 all_nodes = graph.all_nodes()
-                print(f"[DEBUG] Total nodes: {len(all_nodes)}")
-                applied_count = 0
-                skipped_count = 0
-                
+
                 for node in all_nodes:
                     try:
-                        node_name = node.name()
                         has_stl_file = hasattr(node, 'stl_file') and node.stl_file
                         in_actors = node in graph.stl_viewer.stl_actors
                         has_node_color = hasattr(node, 'node_color') and node.node_color
-                        
-                        print(f"[DEBUG] Node '{node_name}': has_stl_file={has_stl_file}, in_actors={in_actors}, has_node_color={has_node_color}")
-                        
-                        # Apply node STL
+
                         if has_stl_file and in_actors:
-                            # Confirm node node_color node.node_color
                             if has_node_color:
                                 rgba_values = node.node_color
-                                # 0-1 rgba
                                 rgba_values = [max(0.0, min(1.0, float(v))) for v in rgba_values[:4]]
-                                
+
                                 actor = graph.stl_viewer.stl_actors[node]
-                                
-                                # Check
+
+                                # Check for vertex/face colors
                                 mapper = actor.GetMapper()
                                 has_scalars = False
                                 if mapper and mapper.GetInput():
@@ -16624,47 +16806,30 @@ def load_project(graph):
                                     has_vertex_colors = polydata.GetPointData().GetScalars() is not None
                                     has_face_colors = polydata.GetCellData().GetScalars() is not None
                                     has_scalars = has_vertex_colors or has_face_colors
-                                
+
                                 if has_scalars:
-                                    # Todo
+                                    # Only apply opacity for meshes with vertex/face colors
                                     if len(rgba_values) >= 4:
                                         actor.GetProperty().SetOpacity(rgba_values[3])
                                     else:
                                         actor.GetProperty().SetOpacity(1.0)
-                                    print(f"[DEBUG] Node '{node_name}' has vertex/face colors, only opacity applied: {rgba_values[3] if len(rgba_values) >= 4 else 1.0}")
                                 else:
-                                    # Apply color
-                                    # Rgb 3
+                                    # Apply full color
                                     actor.GetProperty().SetColor(*rgba_values[:3])
-                                    # Alpha 4
                                     if len(rgba_values) >= 4:
                                         actor.GetProperty().SetOpacity(rgba_values[3])
                                     else:
                                         actor.GetProperty().SetOpacity(1.0)
-                                    print(f"[DEBUG] Applied color to node '{node_name}': RGBA{rgba_values[:4]}")
-                                    applied_count += 1
                             else:
-                                # Apply TODO
+                                # Apply default white color
                                 actor = graph.stl_viewer.stl_actors[node]
                                 actor.GetProperty().SetColor(1.0, 1.0, 1.0)
                                 actor.GetProperty().SetOpacity(1.0)
-                                print(f"[DEBUG] Applied default white color to node '{node_name}'")
-                                applied_count += 1
-                        else:
-                            skipped_count += 1
-                            if not has_stl_file:
-                                print(f"[DEBUG] Skipped node '{node_name}': no STL file")
-                            elif not in_actors:
-                                print(f"[DEBUG] Skipped node '{node_name}': not in stl_actors")
                     except Exception as e:
-                        print(f"[DEBUG] Warning: Failed to apply color to node '{node.name()}': {e}")
                         import traceback
                         traceback.print_exc()
-                
-                # 3d
+
                 graph.stl_viewer.render_to_image()
-                print(f"[DEBUG] Colors applied: {applied_count} nodes, {skipped_count} skipped")
-                print("[DEBUG] Colors applied to 3D view after STL loading")
 
             # 3d hide_mesh
             if graph.stl_viewer:

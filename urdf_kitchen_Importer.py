@@ -7,7 +7,7 @@ Description: URDF/MJCF Import functionality for URDF Kitchen.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Feb 11, 2026
+Update.     : Feb 17, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -7656,6 +7656,158 @@ def export_mesh_to_format(source_path, dest_dir, target_format, mesh_color=None,
         return (new_filename, True, None)
     except Exception as e:
         return (new_filename, False, str(e))
+
+
+# ============================================================================
+# MESH SIMPLIFICATION UTILITIES
+# ============================================================================
+
+def simplify_mesh_to_threshold(mesh, threshold, num_rays=200, verbose=True):
+    """
+    Simplify mesh to target face count threshold.
+
+    Processing steps:
+    1. Pre-processing (merge_vertices, remove_degenerate_faces, etc.)
+    2. Ray casting to remove hidden internal faces
+    3. Area filter loop (1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5) until threshold reached
+
+    Args:
+        mesh: trimesh.Trimesh object
+        threshold: Target face count threshold
+        num_rays: Number of rays for visibility test (default: 200)
+        verbose: Print progress messages (default: True)
+
+    Returns:
+        tuple: (simplified_mesh, original_faces, final_faces, success)
+            - simplified_mesh: The simplified trimesh object
+            - original_faces: Face count before simplification
+            - final_faces: Face count after simplification
+            - success: True if final_faces <= threshold
+    """
+    # Get initial face count
+    initial_faces = len(mesh.faces) if hasattr(mesh, 'faces') else 0
+    num_faces = initial_faces
+
+    # Step 1: Pre-processing - clean up mesh
+    if hasattr(mesh, 'merge_vertices'):
+        mesh.merge_vertices()
+    if hasattr(mesh, 'remove_degenerate_faces'):
+        mesh.remove_degenerate_faces()
+    if hasattr(mesh, 'remove_duplicate_faces'):
+        mesh.remove_duplicate_faces()
+    if hasattr(mesh, 'remove_unreferenced_vertices'):
+        mesh.remove_unreferenced_vertices()
+
+    num_faces = len(mesh.faces) if hasattr(mesh, 'faces') else 0
+    if verbose and num_faces < initial_faces:
+        print(f"  Pre-processing: {initial_faces:,} -> {num_faces:,} faces")
+
+    # Check if already within threshold
+    if num_faces <= threshold:
+        return (mesh, initial_faces, num_faces, True)
+
+    # Step 2: Ray casting to remove hidden internal faces
+    try:
+        if hasattr(mesh, 'ray') and hasattr(mesh, 'centroid'):
+            pre_raycast_faces = num_faces
+
+            # Generate uniformly distributed ray directions (sphere sampling)
+            phi = np.random.uniform(0, 2 * np.pi, num_rays)
+            cos_theta = np.random.uniform(-1, 1, num_rays)
+            sin_theta = np.sqrt(1 - cos_theta**2)
+            directions = np.column_stack([
+                sin_theta * np.cos(phi),
+                sin_theta * np.sin(phi),
+                cos_theta
+            ])
+
+            # Cast rays from outside toward centroid
+            visible_faces = set()
+            ray_distance = mesh.scale * 3 if hasattr(mesh, 'scale') else 10.0
+
+            for direction in directions:
+                ray_origin = mesh.centroid - direction * ray_distance
+                try:
+                    _, _, index_tri = mesh.ray.intersects_location(
+                        ray_origins=np.array([ray_origin]),
+                        ray_directions=np.array([direction])
+                    )
+                    if len(index_tri) > 0:
+                        visible_faces.add(index_tri[0])
+                except:
+                    pass
+
+            # Keep only visible faces if significant reduction possible
+            if len(visible_faces) > 0 and len(visible_faces) < pre_raycast_faces * 0.95:
+                mask = np.zeros(len(mesh.faces), dtype=bool)
+                for face_idx in visible_faces:
+                    mask[face_idx] = True
+                mesh = mesh.submesh([mask], append=True)
+                if hasattr(mesh, 'remove_unreferenced_vertices'):
+                    mesh.remove_unreferenced_vertices()
+                num_faces = len(mesh.faces) if hasattr(mesh, 'faces') else 0
+                if verbose:
+                    print(f"  Ray casting: {pre_raycast_faces:,} -> {num_faces:,} faces")
+
+                # Check if within threshold
+                if num_faces <= threshold:
+                    return (mesh, initial_faces, num_faces, True)
+    except Exception as ray_error:
+        if verbose:
+            print(f"  Ray casting skipped: {ray_error}")
+
+    # Step 3: Area filter loop - progressively remove small faces
+    # Check threshold at start and after each filter application
+    if num_faces <= threshold:
+        if verbose:
+            print(f"  Simplified: {initial_faces:,} -> {num_faces:,} faces")
+        return (mesh, initial_faces, num_faces, True)
+
+    area_thresholds = [1e-10, 1e-9, 1e-8, 1e-7, 1e-6, 1e-5]
+
+    try:
+        for area_threshold in area_thresholds:
+            # Check threshold at loop start
+            if num_faces <= threshold:
+                if verbose:
+                    print(f"  Simplified: {initial_faces:,} -> {num_faces:,} faces")
+                return (mesh, initial_faces, num_faces, True)
+
+            if hasattr(mesh, 'area_faces'):
+                face_areas = mesh.area_faces
+                keep_mask = face_areas >= area_threshold
+                keep_count = np.sum(keep_mask)
+
+                # Apply if it reduces faces
+                if keep_count < num_faces and keep_count > 0:
+                    pre_faces = num_faces
+                    mesh = mesh.submesh([keep_mask], append=True)
+                    if hasattr(mesh, 'remove_unreferenced_vertices'):
+                        mesh.remove_unreferenced_vertices()
+                    num_faces = len(mesh.faces) if hasattr(mesh, 'faces') else 0
+                    if verbose and num_faces < pre_faces:
+                        print(f"  Area filter: {pre_faces:,} -> {num_faces:,} faces (>= {area_threshold:.0e})")
+
+                    # Check threshold after each filter application
+                    if num_faces <= threshold:
+                        if verbose:
+                            print(f"  Simplified: {initial_faces:,} -> {num_faces:,} faces")
+                        return (mesh, initial_faces, num_faces, True)
+    except Exception as area_error:
+        if verbose:
+            print(f"  Area filter error: {area_error}")
+
+    # Final result
+    num_vertices = len(mesh.vertices) if hasattr(mesh, 'vertices') else 0
+    success = num_faces <= threshold
+
+    if verbose:
+        if success:
+            print(f"  Simplified: {initial_faces:,} -> {num_faces:,} faces ({num_vertices:,} vertices)")
+        else:
+            print(f"  Warning: Could not reach threshold: {initial_faces:,} -> {num_faces:,} faces")
+
+    return (mesh, initial_faces, num_faces, success)
 
 
 # ============================================================================
