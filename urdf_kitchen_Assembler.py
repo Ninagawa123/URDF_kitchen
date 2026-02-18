@@ -4,7 +4,7 @@ Description: A Python script to assembling files configured with urdf_kitchen_Pa
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Feb 17, 2026
+Update.     : Feb 18, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -29,8 +29,8 @@ from Qt import QtWidgets, QtCore, QtGui
 from NodeGraphQt import NodeGraph, BaseNode
 import vtk
 from PySide6.QtWidgets import QFileDialog, QLabel
-from PySide6.QtCore import QPointF, QRegularExpression, QTimer, Qt
-from PySide6.QtGui import QDoubleValidator, QIntValidator, QRegularExpressionValidator, QPalette, QColor, QImage, QPixmap
+from PySide6.QtCore import QPointF, QTimer, Qt
+from PySide6.QtGui import QDoubleValidator, QIntValidator, QPalette, QColor, QImage, QPixmap
 from PySide6.QtNetwork import QLocalSocket
 import os
 import xml.etree.ElementTree as ET
@@ -171,7 +171,10 @@ def init_node_properties(node, graph=None):
     node.is_mesh_reversed = False  # Flag for reversed/mirrored mesh (for MJCF export)
     node.node_color = DEFAULT_COLOR_WHITE.copy()
     node.mesh_original_color = None  # Original color extracted from mesh file (DAE/OBJ/STL)
-    node.rotation_axis = 0  # 0: X, 1: Y, 2: Z
+    node.rotation_axis = 0  # 0: X, 1: Y, 2: Z, 3: Fixed, 4: Free, 5: Slide
+    node.slide_axis = 0     # Slide axis (0: X, 1: Y, 2: Z) - used when rotation_axis=5
+    node.slide_lower = -0.05  # Slide lower limit (m)
+    node.slide_upper = 0.05   # Slide upper limit (m)
     node.body_angle = [0.0, 0.0, 0.0]  # Body initial rotation in radians [X, Y, Z]
     node.current_joint_angle = 0.0  # Current joint angle in radians (for rotation test)
     node.joint_lower = math.radians(DEFAULT_JOINT_LOWER)  # Convert from Degree to Radian and store
@@ -428,9 +431,9 @@ class NumericLineEdit(QtWidgets.QLineEdit):
 
     def __init__(self, parent=None):
         super(NumericLineEdit, self).__init__(parent)
-        # Regex validator: optional minus, digits, optional decimal point with digits
-        regex = QRegularExpression(r"^-?\d*\.?\d*$")
-        self.setValidator(QRegularExpressionValidator(regex, self))
+        # Use QDoubleValidator instead of QRegularExpressionValidator
+        # (avoids PySide6 crash in SignalManager::retrieveMetaObject)
+        self.setValidator(QDoubleValidator(self))
         # Connect editingFinished to handle focus out and Enter key
         self.editingFinished.connect(self._on_editing_finished)
         self._last_value = None
@@ -802,9 +805,14 @@ class InspectorWindow(QtWidgets.QWidget):
         rotation_layout = QtWidgets.QHBoxLayout()
         rotation_layout.addWidget(QtWidgets.QLabel("Rotation Axis:   "))
         self.axis_group = QtWidgets.QButtonGroup(self)
-        for i, axis in enumerate(['X (Roll)', 'Y (Pitch)', 'Z (Yaw)', 'Fixed']):  # Fixed added
-            radio = QtWidgets.QRadioButton(axis)
-            self.axis_group.addButton(radio, i)  # i is 0,1,2,3 (3 is Fixed)
+        # (label, id): 0-2=revolute, 3=fixed, 4=free, 5=slide
+        axis_options = [
+            ('X (Roll)', 0), ('Y (Pitch)', 1), ('Z (Yaw)', 2),
+            ('Free', 4), ('Fixed', 3), ('Slide', 5)
+        ]
+        for label, axis_id in axis_options:
+            radio = QtWidgets.QRadioButton(label)
+            self.axis_group.addButton(radio, axis_id)
             rotation_layout.addWidget(radio)
         rotation_layout.addStretch()  # Add margin on right
         content_layout.addLayout(rotation_layout)
@@ -846,10 +854,11 @@ class InspectorWindow(QtWidgets.QWidget):
         angle_layout.addStretch()
         content_layout.addLayout(angle_layout)
 
-        # Min Angle and Max Angle (left aligned)
+        # Min Angle and Max Angle (left aligned) / Slide joint Lower/Upper
         angle_limits_layout = QtWidgets.QHBoxLayout()
 
-        angle_limits_layout.addWidget(QtWidgets.QLabel("Min Angle (deg):"))
+        self.lower_limit_label = QtWidgets.QLabel("Min Angle (deg):")
+        angle_limits_layout.addWidget(self.lower_limit_label)
         self.lower_limit_input = QtWidgets.QLineEdit()
         self.lower_limit_input.setValidator(QDoubleValidator(-360.0, 360.0, 5))
         self.lower_limit_input.setPlaceholderText("-180")
@@ -861,7 +870,8 @@ class InspectorWindow(QtWidgets.QWidget):
 
         angle_limits_layout.addSpacing(10)  # Fixed space
 
-        angle_limits_layout.addWidget(QtWidgets.QLabel("Max Angle (deg):"))
+        self.upper_limit_label = QtWidgets.QLabel("Max Angle (deg):")
+        angle_limits_layout.addWidget(self.upper_limit_label)
         self.upper_limit_input = QtWidgets.QLineEdit()
         self.upper_limit_input.setValidator(QDoubleValidator(-360.0, 360.0, 5))
         self.upper_limit_input.setPlaceholderText("180")
@@ -870,6 +880,24 @@ class InspectorWindow(QtWidgets.QWidget):
         self.upper_limit_input.returnPressed.connect(self.set_joint_limits)
         self.upper_limit_input.returnPressed.connect(self.look_upper_limit)
         angle_limits_layout.addWidget(self.upper_limit_input)
+
+        # Slide Axis radio buttons (X, Y, Z) - visible only when Slide is selected
+        angle_limits_layout.addSpacing(15)
+        self.slide_axis_label = QtWidgets.QLabel("Axis:")
+        angle_limits_layout.addWidget(self.slide_axis_label)
+        self.slide_axis_group = QtWidgets.QButtonGroup(self)
+        self.slide_axis_buttons = []
+        for i, axis_name in enumerate(['X', 'Y', 'Z']):
+            radio = QtWidgets.QRadioButton(axis_name)
+            radio.clicked.connect(self.update_slide_axis)
+            self.slide_axis_group.addButton(radio, i)
+            self.slide_axis_buttons.append(radio)
+            angle_limits_layout.addWidget(radio)
+        self.slide_axis_buttons[0].setChecked(True)  # Default X
+        # Initially hidden (visible only when Slide is selected)
+        self.slide_axis_label.setVisible(False)
+        for btn in self.slide_axis_buttons:
+            btn.setVisible(False)
 
         angle_limits_layout.addStretch()  # Right margin
         content_layout.addLayout(angle_limits_layout)
@@ -2052,11 +2080,14 @@ class InspectorWindow(QtWidgets.QWidget):
                 axis_button = self.axis_group.button(node.rotation_axis)
                 if axis_button:
                     axis_button.setChecked(True)
+                # Switch labels (show Lower/Upper(m) when Slide is selected)
+                self._update_limit_labels_for_axis(node.rotation_axis)
             else:
                 # Default to X axis
                 node.rotation_axis = 0
                 if self.axis_group.button(0):
                     self.axis_group.button(0).setChecked(True)
+                self._update_limit_labels_for_axis(0)
 
             # Set Body Angle (display in degrees)
             # Get and apply Ang value from connected parent node's outport
@@ -2125,21 +2156,24 @@ class InspectorWindow(QtWidgets.QWidget):
                 self.hide_mesh_checkbox.setChecked(False)
 
             # Set Joint Limits (convert from Radian to Degree for display)
-            if hasattr(node, 'joint_lower'):
-                # Convert Radian to Degree (round to 2 decimal places)
-                self.lower_limit_input.setText(str(round(math.degrees(node.joint_lower), 2)))
-            else:
-                # DEFAULT_JOINT_LOWER is already in Degree
-                node.joint_lower = math.radians(DEFAULT_JOINT_LOWER)
-                self.lower_limit_input.setText(str(DEFAULT_JOINT_LOWER))
+            # Skip if Slide joint (handled by _update_limit_labels_for_axis)
+            rot_axis = getattr(node, 'rotation_axis', 0)
+            if rot_axis != 5:  # Not Slide
+                if hasattr(node, 'joint_lower'):
+                    # Convert Radian to Degree (round to 2 decimal places)
+                    self.lower_limit_input.setText(str(round(math.degrees(node.joint_lower), 2)))
+                else:
+                    # DEFAULT_JOINT_LOWER is already in Degree
+                    node.joint_lower = math.radians(DEFAULT_JOINT_LOWER)
+                    self.lower_limit_input.setText(str(DEFAULT_JOINT_LOWER))
 
-            if hasattr(node, 'joint_upper'):
-                # Convert Radian to Degree (round to 2 decimal places)
-                self.upper_limit_input.setText(str(round(math.degrees(node.joint_upper), 2)))
-            else:
-                # DEFAULT_JOINT_UPPER is already in Degree
-                node.joint_upper = math.radians(DEFAULT_JOINT_UPPER)
-                self.upper_limit_input.setText(str(DEFAULT_JOINT_UPPER))
+                if hasattr(node, 'joint_upper'):
+                    # Convert Radian to Degree (round to 2 decimal places)
+                    self.upper_limit_input.setText(str(round(math.degrees(node.joint_upper), 2)))
+                else:
+                    # DEFAULT_JOINT_UPPER is already in Degree
+                    node.joint_upper = math.radians(DEFAULT_JOINT_UPPER)
+                    self.upper_limit_input.setText(str(DEFAULT_JOINT_UPPER))
 
             if hasattr(node, 'joint_effort'):
                 self.effort_input.setText(str(node.joint_effort))
@@ -2252,7 +2286,55 @@ class InspectorWindow(QtWidgets.QWidget):
     def update_rotation_axis(self, button):
         """Handle rotation axis selection change"""
         if self.current_node:
-            self.current_node.rotation_axis = self.axis_group.id(button)
+            axis_id = self.axis_group.id(button)
+            self.current_node.rotation_axis = axis_id
+            self._update_limit_labels_for_axis(axis_id)
+
+    def _update_limit_labels_for_axis(self, axis_id):
+        """Slide選択時はラベルをLower/Upper(m)に、それ以外はMin/Max Angle(deg)に切り替え"""
+        is_slide = (axis_id == 5)
+
+        # Show/hide slide axis buttons
+        self.slide_axis_label.setVisible(is_slide)
+        for btn in self.slide_axis_buttons:
+            btn.setVisible(is_slide)
+
+        if is_slide:
+            self.lower_limit_label.setText("Slide joint Lower (m):")
+            self.upper_limit_label.setText("Upper (m):")
+            self.lower_limit_input.setValidator(QDoubleValidator(-100.0, 100.0, 5))
+            self.upper_limit_input.setValidator(QDoubleValidator(-100.0, 100.0, 5))
+            self.lower_limit_input.setPlaceholderText("-0.5")
+            self.upper_limit_input.setPlaceholderText("0.5")
+            # Display current node's slide values
+            if self.current_node:
+                lower = getattr(self.current_node, 'slide_lower', -0.05)
+                upper = getattr(self.current_node, 'slide_upper', 0.05)
+                self.lower_limit_input.setText(str(round(lower, 4)))
+                self.upper_limit_input.setText(str(round(upper, 4)))
+                # Set slide axis button
+                slide_axis = getattr(self.current_node, 'slide_axis', 0)
+                if 0 <= slide_axis <= 2:
+                    self.slide_axis_buttons[slide_axis].setChecked(True)
+        else:
+            self.lower_limit_label.setText("Min Angle (deg):")
+            self.upper_limit_label.setText("Max Angle (deg):")
+            self.lower_limit_input.setValidator(QDoubleValidator(-360.0, 360.0, 5))
+            self.upper_limit_input.setValidator(QDoubleValidator(-360.0, 360.0, 5))
+            self.lower_limit_input.setPlaceholderText("-180")
+            self.upper_limit_input.setPlaceholderText("180")
+            # Display current node's joint angle values
+            if self.current_node:
+                import math
+                lower = getattr(self.current_node, 'joint_lower', math.radians(-180))
+                upper = getattr(self.current_node, 'joint_upper', math.radians(180))
+                self.lower_limit_input.setText(str(round(math.degrees(lower), 2)))
+                self.upper_limit_input.setText(str(round(math.degrees(upper), 2)))
+
+    def update_slide_axis(self):
+        """Slide軸選択変更時のハンドラ"""
+        if self.current_node:
+            self.current_node.slide_axis = self.slide_axis_group.checkedId()
 
     def on_axis_selection_changed(self, button):
         """Event handler when rotation axis selection changes"""
@@ -3997,14 +4079,23 @@ class InspectorWindow(QtWidgets.QWidget):
         if not self.current_node:
             return
         try:
-            # Save Lower limit Degree Radian transform Lower Degree Radian
-            lower_text = self.lower_limit_input.text()
-            if lower_text:
-                self.current_node.joint_lower = math.radians(float(lower_text))
-            # Save Upper limit Degree Radian transform Upper Degree Radian
-            upper_text = self.upper_limit_input.text()
-            if upper_text:
-                self.current_node.joint_upper = math.radians(float(upper_text))
+            rot_axis = getattr(self.current_node, 'rotation_axis', 0)
+            if rot_axis == 5:  # Slide: store in meters as-is
+                lower_text = self.lower_limit_input.text()
+                if lower_text:
+                    self.current_node.slide_lower = float(lower_text)
+                upper_text = self.upper_limit_input.text()
+                if upper_text:
+                    self.current_node.slide_upper = float(upper_text)
+            else:
+                # Save Lower limit Degree Radian transform Lower Degree Radian
+                lower_text = self.lower_limit_input.text()
+                if lower_text:
+                    self.current_node.joint_lower = math.radians(float(lower_text))
+                # Save Upper limit Degree Radian transform Upper Degree Radian
+                upper_text = self.upper_limit_input.text()
+                if upper_text:
+                    self.current_node.joint_upper = math.radians(float(upper_text))
         except ValueError:
             pass  # Ignore invalid values
 
@@ -4178,15 +4269,25 @@ class InspectorWindow(QtWidgets.QWidget):
             return
 
         try:
-            # Save Lower limit Degree Radian transform Lower Degree Radian
-            lower_text = self.lower_limit_input.text()
-            if lower_text:
-                self.current_node.joint_lower = math.radians(float(lower_text))
+            rot_axis = getattr(self.current_node, 'rotation_axis', 0)
 
-            # Save Upper limit Degree Radian transform Upper Degree Radian
-            upper_text = self.upper_limit_input.text()
-            if upper_text:
-                self.current_node.joint_upper = math.radians(float(upper_text))
+            if rot_axis == 5:  # Slide: store in meters as-is
+                lower_text = self.lower_limit_input.text()
+                if lower_text:
+                    self.current_node.slide_lower = float(lower_text)
+                upper_text = self.upper_limit_input.text()
+                if upper_text:
+                    self.current_node.slide_upper = float(upper_text)
+            else:
+                # Save Lower limit Degree Radian transform Lower Degree Radian
+                lower_text = self.lower_limit_input.text()
+                if lower_text:
+                    self.current_node.joint_lower = math.radians(float(lower_text))
+
+                # Save Upper limit Degree Radian transform Upper Degree Radian
+                upper_text = self.upper_limit_input.text()
+                if upper_text:
+                    self.current_node.joint_upper = math.radians(float(upper_text))
 
             # Save Effort Effort
             effort_text = self.effort_input.text()
@@ -4624,10 +4725,10 @@ class InspectorWindow(QtWidgets.QWidget):
 
 def normalize_number_input(text):
     """全角数字・記号を半角に変換するヘルパー関数"""
-    # 全角数字 → 半角数字
+    # Fullwidth digits -> halfwidth digits
     fullwidth_digits = '０１２３４５６７８９'
     halfwidth_digits = '0123456789'
-    # 全角記号 → 半角記号
+    # Fullwidth symbols -> halfwidth symbols
     fullwidth_symbols = '．ー−＋'
     halfwidth_symbols = '.--+'
 
@@ -5153,7 +5254,7 @@ class SettingsDialog(QtWidgets.QDialog):
     def accept_settings(self):
         """settext"""
         try:
-            # Get TODO (全角→半角変換を適用)
+            # Get TODO (apply fullwidth to halfwidth conversion)
             effort = float(normalize_number_input(self.effort_input.text()))
             max_effort = float(normalize_number_input(self.max_effort_input.text()))
             velocity_rad = float(normalize_number_input(self.velocity_rad_input.text()))
@@ -6140,10 +6241,12 @@ class STLViewerWidget(QtWidgets.QWidget):
             # Current position
             position = transform.GetPosition()
 
-            # Check fixed
-            is_fixed = hasattr(node, 'rotation_axis') and node.rotation_axis == 3
+            # Check fixed or free
+            rot_axis = getattr(node, 'rotation_axis', 0)
+            is_fixed = rot_axis == 3
+            is_free = rot_axis == 4
 
-            # If fixed
+            # If fixed - blink display
             if is_fixed:
                 # 400ms
                 # 60fps 24 400ms
@@ -6152,6 +6255,192 @@ class STLViewerWidget(QtWidgets.QWidget):
                     self.stl_actors[node].GetProperty().SetColor(1.0, 0.0, 0.0)  # NOTE
                 else:
                     self.stl_actors[node].GetProperty().SetColor(1.0, 1.0, 1.0)  # NOTE
+            elif is_free:
+                # Free: spinning top wobble (rotate yaw, roll, pitch simultaneously)
+                import math
+                self.current_angle += 2.0  # 2x progress speed
+                t = math.radians(self.current_angle)
+
+                # Precession motion like a spinning top
+                yaw_deg = self.current_angle * 1.0  # 2x rotation speed
+                roll_deg = 15.0 * math.sin(t * 1.4)  # 2x wobble speed
+                pitch_deg = 15.0 * math.cos(t * 1.0)  # 2x wobble speed
+
+                # Initialize transform
+                transform.Identity()
+
+                # Get parent transform and joint origin (same as normal rotation)
+                parent_transform = None
+                joint_origin_xyz = None
+                joint_origin_rpy = None
+                parent_point_angle = None
+
+                if hasattr(node, 'graph'):
+                    for input_port in node.input_ports():
+                        connected_ports = input_port.connected_ports()
+                        if connected_ports:
+                            parent_node = connected_ports[0].node()
+                            parent_port_name = connected_ports[0].name()
+
+                            point_index = 0
+                            if parent_port_name.startswith('out_'):
+                                try:
+                                    port_num = int(parent_port_name.split('_')[1])
+                                    point_index = port_num - 1
+                                except (ValueError, IndexError):
+                                    pass
+                            elif parent_port_name == 'out':
+                                point_index = 0
+
+                            if hasattr(parent_node, 'points') and point_index < len(parent_node.points):
+                                point_data = parent_node.points[point_index]
+                                joint_origin_xyz = point_data.get('xyz', [0, 0, 0])
+                                joint_origin_rpy = point_data.get('rpy', [0, 0, 0])
+                                parent_point_angle = point_data.get('angle', [0.0, 0.0, 0.0])
+
+                            if parent_node in self.transforms:
+                                parent_transform = self.transforms[parent_node]
+                            break
+
+                # Apply parent transform
+                if parent_transform is not None:
+                    transform.Concatenate(parent_transform)
+
+                # Apply joint position
+                if joint_origin_xyz:
+                    transform.Translate(joint_origin_xyz[0], joint_origin_xyz[1], joint_origin_xyz[2])
+
+                # Apply joint origin RPY
+                if joint_origin_rpy and len(joint_origin_rpy) == 3:
+                    transform.RotateZ(math.degrees(joint_origin_rpy[2]))
+                    transform.RotateY(math.degrees(joint_origin_rpy[1]))
+                    transform.RotateX(math.degrees(joint_origin_rpy[0]))
+
+                # Apply parent point angle
+                if parent_point_angle and any(a != 0.0 for a in parent_point_angle):
+                    parent_point_angle_deg = [math.degrees(a) for a in parent_point_angle]
+                    transform.RotateZ(parent_point_angle_deg[2])
+                    transform.RotateY(parent_point_angle_deg[1])
+                    transform.RotateX(parent_point_angle_deg[0])
+
+                # Apply body angle offset
+                body_angle = getattr(node, 'body_angle', [0.0, 0.0, 0.0])
+                offset_roll = math.degrees(body_angle[0])
+                offset_pitch = math.degrees(body_angle[1])
+                offset_yaw = math.degrees(body_angle[2])
+
+                # Apply spinning top wobble rotation in Z-Y-X order
+                transform.RotateZ(yaw_deg + offset_yaw)
+                transform.RotateY(pitch_deg + offset_pitch)
+                transform.RotateX(roll_deg + offset_roll)
+
+                self.stl_actors[node].SetUserTransform(transform)
+
+                if self.follow_children and hasattr(node, 'graph'):
+                    self._rotate_children(node, transform)
+
+                self.render_to_image()
+                return  # Free processing complete, skip subsequent else block
+            elif rot_axis == 5:  # Slide
+                # Slide: oscillate between Lower-Upper along selected axis
+                import math
+                slide_lower = getattr(node, 'slide_lower', -0.05)
+                slide_upper = getattr(node, 'slide_upper', 0.05)
+                slide_axis = getattr(node, 'slide_axis', 0)  # 0=X, 1=Y, 2=Z
+
+                # Update angle for oscillation
+                angle_step = 2.0
+                self.current_angle += angle_step * self.rotation_direction
+
+                # Oscillate in 0-180 degree range (smooth with sin)
+                if self.current_angle >= 180:
+                    self.current_angle = 180
+                    self.rotation_direction = -1
+                elif self.current_angle <= 0:
+                    self.current_angle = 0
+                    self.rotation_direction = 1
+
+                # Smooth oscillation with sin function (0->1->0)
+                t = math.sin(math.radians(self.current_angle))
+                slide_pos = slide_lower + (slide_upper - slide_lower) * t
+
+                # Initialize transform
+                transform.Identity()
+
+                # Get parent transform and joint origin
+                parent_transform = None
+                joint_origin_xyz = None
+                joint_origin_rpy = None
+                parent_point_angle = None
+
+                if hasattr(node, 'graph'):
+                    for input_port in node.input_ports():
+                        connected_ports = input_port.connected_ports()
+                        if connected_ports:
+                            parent_node = connected_ports[0].node()
+                            parent_port_name = connected_ports[0].name()
+
+                            point_index = 0
+                            if parent_port_name.startswith('out_'):
+                                try:
+                                    port_num = int(parent_port_name.split('_')[1])
+                                    point_index = port_num - 1
+                                except (ValueError, IndexError):
+                                    pass
+                            elif parent_port_name == 'out':
+                                point_index = 0
+
+                            if hasattr(parent_node, 'points') and point_index < len(parent_node.points):
+                                point_data = parent_node.points[point_index]
+                                joint_origin_xyz = point_data.get('xyz', [0, 0, 0])
+                                joint_origin_rpy = point_data.get('rpy', [0, 0, 0])
+                                parent_point_angle = point_data.get('angle', [0.0, 0.0, 0.0])
+
+                            if parent_node in self.transforms:
+                                parent_transform = self.transforms[parent_node]
+                            break
+
+                # Apply parent transform
+                if parent_transform is not None:
+                    transform.Concatenate(parent_transform)
+
+                # Apply joint position
+                if joint_origin_xyz:
+                    transform.Translate(joint_origin_xyz[0], joint_origin_xyz[1], joint_origin_xyz[2])
+
+                # Apply joint origin RPY
+                if joint_origin_rpy and len(joint_origin_rpy) == 3:
+                    transform.RotateZ(math.degrees(joint_origin_rpy[2]))
+                    transform.RotateY(math.degrees(joint_origin_rpy[1]))
+                    transform.RotateX(math.degrees(joint_origin_rpy[0]))
+
+                # Apply parent point angle
+                if parent_point_angle and any(a != 0.0 for a in parent_point_angle):
+                    parent_point_angle_deg = [math.degrees(a) for a in parent_point_angle]
+                    transform.RotateZ(parent_point_angle_deg[2])
+                    transform.RotateY(parent_point_angle_deg[1])
+                    transform.RotateX(parent_point_angle_deg[0])
+
+                # Note: body_angle is NOT applied as 3D rotation for Slide joints.
+                # For revolute joints, body_angle is used as an offset to current_angle.
+                # For Slide (linear) joints, orientation is fully determined by
+                # joint_origin_rpy and parent_point_angle.
+
+                # Apply slide translation
+                if slide_axis == 0:  # X axis
+                    transform.Translate(slide_pos, 0, 0)
+                elif slide_axis == 1:  # Y axis
+                    transform.Translate(0, slide_pos, 0)
+                else:  # Z axis
+                    transform.Translate(0, 0, slide_pos)
+
+                self.stl_actors[node].SetUserTransform(transform)
+
+                if self.follow_children and hasattr(node, 'graph'):
+                    self._rotate_children(node, transform)
+
+                self.render_to_image()
+                return  # Slide processing complete
             else:
                 # Get Joint limit transform Joint
                 import math
@@ -10074,6 +10363,12 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(node_elem, "color").text = color_str
         if hasattr(node, 'rotation_axis'):
             ET.SubElement(node_elem, "rotation_axis").text = str(node.rotation_axis)
+        if hasattr(node, 'slide_axis'):
+            ET.SubElement(node_elem, "slide_axis").text = str(node.slide_axis)
+        if hasattr(node, 'slide_lower'):
+            ET.SubElement(node_elem, "slide_lower").text = str(node.slide_lower)
+        if hasattr(node, 'slide_upper'):
+            ET.SubElement(node_elem, "slide_upper").text = str(node.slide_upper)
         if hasattr(node, 'xml_file') and node.xml_file:
             try:
                 rel_path = os.path.relpath(node.xml_file, project_dir)
@@ -10393,7 +10688,17 @@ class CustomNodeGraph(NodeGraph):
                         base_link_sub_node.rotation_axis = int(rotation_axis_elem.text)
                     else:
                         base_link_sub_node.rotation_axis = 3  # Fixed
-                    
+
+                    slide_axis_elem = node_elem.find("slide_axis")
+                    if slide_axis_elem is not None:
+                        base_link_sub_node.slide_axis = int(slide_axis_elem.text)
+                    slide_lower_elem = node_elem.find("slide_lower")
+                    if slide_lower_elem is not None:
+                        base_link_sub_node.slide_lower = float(slide_lower_elem.text)
+                    slide_upper_elem = node_elem.find("slide_upper")
+                    if slide_upper_elem is not None:
+                        base_link_sub_node.slide_upper = float(slide_upper_elem.text)
+
                     # Inertial
                     if inertia_elem is not None:
                         base_link_sub_node.inertia = {}
@@ -10678,7 +10983,17 @@ class CustomNodeGraph(NodeGraph):
             rotation_axis_elem = node_elem.find("rotation_axis")
             if rotation_axis_elem is not None:
                 node.rotation_axis = int(rotation_axis_elem.text)
-            
+
+            slide_axis_elem = node_elem.find("slide_axis")
+            if slide_axis_elem is not None:
+                node.slide_axis = int(slide_axis_elem.text)
+            slide_lower_elem = node_elem.find("slide_lower")
+            if slide_lower_elem is not None:
+                node.slide_lower = float(slide_lower_elem.text)
+            slide_upper_elem = node_elem.find("slide_upper")
+            if slide_upper_elem is not None:
+                node.slide_upper = float(slide_upper_elem.text)
+
             xml_file_elem = node_elem.find("xml_file")
             if xml_file_elem is not None and xml_file_elem.text:
                 xml_path = os.path.join(self.project_dir, xml_file_elem.text)
@@ -12470,15 +12785,26 @@ class CustomNodeGraph(NodeGraph):
                         child_transform.Concatenate(joint_transform)
 
                         # Body_angle radian degree vtk
+                        # NOTE: Skip if body_angle equals point_angle to avoid double application
                         child_body_angle = getattr(child_node, 'body_angle', [0.0, 0.0, 0.0])
                         print(f"  Child body_angle (rad): {child_body_angle}")
-                        print(f"  Child body_angle zero?: {not any(a != 0.0 for a in child_body_angle)}")
-                        if child_body_angle and any(a != 0.0 for a in child_body_angle):
+                        print(f"  Point angle (rad): {point_angle}")
+
+                        # Check if body_angle is different from point_angle (avoid double rotation)
+                        is_same_as_point_angle = all(
+                            abs(child_body_angle[i] - point_angle[i]) < 1e-9
+                            for i in range(3)
+                        )
+                        print(f"  body_angle == point_angle?: {is_same_as_point_angle}")
+
+                        if child_body_angle and any(a != 0.0 for a in child_body_angle) and not is_same_as_point_angle:
                             child_body_angle_deg = [math.degrees(a) for a in child_body_angle]
                             child_transform.RotateZ(child_body_angle_deg[2])  # Z-axis rotation
                             child_transform.RotateY(child_body_angle_deg[1])  # Y-axis rotation
                             child_transform.RotateX(child_body_angle_deg[0])  # X-axis rotation
                             print(f"  ✓ Applied child body_angle: X={child_body_angle_deg[0]}, Y={child_body_angle_deg[1]}, Z={child_body_angle_deg[2]} degrees")
+                        elif is_same_as_point_angle and any(a != 0.0 for a in child_body_angle):
+                            print(f"  ⚠ Skipped body_angle (same as point_angle, already applied)")
                         print("=== End Transform Debug ===\n")
 
                         # Apply TODO
@@ -13618,21 +13944,47 @@ class CustomNodeGraph(NodeGraph):
 
             # Value
             if hasattr(child_node, 'rotation_axis'):
-                if child_node.rotation_axis == 3:  # Fixed
+                rot_axis = child_node.rotation_axis
+                if rot_axis == 3:  # Fixed
                     file.write(f'  <joint name="{joint_name}" type="fixed">\n')
                     file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
                     file.write(f'    <parent link="{parent_node.name()}"/>\n')
                     file.write(f'    <child link="{child_node.name()}"/>\n')
                     file.write('  </joint>\n')
+                elif rot_axis == 4:  # Free → fixed (URDF has no ball joint, use fixed)
+                    file.write(f'  <joint name="{joint_name}" type="fixed">\n')
+                    file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
+                    file.write(f'    <parent link="{parent_node.name()}"/>\n')
+                    file.write(f'    <child link="{child_node.name()}"/>\n')
+                    file.write('  </joint>\n')
+                elif rot_axis == 5:  # Slide → prismatic
+                    # Default to X axis (use slide_axis if available)
+                    slide_axis_id = getattr(child_node, 'slide_axis', 0)
+                    axis = [1, 0, 0] if slide_axis_id == 0 else ([0, 1, 0] if slide_axis_id == 1 else [0, 0, 1])
+                    file.write(f'  <joint name="{joint_name}" type="prismatic">\n')
+                    file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
+                    file.write(f'    <axis xyz="{axis[0]} {axis[1]} {axis[2]}"/>\n')
+                    file.write(f'    <parent link="{parent_node.name()}"/>\n')
+                    file.write(f'    <child link="{child_node.name()}"/>\n')
+                    # prismatic uses limits in meters
+                    lower = getattr(child_node, 'slide_lower', -0.05)
+                    upper = getattr(child_node, 'slide_upper', 0.05)
+                    effort = getattr(child_node, 'joint_effort', 10.0)
+                    velocity = getattr(child_node, 'joint_velocity', 3.0)
+                    file.write(f'    <limit lower="{lower}" upper="{upper}" effort="{effort}" velocity="{velocity}"/>\n')
+                    damping = getattr(child_node, 'joint_damping', 0.0)
+                    friction = getattr(child_node, 'joint_frictionloss', 0.0)
+                    file.write(f'    <dynamics damping="{damping}" friction="{friction}"/>\n')
+                    file.write('  </joint>\n')
                 else:
-                    # Process
+                    # revolute (0=X, 1=Y, 2=Z)
                     file.write(f'  <joint name="{joint_name}" type="revolute">\n')
                     axis = [0, 0, 0]
-                    if child_node.rotation_axis == 0:    # X-axis
+                    if rot_axis == 0:    # X-axis
                         axis = [1, 0, 0]
-                    elif child_node.rotation_axis == 1:  # Y-axis
+                    elif rot_axis == 1:  # Y-axis
                         axis = [0, 1, 0]
-                    else:                          # Z-axis
+                    else:                # Z-axis
                         axis = [0, 0, 1]
 
                     file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
@@ -14637,7 +14989,7 @@ class CustomNodeGraph(NodeGraph):
             
             # Create 3 scene xml include 3. scene.xml
             scene_path = os.path.join(mjcf_dir, "scene.xml")
-            # 実際のルートボディ名を決定（_write_mjcf_bodyと同じロジック）
+            # Determine actual root body name (same logic as _write_mjcf_body)
             root_body_name = "base_link" if rename_to_base_link else self._sanitize_name(root_node.name())
             self._write_mjcf_scene(scene_path, robot_file_basename, model_z_height, base_link_height, fix_base_to_ground, root_body_name)
 
@@ -16456,18 +16808,25 @@ class CustomNodeGraph(NodeGraph):
             joint_rpy = point_data.get('angle', point_data.get('rpy', [0, 0, 0]))
 
         # Get TODO
-        if hasattr(child_node, 'rotation_axis'):
-            if child_node.rotation_axis == 0:
-                joint_axis = [1, 0, 0]
-            elif child_node.rotation_axis == 1:
-                joint_axis = [0, 1, 0]
-            elif child_node.rotation_axis == 2:
-                joint_axis = [0, 0, 1]
+        rot_axis = getattr(child_node, 'rotation_axis', 0)
+        if rot_axis == 0:
+            joint_axis = [1, 0, 0]
+        elif rot_axis == 1:
+            joint_axis = [0, 1, 0]
+        elif rot_axis == 2:
+            joint_axis = [0, 0, 1]
+        elif rot_axis == 5:  # Slide
+            slide_axis_id = getattr(child_node, 'slide_axis', 0)
+            joint_axis = [1, 0, 0] if slide_axis_id == 0 else ([0, 1, 0] if slide_axis_id == 1 else [0, 0, 1])
 
         # Todo
         joint_type = "hinge"
-        if hasattr(child_node, 'rotation_axis') and child_node.rotation_axis == 3:
+        if rot_axis == 3:  # Fixed
             joint_type = "fixed"
+        elif rot_axis == 4:  # Free → ball (MuJoCo's freejoint is only for root body)
+            joint_type = "ball"
+        elif rot_axis == 5:  # Slide
+            joint_type = "slide"
 
         # If none fixed none
         if joint_type == "fixed":
@@ -16477,22 +16836,53 @@ class CustomNodeGraph(NodeGraph):
         child_sanitized_name = self._sanitize_name(child_node.name())
         # Determine axis suffix based on rotation_axis
         axis_suffix = "_roll"  # Default: X axis (rotation_axis == 0)
-        if hasattr(child_node, 'rotation_axis'):
-            if child_node.rotation_axis == 0:
-                axis_suffix = "_roll"    # X axis
-            elif child_node.rotation_axis == 1:
-                axis_suffix = "_pitch"   # Y axis
-            elif child_node.rotation_axis == 2:
-                axis_suffix = "_yaw"     # Z axis
-            elif child_node.rotation_axis == 3:
-                axis_suffix = "_fixed"   # Fixed (though this case returns None above)
+        if rot_axis == 0:
+            axis_suffix = "_roll"    # X axis
+        elif rot_axis == 1:
+            axis_suffix = "_pitch"   # Y axis
+        elif rot_axis == 2:
+            axis_suffix = "_yaw"     # Z axis
+        elif rot_axis == 3:
+            axis_suffix = "_fixed"   # Fixed (though this case returns None above)
+        elif rot_axis == 4:
+            axis_suffix = "_ball"    # Ball (3DOF spherical)
+        elif rot_axis == 5:
+            axis_suffix = "_slide"   # Slide (prismatic)
         joint_name = f"{child_sanitized_name}{axis_suffix}"
         motor_name = f"{child_sanitized_name}_motor"
+
+        # Ball joint has no range limit (uses quaternion representation)
+        if joint_type == "ball":
+            return {
+                'name': joint_name,
+                'type': joint_type,
+                'pos': f"{joint_xyz[0]} {joint_xyz[1]} {joint_xyz[2]}",
+                'rpy': joint_rpy,
+                'axis': f"{joint_axis[0]} {joint_axis[1]} {joint_axis[2]}",
+                'range': "",
+                'limited': "",
+                'margin': "",
+                'armature': "",
+                'frictionloss': "",
+                'damping': "",
+                'stiffness': "",
+                'ref': "",
+                'motor_name': motor_name,
+            }
 
         # Min angle deg max angle deg min angle max angle rad
         # Mjcf <compiler angle radian > radians output mjcf compiler
         range_str = ""
-        if hasattr(child_node, 'joint_lower') and hasattr(child_node, 'joint_upper'):
+        limited_str = ' limited="true"'
+
+        if joint_type == "slide":
+            # Slide uses meters
+            lower = getattr(child_node, 'slide_lower', -0.05)
+            upper = getattr(child_node, 'slide_upper', 0.05)
+            if lower >= upper:
+                lower, upper = upper, lower
+            range_str = f' range="{format_float_no_exp(lower)} {format_float_no_exp(upper)}"'
+        elif hasattr(child_node, 'joint_lower') and hasattr(child_node, 'joint_upper'):
             lower = child_node.joint_lower  # Stored in radians
             upper = child_node.joint_upper  # Stored in radians
             # MJCF requires range[0] < range[1], so swap if needed
@@ -16519,9 +16909,6 @@ class CustomNodeGraph(NodeGraph):
             range_str = f' range="{format_float_no_exp(lower)} {format_float_no_exp(upper)}"'
             print(f"  Warning: Joint '{joint_name}' has no joint_lower/upper limits, using default range [-π, π] radians")
 
-        # Limited true limited:
-        limited_str = ' limited="true"'
-
         # Margin margin value margin:
         margin_str = ""
         if hasattr(child_node, 'joint_margin'):
@@ -16542,7 +16929,7 @@ class CustomNodeGraph(NodeGraph):
         if hasattr(child_node, 'joint_damping'):
             damping_str = f' damping="{format_float_no_exp(child_node.joint_damping)}"'
 
-        # Stiffness / Kp → actuatorのkpで出力するため、jointには出力しない
+        # Stiffness / Kp -> output as actuator's kp, not in joint
         stiffness_str = ""
         
         # Generate ref body_angle ref: /

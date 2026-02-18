@@ -7,7 +7,7 @@ Description: URDF/MJCF Import functionality for URDF Kitchen.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Feb 17, 2026
+Update.     : Feb 18, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -3409,11 +3409,12 @@ class MJCFParser:
             }
             urdf_type = type_mapping.get(joint_type, 'revolute')
             
-            # For slide (prismatic) joints, set rotation_axis to 3 (Fixed)
+            # For slide (prismatic) joints, set rotation_axis to 5 (Slide)
             if joint_type == 'slide':
-                body_data['rotation_axis'] = 3  # Fixed
-                # if self.verbose:
-                #     print(f"{'  ' * level}    Joint '{joint_name}' is slide (prismatic) -> rotation_axis=3 (Fixed)")
+                body_data['rotation_axis'] = 5  # Slide
+                # slide_axis will be determined from axis_local below
+                if self.verbose:
+                    print(f"{'  ' * level}    Joint '{joint_name}' is slide (prismatic) -> rotation_axis=5 (Slide)")
 
             # Get joint class (for default class lookup)
             joint_class = joint_elem.get('class', body_childclass)
@@ -3469,7 +3470,15 @@ class MJCFParser:
             # So rotation_axis should be determined from axis_local, not axis_parent.
             # This matches URDF behavior: URDF <axis xyz="0 0 1"/> also means rotation
             # around Z-axis after origin RPY transformation, resulting in rotation_axis=2.
-            if joint_type != 'slide':
+            if joint_type == 'slide':
+                # For slide joints, determine slide_axis from axis_local
+                abs_axis = [abs(v) for v in axis_local]
+                max_idx = abs_axis.index(max(abs_axis))
+                body_data['slide_axis'] = max_idx  # 0=X, 1=Y, 2=Z
+                if self.verbose:
+                    axis_names = ['X', 'Y', 'Z']
+                    print(f"{'  ' * level}    Joint '{joint_name}' slide_axis={body_data['slide_axis']} ({axis_names[body_data['slide_axis']]})")
+            else:
                 # Find the axis with the largest absolute value in LOCAL coordinate system
                 abs_axis = [abs(v) for v in axis_local]
                 max_idx = abs_axis.index(max(abs_axis))
@@ -3521,13 +3530,18 @@ class MJCFParser:
             if 'joint_range' in joint_defaults:
                 range_vals = joint_defaults['joint_range']
                 if len(range_vals) >= 2:
-                    # Convert to radians if angle_unit is degree
-                    if angle_unit == 'degree':
-                        joint_data['limit']['lower'] = math.radians(range_vals[0])
-                        joint_data['limit']['upper'] = math.radians(range_vals[1])
+                    if joint_type == 'slide':
+                        # Slide joints use meters (no angle conversion)
+                        joint_data['slide_lower'] = range_vals[0]
+                        joint_data['slide_upper'] = range_vals[1]
                     else:
-                        joint_data['limit']['lower'] = range_vals[0]
-                        joint_data['limit']['upper'] = range_vals[1]
+                        # Convert to radians if angle_unit is degree
+                        if angle_unit == 'degree':
+                            joint_data['limit']['lower'] = math.radians(range_vals[0])
+                            joint_data['limit']['upper'] = math.radians(range_vals[1])
+                        else:
+                            joint_data['limit']['lower'] = range_vals[0]
+                            joint_data['limit']['upper'] = range_vals[1]
             
             # Apply default class damping if available
             if 'joint_damping' in joint_defaults:
@@ -3550,13 +3564,20 @@ class MJCFParser:
             if range_str:
                 range_vals = [float(v) for v in range_str.split()]
                 if len(range_vals) >= 2:
-                    # Convert to radians if angle_unit is degree
-                    if angle_unit == 'degree':
-                        joint_data['limit']['lower'] = math.radians(range_vals[0])
-                        joint_data['limit']['upper'] = math.radians(range_vals[1])
+                    if joint_type == 'slide':
+                        # Slide joints use meters (no angle conversion)
+                        joint_data['slide_lower'] = range_vals[0]
+                        joint_data['slide_upper'] = range_vals[1]
+                        if self.verbose:
+                            print(f"{'  ' * level}    Slide range: {range_vals[0]} to {range_vals[1]} m")
                     else:
-                        joint_data['limit']['lower'] = range_vals[0]
-                        joint_data['limit']['upper'] = range_vals[1]
+                        # Convert to radians if angle_unit is degree
+                        if angle_unit == 'degree':
+                            joint_data['limit']['lower'] = math.radians(range_vals[0])
+                            joint_data['limit']['upper'] = math.radians(range_vals[1])
+                        else:
+                            joint_data['limit']['lower'] = range_vals[0]
+                            joint_data['limit']['upper'] = range_vals[1]
 
             # Parse damping (individual joint attribute takes precedence)
             damping_str = joint_elem.get('damping')
@@ -5176,6 +5197,16 @@ def import_urdf(graph):
                 axis = joint_data.get('axis', [1.0, 0.0, 0.0])
                 if joint_data['type'] == 'fixed':
                     child_node.rotation_axis = 3  # Fixed
+                elif joint_data['type'] == 'prismatic':
+                    # Prismatic (slide) joint
+                    child_node.rotation_axis = 5  # Slide
+                    # Determine slide_axis from joint axis (0:X, 1:Y, 2:Z)
+                    if len(axis) >= 3:
+                        abs_axis = [abs(v) for v in axis]
+                        child_node.slide_axis = abs_axis.index(max(abs_axis))
+                    else:
+                        child_node.slide_axis = 0  # Default X
+                    print(f"  ✓ Prismatic joint: rotation_axis=5 (Slide), slide_axis={child_node.slide_axis}")
                 elif len(axis) >= 3 and abs(axis[0]) > 0.9:
                     child_node.rotation_axis = 0  # X axis
                 elif len(axis) >= 3 and abs(axis[1]) > 0.9:
@@ -5188,10 +5219,19 @@ def import_urdf(graph):
                 # Set joint limit parameters
                 # Override if defined in file, use Settings default values if undefined
                 if 'limit' in joint_data:
-                    if 'lower' in joint_data['limit']:
-                        child_node.joint_lower = joint_data['limit']['lower']
-                    if 'upper' in joint_data['limit']:
-                        child_node.joint_upper = joint_data['limit']['upper']
+                    # For prismatic joints, use slide_lower/slide_upper (meters)
+                    if joint_data['type'] == 'prismatic':
+                        if 'lower' in joint_data['limit']:
+                            child_node.slide_lower = joint_data['limit']['lower']
+                        if 'upper' in joint_data['limit']:
+                            child_node.slide_upper = joint_data['limit']['upper']
+                        print(f"  ✓ Prismatic limits: lower={child_node.slide_lower}, upper={child_node.slide_upper}")
+                    else:
+                        # For revolute joints, use joint_lower/joint_upper (radians)
+                        if 'lower' in joint_data['limit']:
+                            child_node.joint_lower = joint_data['limit']['lower']
+                        if 'upper' in joint_data['limit']:
+                            child_node.joint_upper = joint_data['limit']['upper']
                     if 'effort' in joint_data['limit']:
                         child_node.joint_effort = joint_data['limit']['effort']
                     if 'velocity' in joint_data['limit']:
@@ -6411,11 +6451,17 @@ def import_mjcf(graph):
                 # Set rotation axis (from joint element's axis attribute)
                 if 'rotation_axis' in body_data and body_data['rotation_axis'] is not None:
                     node.rotation_axis = body_data['rotation_axis']
-                    axis_names = ['X (Roll)', 'Y (Pitch)', 'Z (Yaw)', 'Fixed']
+                    axis_names = ['X (Roll)', 'Y (Pitch)', 'Z (Yaw)', 'Fixed', 'Free', 'Slide']
                     if 0 <= node.rotation_axis < len(axis_names):
                         print(f"  ✓ Set rotation_axis for node '{body_name}': {node.rotation_axis} ({axis_names[node.rotation_axis]})")
                     else:
                         print(f"  ✓ Set rotation_axis for node '{body_name}': {node.rotation_axis}")
+
+                    # For slide joints, also set slide_axis
+                    if node.rotation_axis == 5 and 'slide_axis' in body_data:
+                        node.slide_axis = body_data['slide_axis']
+                        slide_axis_names = ['X', 'Y', 'Z']
+                        print(f"  ✓ Set slide_axis for node '{body_name}': {node.slide_axis} ({slide_axis_names[node.slide_axis]})")
                 else:
                     # Default to X axis (for backward compatibility)
                     node.rotation_axis = 0
@@ -6703,10 +6749,19 @@ def import_mjcf(graph):
 
                 # Set joint information on child node
                 # Override if defined in file, use Settings default values if undefined
+                # For slide joints, use slide_lower/slide_upper (meters)
+                if 'slide_lower' in joint_data:
+                    child_node.slide_lower = joint_data['slide_lower']
+                    print(f"  ✓ Set slide_lower: {child_node.slide_lower}")
+                if 'slide_upper' in joint_data:
+                    child_node.slide_upper = joint_data['slide_upper']
+                    print(f"  ✓ Set slide_upper: {child_node.slide_upper}")
+
                 if 'limit' in joint_data:
-                    if 'lower' in joint_data['limit']:
+                    # For non-slide joints, use joint_lower/joint_upper (radians)
+                    if 'lower' in joint_data['limit'] and child_node.rotation_axis != 5:
                         child_node.joint_lower = joint_data['limit']['lower']
-                    if 'upper' in joint_data['limit']:
+                    if 'upper' in joint_data['limit'] and child_node.rotation_axis != 5:
                         child_node.joint_upper = joint_data['limit']['upper']
                     if 'effort' in joint_data['limit']:
                         child_node.joint_effort = joint_data['limit']['effort']
