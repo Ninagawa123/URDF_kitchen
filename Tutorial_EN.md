@@ -331,7 +331,8 @@ The borders between panels can be dragged to resize them.
   
 Here are a few buttons to start with:  
   
-- **Add Node** : Creates a new node.  
+- **Add Node** : Creates a new node.
+- **Add Coincident** : Creates a node for a closed-link connection point.
 - **Delete Node** : Deletes the selected node.  
 - **Recalc Positions** : Recalculates unit display positions in the 3D view.  
   
@@ -365,6 +366,8 @@ Example: Connect base_link's out port to c_waist's in port.
          Connect c_chest's out_1 port to c_head's in port.  
          Connect c_chest's out_2 port to l_shoulder's in port.  
 ```  
+  
+To create a **closed link**, connect the two out ports of the nodes you want to join to the two in ports of a Coincident node.  
   
 ### 3-4. Node Inspector: Working with Out Ports  
   
