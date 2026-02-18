@@ -7,7 +7,7 @@ Description: URDF/MJCF Import functionality for URDF Kitchen.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Feb 18, 2026
+Update.     : Feb 19, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -7199,165 +7199,122 @@ def import_mjcf(graph):
                         break
             print(f"\n  Connected {connected_count} out of {len(unconnected_nodes)} unconnected nodes")
 
-            # Create and connect closed-loop joint nodes (from MJCF equality section)
-            # Must execute before position recalculation
-            print("\n=== Creating Closed-Loop Joint Nodes from MJCF equality section ===")
+            # Create and connect CoincidentNodes (from MJCF equality section)
+            # CoincidentNode connects two bodies with a constraint (no parent-child relationship)
+            print("\n=== Creating CoincidentNodes from MJCF equality section ===")
             if closed_loop_joints:
-                closed_loop_nodes = {}
-                parent_port_indices = {}  # Manage port indices per parent node
-                
+                coincident_nodes = {}
+                # Track how many additional ports we've added per body for coincident connections
+                body_additional_ports = {}
+
+                # Helper function to add output port and connect to coincident node
+                def add_output_and_connect(body_name, body_node, anchor, coincident_node, input_port_name):
+                    """Add output port to body and connect to coincident node's input"""
+                    # Add a new output port using _add_output
+                    if hasattr(body_node, '_add_output'):
+                        new_port_name = body_node._add_output()
+                        print(f"    Added output port via _add_output: {new_port_name}")
+                    else:
+                        # Fallback: manually add port
+                        body_node.output_count = getattr(body_node, 'output_count', 0) + 1
+                        new_port_name = f'out_{body_node.output_count}'
+                        body_node.add_output(new_port_name, color=(180, 80, 0))
+                        print(f"    Added output port manually: {new_port_name}")
+
+                    # Get port index (the last port)
+                    output_ports = body_node.output_ports()
+                    port_index = len(output_ports) - 1
+
+                    # Update points data with anchor position
+                    if hasattr(body_node, 'points') and port_index < len(body_node.points):
+                        body_node.points[port_index]['xyz'] = list(anchor)
+                        body_node.points[port_index]['name'] = f'coincident_{body_name}'
+
+                    # Connect the new output port to coincident node
+                    # Note: CoincidentNode input ports are named 'in_1' and 'in_2'
+                    output_port = body_node.get_output(new_port_name)
+                    actual_input_name = f'in_{input_port_name}'  # '1' -> 'in_1', '2' -> 'in_2'
+                    input_port = coincident_node.get_input(actual_input_name)
+
+                    if output_port and input_port:
+                        output_port.connect_to(input_port)
+                        print(f"    ✓ Connected {body_name}.{new_port_name} -> {coincident_node.name()}.{actual_input_name}")
+                        return True
+                    else:
+                        print(f"    ✗ Port not found (output: {output_port}, input: {input_port} for {actual_input_name})")
+                        return False
+
                 for joint_data in closed_loop_joints:
                     joint_name = joint_data['name']
-                    parent_link = joint_data['parent']
-                    child_link = joint_data['child']
-                    
-                    # Determine closed-loop node name
-                    cl_node_name = f"{joint_name}_CL"
-                    
-                    # Verify parent and child links exist as nodes
-                    if parent_link not in nodes:
-                        print(f"Skipping closed-loop joint '{joint_name}': parent link '{parent_link}' not found")
-                        continue
-                    if child_link not in nodes:
-                        print(f"Skipping closed-loop joint '{joint_name}': child link '{child_link}' not found")
-                        continue
-                    
-                    parent_node = nodes[parent_link]
-                    child_node = nodes[child_link]
-                    
-                    # Create closed-loop node (positioned between parent and child)
-                    parent_pos = parent_node.pos()
-                    child_pos = child_node.pos()
-                    
-                    if isinstance(parent_pos, (list, tuple)):
-                        parent_x, parent_y = parent_pos[0], parent_pos[1]
-                    else:
-                        parent_x, parent_y = parent_pos.x(), parent_pos.y()
-                    
-                    if isinstance(child_pos, (list, tuple)):
-                        child_x, child_y = child_pos[0], child_pos[1]
-                    else:
-                        child_x, child_y = child_pos.x(), child_pos.y()
-                    
-                    # Calculate middle position
-                    cl_node_x = (parent_x + child_x) / 2
-                    cl_node_y = (parent_y + child_y) / 2
-                    cl_node_pos = QtCore.QPointF(cl_node_x, cl_node_y)
-                    
-                    # Create closed-loop node
-                    print(f"Creating closed-loop node: {cl_node_name} ({parent_link} <-> {child_link})")
-                    cl_node = graph.create_node(
-                        'insilico.nodes.ClosedLoopJointNode',
-                        name=cl_node_name,
-                        pos=cl_node_pos
-                    )
-                    
-                    # Set metadata
-                    cl_node.joint_name = joint_name
-                    cl_node.joint_type = joint_data.get('original_type', 'ball')
-                    cl_node.parent_link = parent_link
-                    cl_node.child_link = child_link
-                    cl_node.origin_xyz = joint_data.get('origin_xyz', [0.0, 0.0, 0.0])
-                    cl_node.origin_rpy = joint_data.get('origin_rpy', [0.0, 0.0, 0.0])
-                    cl_node.gearbox_ratio = joint_data.get('gearbox_ratio', 1.0)
-                    cl_node.gearbox_reference_body = joint_data.get('gearbox_reference_body')
-                    
-                    # Initialize closed-loop node's points data
-                    if not hasattr(cl_node, 'points'):
-                        cl_node.points = []
-                    
-                    closed_loop_nodes[cl_node_name] = cl_node
-                    
-                    # Get parent link output port index
-                    if parent_link not in parent_port_indices:
-                        parent_port_indices[parent_link] = 0
-                    parent_port_index = parent_port_indices[parent_link]
-                    parent_port_indices[parent_link] += 1
-                    
-                    # Initialize parent node points data if insufficient
-                    if not hasattr(parent_node, 'points'):
-                        parent_node.points = []
-                    
-                    # Add required points data
-                    while len(parent_node.points) <= parent_port_index:
-                        parent_node.points.append({
-                            'name': f'point_{len(parent_node.points) + 1}',
-                            'type': 'fixed',
-                            'xyz': [0.0, 0.0, 0.0],
-                            'rpy': [0.0, 0.0, 0.0],
-                            'angle': [0.0, 0.0, 0.0]
-                        })
-                    
-                    # Set closed-loop joint origin info to parent node points
-                    origin_rpy = joint_data.get('origin_rpy', [0.0, 0.0, 0.0])
-                    parent_node.points[parent_port_index]['xyz'] = joint_data.get('origin_xyz', [0.0, 0.0, 0.0])
-                    parent_node.points[parent_port_index]['rpy'] = [0.0, 0.0, 0.0]  # Keep rpy as zero (3D view uses angle)
-                    parent_node.points[parent_port_index]['name'] = joint_name
-                    parent_node.points[parent_port_index]['type'] = joint_data.get('original_type', 'ball')
-                    parent_node.points[parent_port_index]['angle'] = list(origin_rpy)  # Set angle for 3D view (radians)
-                    
-                    # Get parent link port name
-                    is_base_link_node = parent_node.__class__.__name__ == 'BaseLinkNode'
-                    if is_base_link_node:
-                        if parent_port_index == 0:
-                            parent_output_port_name = 'out'
-                        else:
-                            parent_output_port_name = f'out_{parent_port_index + 1}'
-                    else:
-                        parent_output_port_name = f'out_{parent_port_index + 1}'
-                    
-                    # Connect parent link -> closed-loop node
-                    print(f"  Connecting {parent_link}.{parent_output_port_name} -> {cl_node_name}.in")
-                    try:
-                        # Add output ports to parent node if insufficient
-                        parent_output_ports = parent_node.output_ports()
-                        if parent_port_index >= len(parent_output_ports):
-                            needed_ports = parent_port_index + 1 - len(parent_output_ports)
-                            for i in range(needed_ports):
-                                if hasattr(parent_node, '_add_output'):
-                                    parent_node._add_output()
-                                elif hasattr(parent_node, 'add_output'):
-                                    parent_node.output_count = getattr(parent_node, 'output_count', 0) + 1
-                                    new_port_name = f'out_{parent_node.output_count}'
-                                    parent_node.add_output(new_port_name, color=(180, 80, 0))
-                        
-                        parent_output_port = parent_node.get_output(parent_output_port_name)
-                        cl_input_port = cl_node.get_input('in')
-                        
-                        if parent_output_port and cl_input_port:
-                            parent_output_port.connect_to(cl_input_port)
-                            print(f"    ✓ Connected {parent_link} -> {cl_node_name}")
-                        else:
-                            print(f"    ✗ Port not found")
-                    except Exception as e:
-                        print(f"    ✗ Error connecting {parent_link} -> {cl_node_name}: {str(e)}")
-                        traceback.print_exc()
-                    
-                    # Connect closed-loop node -> child link
-                    # NOTE: In closed-loop structures, child link may already have a hierarchical parent
-                    # In that case, input port is already connected, so skip connection
-                    print(f"  Connecting {cl_node_name}.out -> {child_link}.in")
-                    try:
-                        cl_output_port = cl_node.get_output('out')
-                        child_input_port = child_node.get_input('in')
+                    body1_name = joint_data['parent']  # body1 in MJCF
+                    body2_name = joint_data['child']   # body2 in MJCF
+                    anchor_xyz = joint_data.get('anchor', joint_data.get('origin_xyz', [0.0, 0.0, 0.0]))
 
-                        if cl_output_port and child_input_port:
-                            # Check if child link's input port is already connected
-                            if child_input_port.connected_ports():
-                                print(f"    ⚠ {child_link}.in is already connected (closed-loop structure)")
-                                print(f"      Closed-loop joint node created but not connected to child")
-                            else:
-                                cl_output_port.connect_to(child_input_port)
-                                print(f"    ✓ Connected {cl_node_name} -> {child_link}")
-                        else:
-                            print(f"    ✗ Port not found")
+                    # Determine coincident node name
+                    coincident_node_name = f"Coincident_{body1_name}_{body2_name}"
+
+                    # Verify both bodies exist as nodes
+                    if body1_name not in nodes:
+                        print(f"Skipping constraint '{joint_name}': body1 '{body1_name}' not found")
+                        continue
+                    if body2_name not in nodes:
+                        print(f"Skipping constraint '{joint_name}': body2 '{body2_name}' not found")
+                        continue
+
+                    body1_node = nodes[body1_name]
+                    body2_node = nodes[body2_name]
+
+                    # Calculate position (between body1 and body2)
+                    body1_pos = body1_node.pos()
+                    body2_pos = body2_node.pos()
+
+                    if isinstance(body1_pos, (list, tuple)):
+                        body1_x, body1_y = body1_pos[0], body1_pos[1]
+                    else:
+                        body1_x, body1_y = body1_pos.x(), body1_pos.y()
+
+                    if isinstance(body2_pos, (list, tuple)):
+                        body2_x, body2_y = body2_pos[0], body2_pos[1]
+                    else:
+                        body2_x, body2_y = body2_pos.x(), body2_pos.y()
+
+                    # Position coincident node between the two bodies
+                    coincident_x = (body1_x + body2_x) / 2
+                    coincident_y = (body1_y + body2_y) / 2
+                    coincident_pos = QtCore.QPointF(coincident_x, coincident_y)
+
+                    # Create CoincidentNode
+                    print(f"Creating CoincidentNode: {coincident_node_name} ({body1_name} <-> {body2_name})")
+                    try:
+                        coincident_node = graph.create_node(
+                            'insilico.nodes.CoincidentNode',
+                            name=coincident_node_name,
+                            pos=coincident_pos
+                        )
                     except Exception as e:
-                        print(f"    ✗ Error connecting {cl_node_name} -> {child_link}: {str(e)}")
+                        print(f"  ✗ Failed to create CoincidentNode: {str(e)}")
                         traceback.print_exc()
-                
-                print(f"\nCreated {len(closed_loop_nodes)} closed-loop joint nodes")
+                        continue
+
+                    coincident_nodes[coincident_node_name] = coincident_node
+
+                    # Connect body1 -> CoincidentNode input '1'
+                    print(f"  Connecting {body1_name} -> {coincident_node_name}.1")
+                    add_output_and_connect(body1_name, body1_node, anchor_xyz, coincident_node, '1')
+
+                    # Connect body2 -> CoincidentNode input '2'
+                    # Note: For body2, anchor is implicitly [0,0,0] in MuJoCo's connect constraint
+                    body2_anchor = [0.0, 0.0, 0.0]
+                    print(f"  Connecting {body2_name} -> {coincident_node_name}.2")
+                    add_output_and_connect(body2_name, body2_node, body2_anchor, coincident_node, '2')
+
+                    # Update CoincidentNode color based on connection state
+                    if hasattr(coincident_node, 'update_color_by_connection'):
+                        coincident_node.update_color_by_connection()
+
+                print(f"\nCreated {len(coincident_nodes)} CoincidentNodes from equality constraints")
             else:
-                print("No closed-loop joints found in MJCF equality section")
+                print("No equality constraints found in MJCF")
 
             # Load meshes to STL viewer
             print("\n=== Loading meshes to 3D viewer ===")

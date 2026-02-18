@@ -4,7 +4,7 @@ Description: A Python script to assembling files configured with urdf_kitchen_Pa
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Feb 18, 2026
+Update.     : Feb 19, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -418,6 +418,49 @@ class ClosedLoopJointNode(BaseNode):
                 self.graph.show_closed_loop_inspector(self)
         else:
             pass
+
+
+class CoincidentNode(BaseNode):
+    """Coincident constraint node - Connects two parent nodes at the same point"""
+    __identifier__ = 'insilico.nodes'
+    NODE_NAME = 'CoincidentNode'
+
+    def __init__(self):
+        super(CoincidentNode, self).__init__()
+
+        # Two input ports for connecting two parent nodes (short names for narrow width)
+        self.add_input('in_1', color=(180, 120, 0))
+        self.add_input('in_2', color=(180, 120, 0))
+
+        # No output port (this is a constraint node)
+
+        # Coincident node displayed in special color (blue)
+        self.set_color(40, 60, 100)
+
+        # Set up double click event
+        self._original_double_click = self.view.mouseDoubleClickEvent
+        self.view.mouseDoubleClickEvent = self.node_double_clicked
+
+    def node_double_clicked(self, event):
+        """Handle double click on node"""
+        # TODO: Implement coincident inspector if needed
+        print(f"CoincidentNode '{self.name()}' double-clicked")
+        pass
+
+    def update_color_by_connection(self):
+        """Update node color based on connection state"""
+        # Check if both input ports are connected
+        connected_count = 0
+        for input_port in self.input_ports():
+            if input_port.connected_ports():
+                connected_count += 1
+
+        if connected_count >= 2:
+            # Both inputs connected: dark blue (active)
+            self.set_color(20, 30, 50)
+        else:
+            # Not fully connected: blue/gray (inactive)
+            self.set_color(40, 60, 100)
 
 
 class NumericLineEdit(QtWidgets.QLineEdit):
@@ -8364,6 +8407,10 @@ class CustomNodeGraph(NodeGraph):
             self.register_node(ClosedLoopJointNode)
             print(f"Registered node type: {ClosedLoopJointNode.NODE_NAME}")
 
+            # CoincidentNode
+            self.register_node(CoincidentNode)
+            print(f"Registered node type: {CoincidentNode.NODE_NAME}")
+
         except Exception as e:
             print(f"Error registering node types: {str(e)}")
             import traceback
@@ -9100,6 +9147,11 @@ class CustomNodeGraph(NodeGraph):
             node.set_color(45, 45, 45)  # NOTE
             return
 
+        # CoincidentNode has its own color logic
+        if isinstance(node, CoincidentNode):
+            node.update_color_by_connection()
+            return
+
         # Connect check
         has_input_connection = False
         for input_port in node.input_ports():
@@ -9345,6 +9397,10 @@ class CustomNodeGraph(NodeGraph):
                 except Exception as pipe_error:
                     print(f"  ⚠ Warning: Could not schedule cyan color: {str(pipe_error)}")
 
+            # Update CoincidentNode color based on connection state
+            if isinstance(child_node, CoincidentNode):
+                child_node.update_color_by_connection()
+
             # Update color
             self.update_node_color_by_connection(child_node)
 
@@ -9375,6 +9431,10 @@ class CustomNodeGraph(NodeGraph):
             # Stl position stl
             self.stl_viewer.reset_stl_transform(child_node)
             print(f"Reset position for node: {child_node.name()}")
+
+            # Update CoincidentNode color based on connection state
+            if isinstance(child_node, CoincidentNode):
+                child_node.update_color_by_connection()
 
             # Update color
             self.update_node_color_by_connection(child_node)
@@ -9933,6 +9993,9 @@ class CustomNodeGraph(NodeGraph):
             for connected_port in port.connected_ports():
                 child_node = connected_port.node()
                 if child_node not in visited_nodes:
+                    # Skip CoincidentNode (constraint-only, not a physical link)
+                    if isinstance(child_node, CoincidentNode):
+                        continue
                     # Massless decoration link output massless decoration
                     if not (hasattr(child_node, 'massless_decoration') and child_node.massless_decoration):
                         # Output
@@ -14505,6 +14568,9 @@ class CustomNodeGraph(NodeGraph):
             for connected_port in port.connected_ports():
                 child_node = connected_port.node()
                 if child_node not in visited_nodes:
+                    # Skip CoincidentNode (constraint-only, not a physical link)
+                    if isinstance(child_node, CoincidentNode):
+                        continue
                     # Massless decoration link output massless decoration
                     if not (hasattr(child_node, 'massless_decoration') and child_node.massless_decoration):
                         # Output
@@ -15644,6 +15710,80 @@ class CustomNodeGraph(NodeGraph):
             f.write('</mujoco>\n')
         print(f"Created actuators file: {file_path}")
 
+    def _collect_coincident_constraints(self):
+        """CoincidentNodeを探索し、閉リンク制約用のデータを収集する
+
+        Returns:
+            list: 制約データのリスト。各要素は以下の辞書:
+                - name: 制約名
+                - body1: 1つ目の親ボディ名
+                - body2: 2つ目の親ボディ名
+                - anchor1: body1のローカル座標でのアンカー位置
+                - anchor2: body2のローカル座標でのアンカー位置
+        """
+        constraints = []
+
+        for node in self.all_nodes():
+            # CoincidentNodeのみ処理
+            if not isinstance(node, CoincidentNode):
+                continue
+
+            # 2つの入力ポートから接続情報を取得
+            input_ports = node.input_ports()
+            if len(input_ports) < 2:
+                print(f"Warning: CoincidentNode '{node.name()}' has insufficient input ports")
+                continue
+
+            parent_data = []
+
+            for input_port in input_ports:
+                connected_ports = input_port.connected_ports()
+                if not connected_ports:
+                    continue
+
+                parent_port = connected_ports[0]
+                parent_node = parent_port.node()
+                parent_port_name = parent_port.name()
+
+                # ポート名からポイントインデックスを計算 (out_1 -> 0, out_2 -> 1)
+                point_index = 0
+                if parent_port_name.startswith('out_'):
+                    try:
+                        port_num = int(parent_port_name.split('_')[1])
+                        point_index = port_num - 1
+                    except (ValueError, IndexError):
+                        pass
+                elif parent_port_name == 'out':
+                    point_index = 0
+
+                # 親ノードのポイントからアンカー位置を取得
+                anchor_xyz = [0.0, 0.0, 0.0]
+                if hasattr(parent_node, 'points') and point_index < len(parent_node.points):
+                    point_data = parent_node.points[point_index]
+                    anchor_xyz = list(point_data.get('xyz', [0.0, 0.0, 0.0]))
+
+                parent_data.append({
+                    'node': parent_node,
+                    'name': parent_node.name(),
+                    'anchor': anchor_xyz
+                })
+
+            # 2つの親ノードが接続されている場合のみ制約を作成
+            if len(parent_data) >= 2:
+                constraint = {
+                    'name': f"coincident_{node.name()}",
+                    'body1': parent_data[0]['name'],
+                    'body2': parent_data[1]['name'],
+                    'anchor1': parent_data[0]['anchor'],
+                    'anchor2': parent_data[1]['anchor']
+                }
+                constraints.append(constraint)
+                print(f"Found coincident constraint: {constraint['body1']} <-> {constraint['body2']}")
+            else:
+                print(f"Warning: CoincidentNode '{node.name()}' needs 2 connected parents, found {len(parent_data)}")
+
+        return constraints
+
     def _write_mjcf_equality_constraints(self, file, nodes_map):
         """textjointtextMJCFtextequalitytext
 
@@ -15651,10 +15791,26 @@ class CustomNodeGraph(NodeGraph):
             file: text
             nodes_map: {link_name: node}text
         """
-        if not self.closed_loop_joints:
+        # Collect Coincident constraints
+        coincident_constraints = self._collect_coincident_constraints()
+
+        if not self.closed_loop_joints and not coincident_constraints:
             return
 
         file.write('  <equality>\n')
+
+        # Write Coincident constraints (connect)
+        for constraint in coincident_constraints:
+            body1 = self._sanitize_name(constraint['body1'])
+            body2 = self._sanitize_name(constraint['body2'])
+            anchor1 = constraint['anchor1']
+            anchor2 = constraint['anchor2']
+            name = constraint['name']
+
+            # MuJoCo connect: anchor is in body1's local frame
+            anchor_str = f"{anchor1[0]} {anchor1[1]} {anchor1[2]}"
+            file.write(f'    <connect name="{name}" body1="{body1}" body2="{body2}" anchor="{anchor_str}"/>\n')
+            print(f"  Added coincident constraint: {name} ({body1} <-> {body2})")
 
         for joint_data in self.closed_loop_joints:
             joint_name = joint_data['name']
@@ -16291,6 +16447,11 @@ class CustomNodeGraph(NodeGraph):
             print(f"Skipping node with hide_mesh=True: {node.name()}")
             return
 
+        # Skip CoincidentNode (constraint-only node, not a physical body)
+        if isinstance(node, CoincidentNode):
+            print(f"Skipping CoincidentNode: {node.name()} (constraint-only)")
+            return
+
         indent_str = ' ' * indent
 
         # Root node handling (replaces old base_link check)
@@ -16779,6 +16940,10 @@ class CustomNodeGraph(NodeGraph):
                 if hasattr(child_node, 'hide_mesh') and child_node.hide_mesh:
                     continue
 
+                # Skip CoincidentNode (constraint-only, not a physical body)
+                if isinstance(child_node, CoincidentNode):
+                    continue
+
                 # Get port_index enumerate
                 child_joint_info = self._get_joint_info(node, child_node, port_index, created_joints)
 
@@ -16796,6 +16961,10 @@ class CustomNodeGraph(NodeGraph):
 
     def _get_joint_info(self, parent_node, child_node, port_index, created_joints):
         """jointtextgettext"""
+        # Skip CoincidentNode (constraint-only, not a joint)
+        if isinstance(child_node, CoincidentNode):
+            return None
+
         joint_xyz = [0, 0, 0]
         joint_rpy = [0, 0, 0]
         joint_axis = [1, 0, 0]
@@ -17426,6 +17595,7 @@ if __name__ == '__main__':
             "Import MODEL": None,
             "--spacer2--": None,  # Dummy key for spacer
             "Add Node": None,
+            "Add Coincident": None,
             "Delete Node": None,
             "Check Inertia": None,
             "Build r_ from l_": None,
@@ -17468,6 +17638,13 @@ if __name__ == '__main__':
                 'insilico.nodes.FooNode',
                 name=f'Node_{len(graph.all_nodes())}',
                 pos=QtCore.QPointF(0, 0)
+            )
+        )
+        buttons["Add Coincident"].clicked.connect(
+            lambda: graph.create_node(
+                'insilico.nodes.CoincidentNode',
+                name=f'Coincident_{len([n for n in graph.all_nodes() if isinstance(n, CoincidentNode)])}',
+                pos=QtCore.QPointF(50, 0)
             )
         )
         buttons["Delete Node"].clicked.connect(
