@@ -330,7 +330,8 @@ LauncherのAssemblerボタンを押すとウィンドウが開きます。
   
 最初に幾つかのボタンについて説明します。  
   
-- **Add Node** : 新しいノードを作成します。  
+- **Add Node** : 新しいノードを作成します。
+- **Add Coincident** : 閉リンク結合点用のノードを作成します。  
 - **Delete Node** : 選択したノードを削除します。  
 - **Recalc Positions** : 3Dビュー上のユニットの表示位置を再計算します。  
   
@@ -364,6 +365,8 @@ LauncherのAssemblerボタンを押すとウィンドウが開きます。
 　　c_chestのout_1ポートを、c_headのinポートに接続します。  
 　　c_chestのout_2ポートを、l_shoulderのinポートに接続します。  
 ```  
+  
+**閉リンク** を作成する場合は、結合したいノードのoutポート2つを、Coincidentノードの2つのinに繋いでください。Coincidentノードはリンクの要素を持たず、座標点としてMJCF出力時に機能します。（URDF出力では無視されます。）  
   
 ### 3-4.  Node Inspector: outポートの操作  
   
