@@ -16,10 +16,10 @@ Output structure:
 """
 
 import argparse
-import shutil
 import os
 import sys
 import traceback
+import re
 from pathlib import Path
 
 # Ensure repository root is importable
@@ -166,13 +166,78 @@ def export_mesh_variants(graph: CustomNodeGraph, out_root: Path):
 
 
 
+def _index_mesh_files(target_dir: Path):
+    """Index mesh files under target_dir by (stem, extension) -> relative path."""
+    mesh_map = {}
+    for path in sorted(target_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        ext = path.suffix.lower()
+        if ext not in {".stl", ".dae", ".obj"}:
+            continue
+        rel = path.relative_to(target_dir).as_posix()
+        key = (path.stem.lower(), ext)
+        # Prefer shallower paths when duplicates exist.
+        prev = mesh_map.get(key)
+        if prev is None or rel.count("/") < prev.count("/"):
+            mesh_map[key] = rel
+    return mesh_map
+
+
+def _rewrite_urdf_mesh_filenames(urdf_text: str, mesh_map: dict, preferred_ext: str):
+    """Rewrite mesh filename= paths to exported meshes in this output folder."""
+    # Keep a deterministic fallback order if preferred ext is missing for a stem.
+    fallback = {
+        ".stl": [".dae", ".obj"],
+        ".dae": [".stl", ".obj"],
+        ".obj": [".dae", ".stl"],
+    }
+    ext_order = [preferred_ext] + fallback.get(preferred_ext, [])
+
+    updated = 0
+    unresolved = 0
+
+    def repl(match):
+        nonlocal updated, unresolved
+        original = match.group(1)
+        name = Path(original.replace("\\", "/")).name
+        stem = Path(name).stem.lower()
+
+        for ext in ext_order:
+            rel = mesh_map.get((stem, ext))
+            if rel:
+                updated += 1
+                return f'filename="{rel}"'
+
+        unresolved += 1
+        return match.group(0)
+
+    out = re.sub(r'filename="([^"]+)"', repl, urdf_text)
+    return out, updated, unresolved
+
+
 def copy_original_model_to_output_folders(input_model: Path, out_root: Path):
-    """Copy original submitted model file into each main output folder."""
-    for d in ["stl", "dae", "unity", "mjcf"]:
-        target_dir = out_root / d
+    """Copy original URDF into each output folder and rewrite mesh filenames to local exports."""
+    # Per-folder target mesh format produced by batch export.
+    preferred_mesh_ext = {
+        "stl": ".stl",
+        "dae": ".dae",
+        "unity": ".dae",
+        "mjcf": ".obj",
+    }
+
+    source_text = input_model.read_text(encoding="utf-8")
+
+    for folder, pref_ext in preferred_mesh_ext.items():
+        target_dir = out_root / folder
         target_dir.mkdir(parents=True, exist_ok=True)
         target = target_dir / input_model.name
-        shutil.copy2(input_model, target)
+
+        mesh_map = _index_mesh_files(target_dir)
+        rewritten, updated, unresolved = _rewrite_urdf_mesh_filenames(source_text, mesh_map, pref_ext)
+
+        target.write_text(rewritten, encoding="utf-8")
+        print(f"[INFO] wrote {target} (mesh refs updated={updated}, unresolved={unresolved}, pref={pref_ext})")
 
 def make_graph(app: QtWidgets.QApplication):
     container = QtWidgets.QWidget()
@@ -186,8 +251,6 @@ def make_graph(app: QtWidgets.QApplication):
 
 def run(input_model: Path, out_root: Path, robot_name: str, base_height: float):
     ensure_dirs(out_root)
-
-    copy_original_model_to_output_folders(input_model, out_root)
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     graph = make_graph(app)
@@ -227,6 +290,8 @@ def run(input_model: Path, out_root: Path, robot_name: str, base_height: float):
             print("[WARN] MJCF export returned False")
 
     converted, failed = export_mesh_variants(graph, out_root)
+
+    copy_original_model_to_output_folders(input_model, out_root)
 
     print("\n=== Batch export summary ===")
     print(f"Input model : {input_model}")
