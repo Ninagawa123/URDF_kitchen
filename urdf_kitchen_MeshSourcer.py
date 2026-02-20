@@ -81,6 +81,11 @@ except ImportError:
 # Higher value = finer mesh (1.0 = default, 2.0 = 2x finer, 4.0 = 4x finer)
 STEP_MESH_REFINEMENT = 2.0
 
+# STEP file unit conversion scale (mm to meters)
+# STEP files from CAD software are typically in millimeters
+# Set to 0.001 to convert mm to meters, 1.0 to keep original units
+STEP_UNIT_SCALE = 0.001
+
 # Camera control constants (matching PartsEditor)
 CAMERA_ROTATION_SENSITIVITY = 0.5
 CAMERA_PAN_SPEED_FACTOR = 0.001
@@ -1123,6 +1128,19 @@ class MainWindow(VTKViewerBase, QMainWindow):
             # Import STEP file
             gmsh.model.occ.importShapes(str(step_path))
             gmsh.model.occ.synchronize()
+
+            # Apply unit scale (mm to meters) if STEP_UNIT_SCALE != 1.0
+            if STEP_UNIT_SCALE != 1.0:
+                entities = gmsh.model.getEntities()
+                if entities:
+                    # Get all entities and apply affine transformation (scale)
+                    dimTags = gmsh.model.getEntities()
+                    gmsh.model.occ.dilate(
+                        dimTags,
+                        0, 0, 0,  # Center of scaling (origin)
+                        STEP_UNIT_SCALE, STEP_UNIT_SCALE, STEP_UNIT_SCALE  # Scale factors
+                    )
+                    gmsh.model.occ.synchronize()
 
             # Auto mesh size based on bounding box if not specified
             if mesh_size is None:
