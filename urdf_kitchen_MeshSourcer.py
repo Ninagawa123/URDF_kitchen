@@ -8,7 +8,7 @@ Update.     : Feb 20, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
-Copyright (c) 2024 Ninagawa123
+Copyright (c) 2024 Ninagawa123 
 
 python3.11
 pip install --upgrade pip
