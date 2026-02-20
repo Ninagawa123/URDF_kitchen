@@ -23,7 +23,7 @@ Colliderの設定にも対応し、ColliderとしてMeshを設定できる他、
 pythonは3.11 の仮想環境で下記を実行します。  
 
 ```
-pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc  
+pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc gmsh  
 ```
 
 urdf_kitchen_Launcher.pyのある階層に移動し、下記を実行します。  
