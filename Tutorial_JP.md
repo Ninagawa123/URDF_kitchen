@@ -21,7 +21,7 @@ Python3.11で動作します。(おそらく3.11以上であれば動作しま�
 Pythonの仮想環境を準備し、以下の必要なライブラリをインストールしてください。  
   
 ```  
-pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc  
+pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc gmsh  
 ```  
   
 6つのPythonファイル(urdf_kitchen_Launcher.py, urdf_kitchen_MeshSourcer.py, urdf_kitchen_PartsEditor.py, urdf_kitchen_Assembler.py, urdf_kitchen_Importer.py, urdf_kitchen_utils.py)を格納したディレクトリに移動し、下記を実行してください。  
