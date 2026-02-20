@@ -4,7 +4,7 @@ Description: A Python script for reconfiguring the center coordinates and axis d
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Feb 15, 2026
+Update.     : Feb 20, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -19,6 +19,7 @@ pip install NodeGraphQt
 pip install trimesh
 pip install pycollada
 pip install networkx
+pip install gmsh
 """
 
 import sys
@@ -75,6 +76,10 @@ except ImportError:
         print("  pip install --upgrade vtk")
         import sys
         sys.exit(1)
+
+# STEP to STL conversion mesh refinement factor
+# Higher value = finer mesh (1.0 = default, 2.0 = 2x finer, 4.0 = 4x finer)
+STEP_MESH_REFINEMENT = 2.0
 
 # Camera control constants (matching PartsEditor)
 CAMERA_ROTATION_SENSITIVITY = 0.5
@@ -224,7 +229,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         left_layout = QVBoxLayout(left_widget)
         left_layout.setContentsMargins(0, 0, 0, 0)
 
-        # STL display - Use QLabel instead of QVTKRenderWindowInteractor for M4 Mac compatibility
+        # STL display area - Use QLabel instead of QVTKRenderWindowInteractor for M4 Mac compatibility
         self.vtk_display = QLabel()
         self.vtk_display.setMinimumSize(600, 600)
         self.vtk_display.setStyleSheet("""
@@ -403,7 +408,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             traceback.print_exc()
 
     def _load_pending_file(self):
-        """VTK初期化完了後、保留中のファイルを読み込む"""
+        """Load pending file after VTK initialization is complete"""
         self.vtk_fully_ready = True
         if self.pending_file_to_load:
             print(f"VTK ready. Loading pending file: {self.pending_file_to_load}")
@@ -864,20 +869,24 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.input_stl_radio = QRadioButton(".stl")
         self.input_dae_radio = QRadioButton(".dae")
         self.input_obj_radio = QRadioButton(".obj")
+        self.input_step_radio = QRadioButton(".step")
         self.input_stl_radio.setChecked(True)  # Default: .stl
 
         # Apply white text style
         self.input_stl_radio.setStyleSheet(radio_style)
         self.input_dae_radio.setStyleSheet(radio_style)
         self.input_obj_radio.setStyleSheet(radio_style)
+        self.input_step_radio.setStyleSheet(radio_style)
 
         self.input_format_group.addButton(self.input_stl_radio, 0)
         self.input_format_group.addButton(self.input_dae_radio, 1)
         self.input_format_group.addButton(self.input_obj_radio, 2)
+        self.input_format_group.addButton(self.input_step_radio, 3)
 
         input_layout.addWidget(self.input_stl_radio)
         input_layout.addWidget(self.input_dae_radio)
         input_layout.addWidget(self.input_obj_radio)
+        input_layout.addWidget(self.input_step_radio)
         input_layout.addStretch()  # Push everything to the left
 
         # Add Clean Mesh checkbox to the right side of Input line
@@ -1090,6 +1099,61 @@ class MainWindow(VTKViewerBase, QMainWindow):
         except Exception:
             return False
 
+    def convert_step_to_stl(self, step_path, stl_path, mesh_size=None):
+        """Convert STEP file to STL using gmsh
+
+        Args:
+            step_path: Path to input STEP file
+            stl_path: Path to output STL file
+            mesh_size: Mesh element size (None = auto)
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            import gmsh
+        except ImportError:
+            print("Error: gmsh not installed. Run: pip install gmsh")
+            return False
+
+        try:
+            gmsh.initialize()
+            gmsh.option.setNumber("General.Terminal", 0)  # Suppress output
+
+            # Import STEP file
+            gmsh.model.occ.importShapes(str(step_path))
+            gmsh.model.occ.synchronize()
+
+            # Auto mesh size based on bounding box if not specified
+            if mesh_size is None:
+                bounds = gmsh.model.getBoundingBox(-1, -1)
+                bbox_size = max(bounds[3] - bounds[0], bounds[4] - bounds[1], bounds[5] - bounds[2])
+                mesh_size = bbox_size / (50.0 * STEP_MESH_REFINEMENT)  # Adjustable via STEP_MESH_REFINEMENT
+
+            gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size * 0.3)
+            gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
+
+            # Better curve discretization for smoother surfaces
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 32)  # Elements per 2*pi
+            gmsh.option.setNumber("Mesh.MinimumCurveNodes", 6)
+
+            # Generate 2D mesh (surface mesh for STL)
+            gmsh.model.mesh.generate(2)
+
+            # Export to binary STL
+            gmsh.option.setNumber("Mesh.Binary", 1)
+            gmsh.write(str(stl_path))
+            gmsh.finalize()
+            return True
+
+        except Exception as e:
+            print(f"STEP conversion error: {e}")
+            try:
+                gmsh.finalize()
+            except:
+                pass
+            return False
+
     def batch_convert_meshes(self):
         """Batch convert mesh files from input format to output format"""
         input_ext = None
@@ -1099,6 +1163,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
             input_ext = ".dae"
         elif self.input_obj_radio.isChecked():
             input_ext = ".obj"
+        elif self.input_step_radio.isChecked():
+            input_ext = ".step"
 
         output_ext = None
         if self.output_stl_radio.isChecked():
@@ -1110,7 +1176,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         clean_mesh_enabled = self.clean_mesh_checkbox.isChecked()
 
-        if input_ext == output_ext and not clean_mesh_enabled:
+        # STEP input always needs conversion
+        if input_ext == output_ext and not clean_mesh_enabled and input_ext != ".step":
             print(f"Input and output formats are the same ({input_ext}). No conversion needed.")
             print("Tip: Enable 'Clean Mesh' to clean files without changing format.")
             return
@@ -1120,13 +1187,23 @@ class MainWindow(VTKViewerBase, QMainWindow):
             return
 
         from pathlib import Path
-        input_files = list(Path(directory).glob(f"*{input_ext}"))
+
+        # For STEP files, include .stp and case variations (.STEP, .STP)
+        if input_ext == ".step":
+            input_files = (list(Path(directory).glob("*.step")) +
+                          list(Path(directory).glob("*.STEP")) +
+                          list(Path(directory).glob("*.stp")) +
+                          list(Path(directory).glob("*.STP")))
+        else:
+            input_files = list(Path(directory).glob(f"*{input_ext}"))
 
         if not input_files:
-            print(f"No {input_ext} files found in {directory}")
+            ext_msg = ".step/.stp" if input_ext == ".step" else input_ext
+            print(f"No {ext_msg} files found in {directory}")
             return
 
-        print(f"Found {len(input_files)} {input_ext} file(s) in {directory}")
+        ext_msg = ".step/.stp" if input_ext == ".step" else input_ext
+        print(f"Found {len(input_files)} {ext_msg} file(s) in {directory}")
 
         existing_files = []
         for input_file in input_files:
@@ -1161,7 +1238,52 @@ class MainWindow(VTKViewerBase, QMainWindow):
         for input_file in input_files:
             output_file = input_file.with_suffix(output_ext)
             try:
-                polydata, volume, color = load_mesh_to_polydata(str(input_file))
+                # STEP input: convert to STL first, then to target format
+                if input_ext == ".step":
+                    # Create temp STL path (use _temp suffix before .stl for gmsh compatibility)
+                    temp_stl = input_file.parent / f"{input_file.stem}_temp.stl"
+
+                    # Convert STEP to STL using gmsh
+                    if not self.convert_step_to_stl(str(input_file), str(temp_stl)):
+                        print(f"Error converting STEP: {input_file.name}")
+                        error_files.append(input_file.name)
+                        error_count += 1
+                        continue
+
+                    # If output is STL, just rename temp file
+                    if output_ext == ".stl":
+                        import shutil
+                        shutil.move(str(temp_stl), str(output_file))
+                        print(f"Converted: {input_file.name} → {output_file.name}")
+                        success_files.append(input_file.name)
+                        success_count += 1
+                        continue
+
+                    # Load the temp STL and convert to target format
+                    polydata, _, color = load_mesh_to_polydata(str(temp_stl))
+
+                    # Clean up temp file
+                    try:
+                        temp_stl.unlink()
+                    except:
+                        pass
+
+                    if polydata:
+                        if clean_mesh_enabled:
+                            polydata = self.clean_polydata(polydata)
+
+                        save_polydata_to_mesh(str(output_file), polydata, mesh_color=color)
+                        print(f"Converted: {input_file.name} → {output_file.name}")
+                        success_files.append(input_file.name)
+                        success_count += 1
+                    else:
+                        print(f"Error loading converted STL: {input_file.name}")
+                        error_files.append(input_file.name)
+                        error_count += 1
+                    continue
+
+                # Normal mesh formats: STL, DAE, OBJ
+                polydata, _, color = load_mesh_to_polydata(str(input_file))
                 if polydata:
                     if clean_mesh_enabled:
                         # DAE -> OBJ with Clean Mesh: use trimesh direct path for stability
@@ -1688,7 +1810,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         coordinate.SetValue(x, y, 0)
         world_pos = coordinate.GetComputedWorldValue(renderer)
 
-        # Keep z coordinate based on camera direction
+        # Keep z-coordinate based on camera direction at current point
         camera_pos = np.array(camera.GetPosition())
         focal_point = np.array(camera.GetFocalPoint())
         view_direction = focal_point - camera_pos
@@ -1736,7 +1858,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             values['mass'] = values['volume'] * values['density']
 
         # Inertia calculation removed (use calculate_inertia_with_trimesh for precise calculation)
-        # Do not use simplified cube assumption calculation
+        # Simplified cube assumption calculation is not used
 
         # Apply results to input fields
         for prop in priority_order:
@@ -1789,7 +1911,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.axis_actors.append(actor)
 
     def add_instruction_text(self):
-        """画面上に操作説明を表示"""
+        """Display operation instructions on screen"""
         if not hasattr(self, 'text_actors'):
             self.text_actors = []
 
@@ -1862,7 +1984,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             try:
                 self.show_stl(file_path)
-                # Initialize camera same as R key after loading (for accurate WASD 90-degree rotation)
+                # Initialize camera same as R key after loading (for accurate 90-degree rotation with WASD)
                 self.reset_camera()
 
                 # Reset all Center Position points to origin
@@ -3539,7 +3661,7 @@ if __name__ == "__main__":
             window_geometry.moveCenter(center_point)
             window.move(window_geometry.topLeft())
 
-        # If file is specified via command line argument, show window in foreground
+        # If file is specified via command line argument, bring window to front
         if len(sys.argv) > 1:
             file_path = sys.argv[1]
             if os.path.exists(file_path):
