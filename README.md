@@ -25,7 +25,7 @@ Please either download and extract the repository from the green button at the t
 Create a Python 3.11 virtual environment and run:
 
 ```bash
-pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc
+pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc gmsh
 ```
 
 Move to the directory containing `urdf_kitchen_Launcher.py` and run:
