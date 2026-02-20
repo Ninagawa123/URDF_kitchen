@@ -23,7 +23,7 @@ Tested on Python 3.11; may work on newer versions.
 Set up a Python virtual environment and install the following libraries:  
   
 ```  
-pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc
+pip install numpy PySide6 vtk NodeGraphQt trimesh pycollada networkx xacrodoc gmsh  
 ```  
   
 Navigate to the directory containing the six files (urdf_kitchen_Launcher.py, urdf_kitchen_MeshSourcer.py, urdf_kitchen_PartsEditor.py, urdf_kitchen_Assembler.py, urdf_kitchen_Importer.py, urdf_kitchen_utils.py) and run:  
