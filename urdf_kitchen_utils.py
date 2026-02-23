@@ -38,42 +38,42 @@ import subprocess
 # ============================================================================
 
 class CustomColorDialog(QtWidgets.QColorDialog):
-    """カスタムカラーボックスの選択機能を持つカラーダイアログ
+    """Color dialog with custom color box selection feature.
 
-    このクラスは、QColorDialogを拡張して、カスタムカラーボックスに
-    選択枠を表示する機能を追加します。ユーザーがどのカスタムカラー
-    スロットに色を保存するかを視覚的に確認できます。
+    This class extends QColorDialog to add a selection border on the custom
+    color box, allowing users to visually confirm which custom color slot
+    they are saving colors to.
     """
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.selected_custom_color_index = 0  # 選択されたカスタムカラーのインデックス
-        self.custom_color_well_array = None  # カスタムカラーのQWellArray
-        self._setup_done = False  # セットアップ完了フラグ
+        self.selected_custom_color_index = 0  # Index of selected custom color
+        self.custom_color_well_array = None  # QWellArray for custom colors
+        self._setup_done = False  # Setup completion flag
 
     def showEvent(self, event):
-        """ダイアログが表示されたときにカスタムカラーボックスをセットアップ"""
+        """Setup custom color box when dialog is shown"""
         super().showEvent(event)
         if not self._setup_done:
-            # ダイアログが完全に表示された後にセットアップ
+            # Setup after dialog is fully displayed
             QtCore.QTimer.singleShot(300, self._setup_custom_color_boxes)
 
     def _setup_custom_color_boxes(self):
-        """カスタムカラーのQWellArrayを見つけてイベントフィルタを設定"""
+        """Find custom color QWellArray and set event filter"""
         def find_custom_well_array(widget, depth=0):
-            """再帰的にカスタムカラーのQWellArrayを探す"""
+            """Recursively search for custom color QWellArray"""
             class_name = widget.metaObject().className()
 
-            # QtPrivate::QWellArrayで、サイズが224x48のものがカスタムカラー
+            # QtPrivate::QWellArray with size 224x48 is the custom color box
             if class_name == 'QtPrivate::QWellArray':
                 size = widget.size()
-                if size.height() == 48:  # カスタムカラーの高さは48
+                if size.height() == 48:  # Custom color box height is 48
                     self.custom_color_well_array = widget
-                    # イベントフィルタをインストール
+                    # Install event filter
                     widget.installEventFilter(self)
                     return True
 
-            # 子ウィジェットも探索
+            # Search child widgets
             for child in widget.children():
                 if isinstance(child, QtWidgets.QWidget):
                     if find_custom_well_array(child, depth + 1):
@@ -82,132 +82,130 @@ class CustomColorDialog(QtWidgets.QColorDialog):
 
         if find_custom_well_array(self):
             self._setup_done = True
-            # 初期状態で最初のセルに選択枠を表示
+            # Show selection border on first cell initially
             self._draw_selection_border()
-            # "Add to Custom Colors"ボタンを見つけてオーバーライド
+            # Find and override "Add to Custom Colors" button
             self._setup_add_button()
         else:
-            # 見つからない場合、もう一度遅延して試す
+            # Retry with delay if not found
             if not self._setup_done:
                 QtCore.QTimer.singleShot(500, self._setup_custom_color_boxes)
 
     def _setup_add_button(self):
-        """Add to Custom Colorsボタンを見つけてクリックハンドラをオーバーライド"""
-        # QPushButtonを全て探して、適切なボタンを見つける
+        """Find Add to Custom Colors button and override click handler"""
+        # Search all QPushButtons for the appropriate button
         buttons = self.findChildren(QtWidgets.QPushButton)
         for button in buttons:
-            # ボタンのテキストや位置でAdd to Custom Colorsボタンを特定
-            # 通常、カスタムカラーのQWellArrayの下にあるボタン
-            if button.text() or True:  # テキストの有無に関わらず全ボタンをチェック
-                # ボタンの位置がカスタムカラーQWellArrayの近くかチェック
+            # Identify Add to Custom Colors button by text or position
+            # Usually the button below the custom color QWellArray
+            if button.text() or True:  # Check all buttons regardless of text
+                # Check if button is near custom color QWellArray
                 if self.custom_color_well_array:
                     well_array_geo = self.custom_color_well_array.geometry()
                     button_geo = button.geometry()
-                    # カスタムカラーの下にあるボタン（Y座標が近い）
+                    # Button below custom color (similar Y coordinate)
                     if abs(button_geo.y() - (well_array_geo.y() + well_array_geo.height())) < 50:
-                        if button_geo.width() > 100:  # 幅が広いボタン
-                            # クリック時の処理をオーバーライド
+                        if button_geo.width() > 100:  # Wide button
+                            # Override click handler
                             button.clicked.disconnect()
                             button.clicked.connect(self._add_custom_color)
                             self._add_button = button
                             break
 
     def eventFilter(self, obj, event):
-        """カスタムカラーQWellArrayのクリックイベントを監視"""
+        """Monitor click events on custom color QWellArray"""
         if obj == self.custom_color_well_array:
             if event.type() == QtCore.QEvent.MouseButtonPress:
-                # クリック位置からセルのインデックスを計算
+                # Compute cell index from click position
                 pos = event.position().toPoint()
-                # QWellArrayは通常8列x2行（16色）のグリッド
-                # ウィジェットの実際のサイズを取得
+                # QWellArray is typically 8 columns x 2 rows (16 colors) grid
+                # Get actual widget size
                 width = self.custom_color_well_array.width()
                 height = self.custom_color_well_array.height()
 
-                # セルサイズを計算（境界線を考慮）
+                # Compute cell size (accounting for borders)
                 cell_width = width / 8.0
                 cell_height = height / 2.0
 
                 col = int(pos.x() / cell_width)
                 row = int(pos.y() / cell_height)
 
-                # 範囲チェック
+                # Bounds check
                 col = max(0, min(7, col))
                 row = max(0, min(1, row))
 
-                # インデックスを計算
-                # Qtのカスタムカラーは列優先順序（column-major）で格納されている
+                # Compute index (Qt custom colors stored in column-major order)
                 # index = col * rows + row (rows = 2)
                 index = col * 2 + row
                 self.selected_custom_color_index = index
-                # 選択枠を再描画
+                # Redraw selection border
                 self._draw_selection_border()
             elif event.type() == QtCore.QEvent.Paint:
-                # ペイントイベントの後に選択枠を描画
+                # Draw selection border after paint event
                 QtCore.QTimer.singleShot(0, self._draw_selection_border)
 
         return super().eventFilter(obj, event)
 
     def _add_custom_color(self):
-        """現在の色を選択中のカスタムカラースロットに追加"""
+        """Add current color to selected custom color slot"""
         current_color = self.currentColor()
-        # 選択中のインデックスにカラーを設定
+        # Set color at selected index
         QtWidgets.QColorDialog.setCustomColor(self.selected_custom_color_index, current_color)
-        # QWellArrayを強制的に更新
+        # Force QWellArray update
         if self.custom_color_well_array:
             self.custom_color_well_array.update()
             self.custom_color_well_array.repaint()
-        # 選択インデックスは変更しない
+        # Do not change selected index
 
     def _draw_selection_border(self):
-        """選択されたカスタムカラーセルに枠を描画"""
+        """Draw border on selected custom color cell"""
         if not self.custom_color_well_array:
             return
 
-        # QWellArrayのサイズを取得
+        # Get QWellArray size
         width = self.custom_color_well_array.width()
         height = self.custom_color_well_array.height()
 
-        # セルサイズを計算（float型で正確に）
+        # Compute cell size (float for precision)
         cell_width = width / 8.0
         cell_height = height / 2.0
 
-        # 選択されたセルの位置を計算
-        # Qtのカスタムカラーは列優先順序（column-major）で格納
-        # index = col * 2 + row なので逆算すると:
+        # Compute selected cell position
+        # Qt custom colors stored in column-major order
+        # index = col * 2 + row, so inversely: col = index // 2, row = index % 2
         col = self.selected_custom_color_index // 2
         row = self.selected_custom_color_index % 2
 
-        # QWellArrayの各セルには境界線がある
-        # 枠をセルの内側に配置
-        BORDER_WIDTH = 2  # セルの境界線の幅
+        # Each QWellArray cell has borders
+        # Place frame inside the cell
+        BORDER_WIDTH = 2  # Cell border width
 
-        # 位置を計算（境界線の内側に配置）
+        # Compute position (inside border)
         x = int(col * cell_width) + BORDER_WIDTH
         y = int(row * cell_height) + BORDER_WIDTH
 
-        # サイズを計算（境界線を除いた領域）
+        # Compute size (excluding border area)
         next_x = int((col + 1) * cell_width)
         next_y = int((row + 1) * cell_height)
         frame_width = next_x - x - BORDER_WIDTH
         frame_height = next_y - y - BORDER_WIDTH
 
-        # QWellArrayに直接描画するためにペイントイベントをオーバーライド
-        # 代わりに、子ウィジェットとして枠を表示するQFrameを作成
+        # Use QFrame as child widget for border instead of overriding paint event
         if not hasattr(self, '_selection_frame'):
             self._selection_frame = QtWidgets.QFrame(self.custom_color_well_array)
             self._selection_frame.setStyleSheet("border: 3px solid #4080FF; background: transparent;")
             self._selection_frame.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents)
 
-        # 選択枠の位置とサイズを更新
+        # Update selection frame position and size
         self._selection_frame.setGeometry(x, y, frame_width, frame_height)
         self._selection_frame.show()
         self._selection_frame.raise_()
 
     def setCustomColor(self, index, color):
-        """カスタムカラーを設定（選択中のインデックスを使用）"""
-        # 選択中のインデックスにカラーを設定
+        """Set custom color (uses selected index)"""
+        # Set color at selected index
         super().setCustomColor(self.selected_custom_color_index, color)
-        # 選択インデックスは変更しない（連打しても同じ場所に設定される）
+        # Do not change selected index (repeated clicks set same slot)
 
 
 # ============================================================================
@@ -264,7 +262,7 @@ class OffscreenRenderer:
             vtk_array = vtk_image.GetPointData().GetScalars()
             components = vtk_array.GetNumberOfComponents()
 
-            # VTK配列をnumpy配列に変換（推奨方法）
+            # Convert VTK array to numpy array (recommended method)
             arr = vtk_to_numpy(vtk_array)
             arr = arr.reshape(height, width, components)
             arr = np.flip(arr, axis=0)
@@ -1267,11 +1265,11 @@ def calculate_inertia_tetrahedral(poly_data, density, center_of_mass):
 
 def validate_inertia_tensor(inertia_tensor, mass):
     """
-    慣性テンソルの物理的妥当性を検証
+    Validate physical validity of inertia tensor.
 
     Args:
-        inertia_tensor: 3x3 numpy配列
-        mass: 質量
+        inertia_tensor: 3x3 numpy array
+        mass: Mass
 
     Returns:
         dict: {'valid': bool, 'message': str}
@@ -1287,31 +1285,31 @@ def validate_inertia_tensor(inertia_tensor, mass):
         messages = []
         valid = True
 
-        # 1. 対角成分は正でなければならない
+        # 1. Diagonal elements must be positive
         if ixx <= 0 or iyy <= 0 or izz <= 0:
             messages.append("⚠ Diagonal elements must be positive")
             valid = False
 
-        # 2. 三角不等式の確認 (Ixx + Iyy >= Izz, etc.)
+        # 2. Triangle inequality check (Ixx + Iyy >= Izz, etc.)
         if not (ixx + iyy >= izz - 1e-6 and
                iyy + izz >= ixx - 1e-6 and
                izz + ixx >= iyy - 1e-6):
             messages.append("⚠ Triangle inequality violated")
             valid = False
 
-        # 3. テンソルの対称性確認
+        # 3. Tensor symmetry check
         if not np.allclose(inertia_tensor, inertia_tensor.T, rtol=1e-5):
             messages.append("⚠ Tensor is not symmetric")
             valid = False
 
-        # 4. 固有値が全て正であることを確認
+        # 4. All eigenvalues must be positive
         eigenvalues = np.linalg.eigvals(inertia_tensor)
         if np.any(eigenvalues <= 0):
             messages.append("⚠ Tensor has non-positive eigenvalues")
             valid = False
 
-        # 5. 質量との整合性チェック（大まかな範囲チェック）
-        # 慣性の大きさは質量と形状サイズに依存
+        # 5. Consistency check with mass (rough range check)
+        # Inertia magnitude depends on mass and shape size
         trace = ixx + iyy + izz
         if trace < 0:
             messages.append("⚠ Trace of tensor is negative")
@@ -1333,28 +1331,28 @@ def validate_inertia_tensor(inertia_tensor, mass):
 
 
 # ============================================================================
-# PARALLEL AXIS THEOREM (平行軸の定理)
+# PARALLEL AXIS THEOREM
 # ============================================================================
 
 def parallel_axis_transform(inertia_at_com, mass, displacement):
     """
-    平行軸の定理を使用して、重心における慣性テンソルを任意の点における慣性テンソルに変換する。
+    Transform inertia tensor at center of mass to inertia at arbitrary point using parallel axis theorem.
 
     Formula:
         I_P = I_COM + m * (||d||² * E - d ⊗ d)
 
     Args:
-        inertia_at_com: numpy.ndarray - 重心における3x3慣性テンソル
-        mass: float - 質量 (kg)
-        displacement: array-like - 重心から目標点へのベクトル [dx, dy, dz] (m)
+        inertia_at_com: numpy.ndarray - 3x3 inertia tensor at center of mass
+        mass: float - Mass (kg)
+        displacement: array-like - Vector from COM to target point [dx, dy, dz] (m)
 
     Returns:
-        numpy.ndarray: 目標点における3x3慣性テンソル
+        numpy.ndarray: 3x3 inertia tensor at target point
 
     Example:
         >>> I_com = np.array([[1, 0, 0], [0, 1, 0], [0, 0, 1]])
         >>> mass = 1.0
-        >>> d = [1.0, 0.0, 0.0]  # X軸方向に1m移動
+        >>> d = [1.0, 0.0, 0.0]  # 1m displacement along X axis
         >>> I_p = parallel_axis_transform(I_com, mass, d)
     """
     import numpy as np
@@ -1362,16 +1360,16 @@ def parallel_axis_transform(inertia_at_com, mass, displacement):
     d = np.array(displacement, dtype=float)
     d_squared = np.dot(d, d)  # ||d||²
 
-    # 単位行列
+    # Identity matrix
     E = np.eye(3)
 
-    # d ⊗ d (外積、dyadic product)
+    # d ⊗ d (outer product, dyadic product)
     d_outer_d = np.outer(d, d)
 
-    # Steiner項: m * (||d||² * E - d ⊗ d)
+    # Steiner term: m * (||d||² * E - d ⊗ d)
     steiner_term = mass * (d_squared * E - d_outer_d)
 
-    # 変換
+    # Transform
     inertia_at_point = inertia_at_com + steiner_term
 
     return inertia_at_point
@@ -1379,18 +1377,18 @@ def parallel_axis_transform(inertia_at_com, mass, displacement):
 
 def inverse_parallel_axis_transform(inertia_at_point, mass, displacement):
     """
-    平行軸の定理の逆変換：任意の点における慣性テンソルを重心における慣性テンソルに変換する。
+    Inverse parallel axis transform: convert inertia at arbitrary point to inertia at center of mass.
 
     Formula:
         I_COM = I_P - m * (||d||² * E - d ⊗ d)
 
     Args:
-        inertia_at_point: numpy.ndarray - 任意の点における3x3慣性テンソル
-        mass: float - 質量 (kg)
-        displacement: array-like - 重心から目標点へのベクトル [dx, dy, dz] (m)
+        inertia_at_point: numpy.ndarray - 3x3 inertia tensor at arbitrary point
+        mass: float - Mass (kg)
+        displacement: array-like - Vector from COM to target point [dx, dy, dz] (m)
 
     Returns:
-        numpy.ndarray: 重心における3x3慣性テンソル
+        numpy.ndarray: 3x3 inertia tensor at center of mass
 
     Example:
         >>> I_p = np.array([[2, 0, 0], [0, 2, 0], [0, 0, 1]])
@@ -1406,7 +1404,7 @@ def inverse_parallel_axis_transform(inertia_at_point, mass, displacement):
     E = np.eye(3)
     d_outer_d = np.outer(d, d)
 
-    # Steiner項を引く
+    # Subtract Steiner term
     steiner_term = mass * (d_squared * E - d_outer_d)
     inertia_at_com = inertia_at_point - steiner_term
 
@@ -1414,26 +1412,26 @@ def inverse_parallel_axis_transform(inertia_at_point, mass, displacement):
 
 
 # ============================================================================
-# MIRRORING UTILITIES (ミラーリング変換)
+# MIRRORING UTILITIES
 # ============================================================================
 
 def mirror_inertia_tensor_y_axis(inertia_tensor, center_of_mass):
     """
-    Y軸ミラーリングに対応する慣性テンソルとCOMの変換（テンソル変換のみ）。
+    Transform inertia tensor and COM for Y-axis mirroring (tensor transform only).
 
-    Y軸ミラー変換:
+    Y-axis mirror transform:
         R = diag(1, -1, 1)
         I' = R @ I @ R.T
         COM' = [x, -y, z]
 
-    符号変化:
-        - ixy と iyz の符号が反転
-        - 対角成分 (ixx, iyy, izz) は不変
-        - ixz は不変
+    Sign changes:
+        - ixy and iyz are negated
+        - Diagonal components (ixx, iyy, izz) are unchanged
+        - ixz is unchanged
 
     Args:
-        inertia_tensor: numpy.ndarray - 3x3慣性テンソル
-        center_of_mass: array-like - 重心座標 [x, y, z]
+        inertia_tensor: numpy.ndarray - 3x3 inertia tensor
+        center_of_mass: array-like - Center of mass coordinates [x, y, z]
 
     Returns:
         tuple: (mirrored_inertia_tensor, mirrored_com)
@@ -1444,18 +1442,18 @@ def mirror_inertia_tensor_y_axis(inertia_tensor, center_of_mass):
         >>> I = np.array([[1, 0.1, 0.2], [0.1, 2, 0.3], [0.2, 0.3, 3]])
         >>> com = [1.0, 2.0, 3.0]
         >>> I_mirror, com_mirror = mirror_inertia_tensor_y_axis(I, com)
-        >>> # I_mirror の ixy と iyz が符号反転
+        >>> # I_mirror has ixy and iyz negated
         >>> # com_mirror = [1.0, -2.0, 3.0]
     """
     import numpy as np
 
-    # ミラー変換行列 (Y軸反転)
+    # Mirror transform matrix (Y-axis flip)
     R = np.diag([1.0, -1.0, 1.0])
 
-    # テンソル変換: I' = R @ I @ R.T
+    # Tensor transform: I' = R @ I @ R.T
     mirrored_tensor = R @ inertia_tensor @ R.T
 
-    # COM変換: [x, y, z] → [x, -y, z]
+    # COM transform: [x, y, z] → [x, -y, z]
     com = np.array(center_of_mass, dtype=float)
     mirrored_com = [com[0], -com[1], com[2]]
 
@@ -1473,79 +1471,79 @@ def calculate_inertia_with_trimesh(
     reference_point=None,
     auto_repair=True,
     unit_scale=1.0,
-    # 後方互換性のため（非推奨）
+    # For backward compatibility (deprecated)
     center_of_mass=None,
     use_trimesh_com=False
 ):
     """
-    trimeshライブラリを使用した統合的な慣性テンソル計算関数（改訂版）。
+    Unified inertia tensor calculation using trimesh library (revised).
 
-    物理的に正確な慣性テンソル計算を提供します：
-    - 平行軸の定理を使用して任意の原点での慣性テンソルを計算
-    - Sceneの場合はunit_scale未指定時に警告（単位系の曖昧さを注意喚起）
-    - watertightでないメッシュでは物理量を捏造しない
+    Provides physically accurate inertia tensor computation:
+    - Uses parallel axis theorem for inertia at arbitrary origin
+    - Warns when unit_scale is unspecified for Scene (unit ambiguity)
+    - Does not fabricate physical quantities for non-watertight meshes
 
-    処理フロー:
-    1. trimeshでメッシュファイルを読み込み（Sceneはunit_scale=1.0をデフォルト）
-    2. 必要に応じてメッシュを自動修復
-    3. trimeshで体積と重心を計算（物理量の基準）
-    4. VTKで慣性テンソルを計算（四面体分解法）
-    5. 平行軸の定理で任意の原点に変換
+    Processing flow:
+    1. Load mesh file with trimesh (Scene defaults to unit_scale=1.0)
+    2. Auto-repair mesh if needed
+    3. Compute volume and center of mass with trimesh (physical basis)
+    4. Compute inertia tensor with VTK (tetrahedral decomposition)
+    5. Transform to arbitrary origin via parallel axis theorem
 
     Args:
-        mesh_file_path: str - メッシュファイルのパス (.stl, .obj, .dae)
-        mass: float or None - 質量 (kg)。Noneの場合はdensityから計算
-        density: float or None - 密度 (kg/m³)。massとdensityの両方がNoneの場合はエラー
-        reference_point: array-like or None - 慣性テンソルの原点 [x, y, z] (m)
-            Noneの場合は重心が原点
-        auto_repair: bool - メッシュの自動修復を行うかどうか (default: True)
-        unit_scale: float - Sceneの場合の単位スケール (例: 0.001でmmをmに変換)
-            デフォルト: 1.0 (スケーリングなし)。Sceneファイルで未指定の場合は警告を表示。
-        center_of_mass: array-like or None - **非推奨** reference_pointを使用してください
-        use_trimesh_com: bool - **非推奨** reference_point=Noneで同じ動作
+        mesh_file_path: str - Path to mesh file (.stl, .obj, .dae)
+        mass: float or None - Mass (kg). Computed from density if None
+        density: float or None - Density (kg/m³). Error if both mass and density are None
+        reference_point: array-like or None - Inertia tensor origin [x, y, z] (m)
+            None means center of mass is origin
+        auto_repair: bool - Whether to auto-repair mesh (default: True)
+        unit_scale: float - Unit scale for Scene (e.g. 0.001 for mm to m)
+            Default: 1.0 (no scaling). Warns if unspecified for Scene file.
+        center_of_mass: array-like or None - **Deprecated** Use reference_point instead
+        use_trimesh_com: bool - **Deprecated** Same as reference_point=None
 
     Returns:
         dict: {
-            'success': bool - 計算成功フラグ
-            'inertia_tensor': numpy.ndarray - 3x3慣性テンソル行列（reference_point周り）
-            'inertia_at_com': numpy.ndarray - 3x3慣性テンソル行列（重心周り）
-            'volume': float - 体積 (m³)
-            'mass': float - 質量 (kg)
-            'density': float - 密度 (kg/m³)
-            'center_of_mass': list - 重心座標 [x, y, z] (m)
-            'reference_point': list - 慣性テンソルの原点 [x, y, z] (m)
-            'is_watertight': bool - メッシュが閉じているか
-            'repair_performed': bool - 修復が実行されたか
-            'is_scene': bool - Sceneとして読み込まれたか
-            'unit_scale_used': float or None - 使用された単位スケール
-            'error_message': str or None - エラーメッセージ
+            'success': bool - Computation success flag
+            'inertia_tensor': numpy.ndarray - 3x3 inertia matrix (around reference_point)
+            'inertia_at_com': numpy.ndarray - 3x3 inertia matrix (around COM)
+            'volume': float - Volume (m³)
+            'mass': float - Mass (kg)
+            'density': float - Density (kg/m³)
+            'center_of_mass': list - COM coordinates [x, y, z] (m)
+            'reference_point': list - Inertia tensor origin [x, y, z] (m)
+            'is_watertight': bool - Whether mesh is closed
+            'repair_performed': bool - Whether repair was performed
+            'is_scene': bool - Whether loaded as Scene
+            'unit_scale_used': float or None - Unit scale used
+            'error_message': str or None - Error message
         }
 
     Raises:
-        ValueError: Sceneの場合にunit_scaleが指定されていない
-        ValueError: massとdensityの両方がNone
-        ValueError: watertightでないメッシュ（auto_repair失敗後）
+        ValueError: unit_scale not specified for Scene
+        ValueError: Both mass and density are None
+        ValueError: Non-watertight mesh (after auto_repair failure)
 
     Example:
-        >>> # 基本的な使用例（重心周りの慣性テンソル）
+        >>> # Basic usage (inertia around COM)
         >>> result = calculate_inertia_with_trimesh('part.stl', mass=1.0)
 
-        >>> # 任意の原点周りの慣性テンソル
+        >>> # Inertia around arbitrary origin
         >>> result = calculate_inertia_with_trimesh(
         ...     'part.stl', mass=1.0, reference_point=[0, 0, 0])
 
-        >>> # Sceneの場合（unit_scale必須）
+        >>> # Scene (unit_scale required)
         >>> result = calculate_inertia_with_trimesh(
         ...     'assembly.dae', density=1000.0, unit_scale=0.001)  # mm→m
 
-        >>> # 後方互換性（非推奨）
+        >>> # Backward compatibility (deprecated)
         >>> result = calculate_inertia_with_trimesh(
-        ...     'part.stl', mass=1.0, center_of_mass=[0, 0, 0])  # reference_pointを推奨
+        ...     'part.stl', mass=1.0, center_of_mass=[0, 0, 0])  # Prefer reference_point
     """
     import os
     import numpy as np
 
-    # 後方互換性の処理
+    # Backward compatibility handling
     if center_of_mass is not None:
         if reference_point is None:
             reference_point = center_of_mass
@@ -1556,7 +1554,7 @@ def calculate_inertia_with_trimesh(
     if use_trimesh_com and reference_point is not None:
         print("⚠ Warning: 'use_trimesh_com=True' is ignored when 'reference_point' is specified.")
 
-    # 結果を格納する辞書
+    # Result dictionary
     result = {
         'success': False,
         'inertia_tensor': None,
@@ -1565,7 +1563,7 @@ def calculate_inertia_with_trimesh(
         'mass': 0.0,
         'density': 0.0,
         'center_of_mass': [0.0, 0.0, 0.0],
-        'trimesh_com': [0.0, 0.0, 0.0],  # 後方互換性
+        'trimesh_com': [0.0, 0.0, 0.0],  # Backward compatibility
         'reference_point': [0.0, 0.0, 0.0],
         'is_watertight': False,
         'repair_performed': False,
@@ -1575,14 +1573,14 @@ def calculate_inertia_with_trimesh(
     }
 
     try:
-        # trimeshのインポート確認
+        # Check trimesh import
         try:
             import trimesh
         except ImportError:
             result['error_message'] = "trimesh library not available. Install with: pip install trimesh"
             return result
 
-        # 入力検証
+        # Input validation
         if not os.path.exists(mesh_file_path):
             result['error_message'] = f"Mesh file not found: {mesh_file_path}"
             return result
@@ -1601,15 +1599,15 @@ def calculate_inertia_with_trimesh(
         print(f"Auto-repair: {auto_repair}")
         print(f"Unit scale: {unit_scale}")
 
-        # Step 1: メッシュ読み込み（Scene処理を厳格化）
+        # Step 1: Load mesh (strict Scene handling)
         loaded_mesh = trimesh.load(mesh_file_path)
 
-        # Scene処理（unit_scale確認）
+            # Scene handling (unit_scale check)
         if isinstance(loaded_mesh, trimesh.Scene):
             result['is_scene'] = True
             print(f"\n⚠ Loaded as Scene (contains multiple meshes or materials)")
 
-            # unit_scaleがデフォルト値の場合は警告
+            # Warn if unit_scale is default value
             if unit_scale == 1.0:
                 print(f"  ⚠ WARNING: unit_scale not specified (using default 1.0)")
                 print(f"     Scene files may have ambiguous units.")
@@ -1619,17 +1617,17 @@ def calculate_inertia_with_trimesh(
             print(f"  Unit scale: {unit_scale}")
             result['unit_scale_used'] = unit_scale
 
-            # Sceneをメッシュに結合
+            # Combine Scene into mesh
             mesh = loaded_mesh.dump(concatenate=True)
 
-            # スケール適用（1.0でも明示的に適用）
+            # Apply scale (explicit even for 1.0)
             mesh.apply_scale(unit_scale)
             if unit_scale != 1.0:
                 print(f"  ✓ Applied unit scale: {unit_scale}")
             else:
                 print(f"  No scaling applied (unit_scale=1.0)")
         else:
-            # 単一メッシュ
+            # Single mesh
             mesh = loaded_mesh
             print(f"\n✓ Loaded as single Mesh")
 
@@ -1641,7 +1639,7 @@ def calculate_inertia_with_trimesh(
 
         result['is_watertight'] = mesh.is_watertight
 
-        # Step 2: 自動修復
+        # Step 2: Auto-repair
         if auto_repair and not mesh.is_watertight:
             print(f"\n{'='*60}")
             print(f"MESH REPAIR")
@@ -1679,13 +1677,13 @@ def calculate_inertia_with_trimesh(
             except Exception as repair_error:
                 print(f"  ✗ Mesh repair failed: {str(repair_error)}")
 
-        # watertightでない場合は警告（計算は続行）
+        # Warn if not watertight (computation continues)
         if not mesh.is_watertight:
             print(f"\n⚠ WARNING: Mesh is not watertight!")
             print(f"  Physical properties may not be accurate.")
 
-        # Step 3: VTKポリデータに変換して体積計算
-        # trimeshメッシュオブジェクトを直接VTKに変換（unit_scaleが反映される）
+        # Step 3: Convert to VTK polydata for volume computation
+        # Convert trimesh mesh directly to VTK (unit_scale reflected)
         poly_data, vtk_volume = trimesh_to_vtk_polydata(mesh)
 
         print(f"\n{'='*60}")
@@ -1694,17 +1692,17 @@ def calculate_inertia_with_trimesh(
         print(f"  Trimesh volume: {mesh.volume:.9f} m³")
         print(f"  VTK volume: {vtk_volume:.9f} m³")
 
-        # VTK体積を使用（より信頼性が高い）
+        # Use VTK volume (more reliable)
         result['volume'] = vtk_volume
 
-        # Step 4: trimeshで重心を計算
+        # Step 4: Compute center of mass with trimesh
         trimesh_com = mesh.center_mass
         print(f"\nCenter of mass (trimesh): [{trimesh_com[0]:.6f}, {trimesh_com[1]:.6f}, {trimesh_com[2]:.6f}]")
 
         result['center_of_mass'] = list(trimesh_com)
-        result['trimesh_com'] = list(trimesh_com)  # 後方互換性
+        result['trimesh_com'] = list(trimesh_com)  # Backward compatibility
 
-        # Step 5: 質量と密度の計算
+        # Step 5: Mass and density computation
         if mass is None:
             mass = vtk_volume * density
             print(f"\nMass calculated from density: {mass:.6f} kg")
@@ -1715,7 +1713,7 @@ def calculate_inertia_with_trimesh(
         result['mass'] = mass
         result['density'] = density
 
-        # Step 6: 重心周りの慣性テンソルを計算（VTK四面体分解法）
+        # Step 6: Compute inertia tensor around COM (VTK tetrahedral decomposition)
         print(f"\n{'='*60}")
         print(f"INERTIA TENSOR CALCULATION (at COM)")
         print(f"{'='*60}")
@@ -1727,7 +1725,7 @@ def calculate_inertia_with_trimesh(
             poly_data, density, list(trimesh_com)
         )
 
-        # 体積の検証
+        # Volume validation
         volume_ratio = volume_integral / vtk_volume if vtk_volume > 0 else 0
         print(f"\nVolume verification:")
         print(f"  Volume from integration: {volume_integral:.9f} m³")
@@ -1742,7 +1740,7 @@ def calculate_inertia_with_trimesh(
         print(f"\nInertia tensor (at COM):")
         print(inertia_at_com)
 
-        # Step 7: reference_pointが指定されている場合は平行軸の定理で変換
+        # Step 7: Transform via parallel axis theorem if reference_point specified
         if reference_point is not None:
             ref_pt = np.array(reference_point, dtype=float)
             displacement = ref_pt - np.array(trimesh_com)
@@ -1762,7 +1760,7 @@ def calculate_inertia_with_trimesh(
             print(f"\nInertia tensor (at reference point):")
             print(inertia_at_ref)
         else:
-            # reference_pointが指定されていない場合は重心周りのテンソルを使用
+            # Use tensor around COM if reference_point not specified
             result['inertia_tensor'] = inertia_at_com
             result['reference_point'] = list(trimesh_com)
 
@@ -1910,29 +1908,29 @@ def load_mesh_to_polydata(file_path):
         mesh = trimesh.load(file_path, force='mesh')
 
         # Extract color information from .dae file
-        # まず頂点カラーや面カラーを確認（カラフルな表示のため）
+        # Check vertex/face colors first (for colorful display)
         vertex_colors = None
         face_colors = None
-        extracted_color = None  # 初期化
+        extracted_color = None  # Initialize
         
         if hasattr(mesh, 'visual') and mesh.visual is not None:
-            # 頂点カラーを取得
+            # Get vertex colors
             if hasattr(mesh.visual, 'vertex_colors') and mesh.visual.vertex_colors is not None:
                 vertex_colors = mesh.visual.vertex_colors
                 print(f"Found vertex colors in .dae file: {len(vertex_colors)} vertices")
                 
-                # 頂点カラーがある場合、代表色（最初の頂点の色または平均色）をextracted_colorとして設定
+                # If vertex colors exist, set representative color (first vertex or average) as extracted_color
                 import numpy as np
                 if not isinstance(vertex_colors, np.ndarray):
                     vertex_colors = np.array(vertex_colors)
                 
                 if len(vertex_colors) > 0:
-                    # 最初の頂点の色を使用（または平均色を計算）
+                    # Use first vertex color (or compute average)
                     first_color = vertex_colors[0]
-                    # 0-255範囲の場合は0-1範囲に変換
+                    # Convert from 0-255 range to 0-1 range
                     if isinstance(first_color, np.ndarray):
                         if first_color.max() > 1.0:
-                            # 0-255範囲の場合
+                            # 0-255 range
                             extracted_color = [
                                 float(first_color[0]) / 255.0,
                                 float(first_color[1]) / 255.0,
@@ -1940,7 +1938,7 @@ def load_mesh_to_polydata(file_path):
                                 float(first_color[3]) / 255.0 if len(first_color) > 3 else 1.0
                             ]
                         else:
-                            # 0-1範囲の場合
+                            # 0-1 range
                             extracted_color = [
                                 float(first_color[0]),
                                 float(first_color[1]),
@@ -1948,7 +1946,7 @@ def load_mesh_to_polydata(file_path):
                                 float(first_color[3]) if len(first_color) > 3 else 1.0
                             ]
                     else:
-                        # リストやタプルの場合
+                        # List or tuple
                         if max(first_color[:3]) > 1.0:
                             extracted_color = [
                                 float(first_color[0]) / 255.0,
@@ -1965,24 +1963,24 @@ def load_mesh_to_polydata(file_path):
                             ]
                     print(f"Extracted representative color from vertex colors: RGB({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f})")
             
-            # 面カラーを取得（頂点カラーがない場合）
+            # Get face colors (when vertex colors absent)
             if vertex_colors is None:
                 if hasattr(mesh.visual, 'face_colors') and mesh.visual.face_colors is not None:
                     face_colors = mesh.visual.face_colors
                     print(f"Found face colors in .dae file: {len(face_colors)} faces")
                     
-                    # 面カラーがある場合、代表色（最初の面の色）をextracted_colorとして設定
+                    # If face colors exist, set representative color (first face) as extracted_color
                     import numpy as np
                     if not isinstance(face_colors, np.ndarray):
                         face_colors = np.array(face_colors)
                     
                     if len(face_colors) > 0:
-                        # 最初の面の色を使用
+                        # Use first face color
                         first_color = face_colors[0]
-                        # 0-255範囲の場合は0-1範囲に変換
+                        # Convert from 0-255 range to 0-1 range
                         if isinstance(first_color, np.ndarray):
                             if first_color.max() > 1.0:
-                                # 0-255範囲の場合
+                                # 0-255 range
                                 extracted_color = [
                                     float(first_color[0]) / 255.0,
                                     float(first_color[1]) / 255.0,
@@ -1990,7 +1988,7 @@ def load_mesh_to_polydata(file_path):
                                     float(first_color[3]) / 255.0 if len(first_color) > 3 else 1.0
                                 ]
                             else:
-                                # 0-1範囲の場合
+                                # 0-1 range
                                 extracted_color = [
                                     float(first_color[0]),
                                     float(first_color[1]),
@@ -1998,7 +1996,7 @@ def load_mesh_to_polydata(file_path):
                                     float(first_color[3]) if len(first_color) > 3 else 1.0
                                 ]
                         else:
-                            # リストやタプルの場合
+                            # List or tuple
                             if max(first_color[:3]) > 1.0:
                                 extracted_color = [
                                     float(first_color[0]) / 255.0,
@@ -2015,7 +2013,7 @@ def load_mesh_to_polydata(file_path):
                                 ]
                         print(f"Extracted representative color from face colors: RGB({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f})")
             
-            # 頂点カラーや面カラーがない場合、materialから単一色を取得
+            # If no vertex/face colors, get single color from material
             if extracted_color is None:
                 if hasattr(mesh.visual, 'material') and mesh.visual.material is not None:
                     if hasattr(mesh.visual.material, 'diffuse'):
@@ -2050,27 +2048,27 @@ def load_mesh_to_polydata(file_path):
         poly_data.SetPoints(points)
         poly_data.SetPolys(triangles)
 
-        # 頂点カラーをVTK PolyDataに設定
+        # Set vertex colors on VTK PolyData
         if vertex_colors is not None and len(vertex_colors) > 0:
             import numpy as np
-            # 頂点カラーをVTK形式に変換
+            # Convert vertex colors to VTK format
             vtk_colors = vtk.vtkUnsignedCharArray()
             vtk_colors.SetNumberOfComponents(3)  # RGB
             vtk_colors.SetName("Colors")
             
-            # numpy配列に変換
+            # Convert to numpy array
             if not isinstance(vertex_colors, np.ndarray):
                 vertex_colors = np.array(vertex_colors)
             
-            # 頂点数とカラー数が一致するか確認
+            # Check vertex count matches color count
             num_vertices = len(vertices)
             num_colors = len(vertex_colors)
             
             if num_colors == num_vertices:
-                # 各頂点の色を設定
+                # Set color for each vertex
                 for i in range(num_vertices):
                     color = vertex_colors[i]
-                    # numpy配列の場合、要素に直接アクセス
+                    # For numpy array, access elements directly
                     if isinstance(color, np.ndarray):
                         r = int(color[0]) if color[0] <= 255 else 255
                         g = int(color[1]) if color[1] <= 255 else 255
@@ -2080,9 +2078,9 @@ def load_mesh_to_polydata(file_path):
                         g = int(color[1]) if color[1] <= 255 else 255
                         b = int(color[2]) if color[2] <= 255 else 255
                     else:
-                        r = g = b = 255  # デフォルト白色
+                        r = g = b = 255  # Default white
                     
-                    # 0-1範囲の場合は255倍する
+                    # Scale to 0-255 if value is in 0-1 range
                     if r <= 1.0 and g <= 1.0 and b <= 1.0:
                         r = int(r * 255)
                         g = int(g * 255)
@@ -2095,27 +2093,27 @@ def load_mesh_to_polydata(file_path):
             else:
                 print(f"Warning: Vertex count ({num_vertices}) doesn't match color count ({num_colors})")
         
-        # 面カラーをVTK PolyDataに設定（頂点カラーがない場合）
+        # Set face colors on VTK PolyData (when vertex colors absent)
         elif face_colors is not None and len(face_colors) > 0:
             import numpy as np
-            # 面カラーをVTK形式に変換
+            # Convert face colors to VTK format
             vtk_colors = vtk.vtkUnsignedCharArray()
             vtk_colors.SetNumberOfComponents(3)  # RGB
             vtk_colors.SetName("Colors")
             
-            # numpy配列に変換
+            # Convert to numpy array
             if not isinstance(face_colors, np.ndarray):
                 face_colors = np.array(face_colors)
             
-            # 面数とカラー数が一致するか確認
+            # Check face count matches color count
             num_faces = len(faces)
             num_colors = len(face_colors)
             
             if num_colors == num_faces:
-                # 各面の色を設定
+                # Set color for each face
                 for i in range(num_faces):
                     color = face_colors[i]
-                    # numpy配列の場合、要素に直接アクセス
+                    # For numpy array, access elements directly
                     if isinstance(color, np.ndarray):
                         r = int(color[0]) if color[0] <= 255 else 255
                         g = int(color[1]) if color[1] <= 255 else 255
@@ -2125,9 +2123,9 @@ def load_mesh_to_polydata(file_path):
                         g = int(color[1]) if color[1] <= 255 else 255
                         b = int(color[2]) if color[2] <= 255 else 255
                     else:
-                        r = g = b = 255  # デフォルト白色
+                        r = g = b = 255  # Default white
                     
-                    # 0-1範囲の場合は255倍する
+                    # Multiply by 255 if in 0-1 range
                     if r <= 1.0 and g <= 1.0 and b <= 1.0:
                         r = int(r * 255)
                         g = int(g * 255)
@@ -2141,7 +2139,7 @@ def load_mesh_to_polydata(file_path):
                 print(f"Warning: Face count ({num_faces}) doesn't match color count ({num_colors})")
 
         # Clean the mesh
-        # スカラー値（頂点カラーや面カラー）を保持するために、Clean前に保存
+        # Save scalar values (vertex/face colors) before Clean for preservation
         saved_point_scalars = poly_data.GetPointData().GetScalars()
         saved_cell_scalars = poly_data.GetCellData().GetScalars()
         
@@ -2151,32 +2149,31 @@ def load_mesh_to_polydata(file_path):
         clean.ConvertPolysToLinesOff()
         clean.ConvertStripsToPolysOff()
         clean.PointMergingOn()
-        # スカラー値を保持する設定（デフォルトで保持されるが、明示的に設定）
+        # Preserve scalar values (default, but set explicitly)
         clean.Update()
 
         poly_data = clean.GetOutput()
         
-        # Clean後にスカラー値を再設定（必要に応じて）
-        # 注意: vtkCleanPolyDataは頂点をマージする可能性があるため、
-        # スカラー値の再マッピングが必要な場合がある
+        # Restore scalar values after Clean (if needed)
+        # Note: vtkCleanPolyData may merge vertices, so scalar remapping may be needed
         if saved_point_scalars is not None:
-            # 頂点カラーがある場合、Clean後の頂点数に合わせて再設定
+            # If vertex colors exist, restore to match post-Clean vertex count
             num_points_after = poly_data.GetNumberOfPoints()
             num_points_before = saved_point_scalars.GetNumberOfTuples()
             
             if num_points_after == num_points_before:
-                # 頂点数が同じ場合はそのまま再設定
+                # If vertex count unchanged, restore as-is
                 poly_data.GetPointData().SetScalars(saved_point_scalars)
                 print(f"Restored vertex colors after cleaning: {num_points_after} vertices")
             else:
-                # 頂点数が変わった場合は、最初のN個の色を使用
+                # If vertex count changed, use first N colors
                 vtk_colors = vtk.vtkUnsignedCharArray()
                 vtk_colors.SetNumberOfComponents(3)
                 vtk_colors.SetName("Colors")
                 for i in range(min(num_points_after, num_points_before)):
                     color = saved_point_scalars.GetTuple3(i)
                     vtk_colors.InsertNextTuple3(int(color[0]), int(color[1]), int(color[2]))
-                # 残りの頂点には最後の色を使用
+                # Use last color for remaining vertices
                 if num_points_after > num_points_before and num_points_before > 0:
                     last_color = saved_point_scalars.GetTuple3(num_points_before - 1)
                     for i in range(num_points_before, num_points_after):
@@ -2185,23 +2182,23 @@ def load_mesh_to_polydata(file_path):
                 print(f"Adjusted vertex colors after cleaning: {num_points_before} -> {num_points_after} vertices")
         
         if saved_cell_scalars is not None:
-            # 面カラーがある場合、Clean後の面数に合わせて再設定
+            # If face colors exist, restore to match post-Clean face count
             num_cells_after = poly_data.GetNumberOfCells()
             num_cells_before = saved_cell_scalars.GetNumberOfTuples()
             
             if num_cells_after == num_cells_before:
-                # 面数が同じ場合はそのまま再設定
+                # If face count unchanged, restore as-is
                 poly_data.GetCellData().SetScalars(saved_cell_scalars)
                 print(f"Restored face colors after cleaning: {num_cells_after} cells")
             else:
-                # 面数が変わった場合は、最初のN個の色を使用
+                # If face count changed, use first N colors
                 vtk_colors = vtk.vtkUnsignedCharArray()
                 vtk_colors.SetNumberOfComponents(3)
                 vtk_colors.SetName("Colors")
                 for i in range(min(num_cells_after, num_cells_before)):
                     color = saved_cell_scalars.GetTuple3(i)
                     vtk_colors.InsertNextTuple3(int(color[0]), int(color[1]), int(color[2]))
-                # 残りの面には最後の色を使用
+                # Use last color for remaining faces
                 if num_cells_after > num_cells_before and num_cells_before > 0:
                     last_color = saved_cell_scalars.GetTuple3(num_cells_before - 1)
                     for i in range(num_cells_before, num_cells_after):
@@ -2323,12 +2320,21 @@ def save_polydata_to_mesh(file_path, poly_data, mesh_color=None, color_manually_
         else:
             r, g, b, a = 1.0, 1.0, 1.0, 1.0
 
-        # Post-process COLLADA XML to embed correct diffuse/ambient color
+        # Post-process COLLADA XML to embed correct unit and diffuse/ambient color
         import xml.etree.ElementTree as ET
         ns = 'http://www.collada.org/2005/11/COLLADASchema'
         ET.register_namespace('', ns)
         tree = ET.parse(file_path)
         root = tree.getroot()
+
+        # Ensure <asset> has correct <unit> element (meters)
+        asset = root.find(f'{{{ns}}}asset')
+        if asset is not None:
+            unit = asset.find(f'{{{ns}}}unit')
+            if unit is None:
+                unit = ET.SubElement(asset, f'{{{ns}}}unit')
+            unit.set('name', 'meter')
+            unit.set('meter', '1.0')
 
         color_str = f"{r:.6f} {g:.6f} {b:.6f} {a:.1f}"
         ambient_str = f"{r * 0.3:.6f} {g * 0.3:.6f} {b * 0.3:.6f} {a:.1f}"
@@ -2608,10 +2614,10 @@ def setup_dark_theme(app, theme='default', custom_styles=None):
         palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
         palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
         palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
-        palette.setColor(QPalette.PlaceholderText, QColor(180, 180, 180))  # プレースホルダーテキスト色
+        palette.setColor(QPalette.PlaceholderText, QColor(180, 180, 180))  # Placeholder text color
         app.setPalette(palette)
 
-        # ボタンの押下時の色をスタイルシートで設定（フォーカスの有無に関わらず深い青）
+        # Set button pressed color in stylesheet (deep blue regardless of focus)
         stylesheet = """
             QPushButton:pressed {
                 background-color: #1a3a5a;
@@ -2656,7 +2662,7 @@ def setup_dark_theme(app, theme='default', custom_styles=None):
         palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
         app.setPalette(palette)
 
-        # ボタンの押下時の色をスタイルシートで設定（フォーカスの有無に関わらず深い青）
+        # Set button pressed color in stylesheet (deep blue regardless of focus)
         stylesheet = """
             QPushButton:pressed {
                 background-color: #1a3a5a;
@@ -2682,7 +2688,7 @@ def setup_dark_theme(app, theme='default', custom_styles=None):
         palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
         app.setPalette(palette)
 
-        # ボタンの押下時の色をスタイルシートで設定（フォーカスの有無に関わらず深い青）
+        # Set button pressed color in stylesheet (deep blue regardless of focus)
         stylesheet = """
             QPushButton:pressed {
                 background-color: #1a3a5a;
@@ -2705,22 +2711,22 @@ def setup_dark_theme(app, theme='default', custom_styles=None):
 
 def mirror_physical_properties_y_axis(inertia_dict, inertial_origin_dict):
     """
-    Y軸でミラーリングする際の物理プロパティ変換（慣性テンソルと慣性中心）
+    Transform physical properties (inertia tensor and center of mass) for Y-axis mirroring.
 
-    この関数は、左右対称なパーツの物理特性を正しくミラーリングします。
-    PartsEditorで使用されている方法を標準化したものです。
+    This function correctly mirrors physical properties of left-right symmetric parts.
+    Standardized from the method used in PartsEditor.
 
-    Y軸ミラーリングの物理的変換:
-    - 慣性中心（COM）: Y座標を反転 [x, y, z] → [x, -y, z]
-    - 慣性テンソル:
-      * 対角成分（ixx, iyy, izz）: 変化なし
-      * 非対角成分: ixy, iyz を符号反転、ixz は変化なし
+    Y-axis mirroring transformations:
+    - Center of mass (COM): Invert Y coordinate [x, y, z] -> [x, -y, z]
+    - Inertia tensor:
+      * Diagonal (ixx, iyy, izz): unchanged
+      * Off-diagonal: negate ixy and iyz, ixz unchanged
 
     Args:
-        inertia_dict: dict - 慣性テンソルの辞書
+        inertia_dict: dict - Inertia tensor dict
             {'ixx': float, 'iyy': float, 'izz': float,
              'ixy': float, 'ixz': float, 'iyz': float}
-        inertial_origin_dict: dict - 慣性中心の辞書
+        inertial_origin_dict: dict - Center of mass dict
             {'xyz': [x, y, z], 'rpy': [r, p, y]}
 
     Returns:
@@ -2734,85 +2740,84 @@ def mirror_physical_properties_y_axis(inertia_dict, inertial_origin_dict):
         >>> print(mir_origin['xyz'])  # [0.1, -0.2, 0.3]
         >>> print(mir_inertia['ixy'])  # -0.0001
     """
-    # 慣性テンソルのミラーリング
+    # Mirror inertia tensor
     mirrored_inertia = {}
     if inertia_dict is not None and isinstance(inertia_dict, dict):
         mirrored_inertia = inertia_dict.copy()
-        # Y軸ミラーリング: ixyとiyzの符号を反転
+        # Y-axis mirroring: negate ixy and iyz
         if 'ixy' in mirrored_inertia:
             mirrored_inertia['ixy'] = -inertia_dict['ixy']
         if 'iyz' in mirrored_inertia:
             mirrored_inertia['iyz'] = -inertia_dict['iyz']
-        # ixx, iyy, izz, ixzはそのまま
+        # ixx, iyy, izz, ixz unchanged
 
-    # 慣性中心（COM）のミラーリング
+    # Mirror center of mass (COM)
     mirrored_origin = {}
     if inertial_origin_dict is not None and isinstance(inertial_origin_dict, dict):
         mirrored_origin = inertial_origin_dict.copy()
         if 'xyz' in mirrored_origin and len(mirrored_origin['xyz']) >= 3:
             xyz = mirrored_origin['xyz']
             mirrored_origin['xyz'] = [xyz[0], -xyz[1], xyz[2]]
-        # RPYはそのまま（回転の扱いは複雑なため、必要に応じて調整）
+        # RPY unchanged (rotation handling is complex; adjust if needed)
 
     return mirrored_inertia, mirrored_origin
 
 
 def mirror_inertia_tensor_left_right(inertia_dict):
     """
-    左右反転（Y軸ミラーリング）のための慣性テンソルの符号反転
-    
-    左右対称なパーツ（l_* と r_*）を作成する際に使用します。
-    Y軸でミラーリングする場合、以下の符号反転を行います：
-    - ixy: 符号反転（-1倍）
-    - iyz: 符号反転（-1倍）
-    - ixx, iyy, izz, ixz: 変化なし
-    
+    Negate inertia tensor components for left-right flip (Y-axis mirroring).
+
+    Used when creating left-right symmetric parts (l_* and r_*).
+    For Y-axis mirroring, negate:
+    - ixy: negate
+    - iyz: negate
+    - ixx, iyy, izz, ixz: unchanged
+
     Args:
-        inertia_dict: dict - 慣性テンソルの辞書
+        inertia_dict: dict - Inertia tensor dict
             {'ixx': float, 'iyy': float, 'izz': float,
              'ixy': float, 'ixz': float, 'iyz': float}
-    
+
     Returns:
-        dict: 左右反転後の慣性テンソル辞書（新しい辞書を返す）
-    
+        dict: Mirrored inertia tensor dict (new dict, original unchanged)
+
     Example:
         >>> inertia = {'ixx': 0.001, 'iyy': 0.002, 'izz': 0.003,
         ...            'ixy': 0.0001, 'ixz': 0.0002, 'iyz': 0.0003}
         >>> mirrored = mirror_inertia_tensor_left_right(inertia)
         >>> print(mirrored['ixy'])  # -0.0001
         >>> print(mirrored['iyz'])  # -0.0003
-        >>> print(mirrored['ixx'])  # 0.001 (変化なし)
+        >>> print(mirrored['ixx'])  # 0.001 (unchanged)
     """
     if inertia_dict is None or not isinstance(inertia_dict, dict):
         return None
-    
-    # 新しい辞書を作成（元の辞書を変更しない）
+
+    # Create new dict (do not modify original)
     mirrored_inertia = inertia_dict.copy()
-    
-    # Y軸ミラーリング: ixyとiyzの符号を反転
+
+    # Y-axis mirroring: negate ixy and iyz
     if 'ixy' in mirrored_inertia:
         mirrored_inertia['ixy'] = -inertia_dict['ixy']
     if 'iyz' in mirrored_inertia:
         mirrored_inertia['iyz'] = -inertia_dict['iyz']
-    # ixx, iyy, izz, ixzはそのまま
-    
+    # ixx, iyy, izz, ixz unchanged
+
     return mirrored_inertia
 
 
 def mirror_center_of_mass_left_right(center_of_mass):
     """
-    左右反転（Y軸ミラーリング）のためのCenter of MassのY座標符号反転
-    
-    左右対称なパーツ（l_* と r_*）を作成する際に使用します。
-    Y軸でミラーリングする場合、Y座標のみを符号反転します：
-    [x, y, z] → [x, -y, z]
-    
+    Negate Y coordinate of center of mass for left-right flip (Y-axis mirroring).
+
+    Used when creating left-right symmetric parts (l_* and r_*).
+    For Y-axis mirroring, negate only Y: [x, y, z] -> [x, -y, z]
+
     Args:
-        center_of_mass: list or array-like - Center of Mass座標 [x, y, z]
-    
+        center_of_mass: list or array-like - Center of mass coordinates [x, y, z]
+
     Returns:
-        list: 左右反転後のCenter of Mass座標 [x, -y, z]（新しいリストを返す）
-    
+        list: Mirrored center of mass [x, -y, z] (new list, original unchanged)
+
     Example:
         >>> com = [0.1, 0.2, 0.3]
         >>> mirrored_com = mirror_center_of_mass_left_right(com)
@@ -2820,12 +2825,12 @@ def mirror_center_of_mass_left_right(center_of_mass):
     """
     if center_of_mass is None:
         return None
-    
-    # リストまたは配列をリストに変換
+
+    # Convert list or array to list
     if hasattr(center_of_mass, '__iter__') and not isinstance(center_of_mass, str):
         com_list = list(center_of_mass)
         if len(com_list) >= 3:
-            # 新しいリストを作成（元のリストを変更しない）
+            # Create new list (do not modify original)
             return [com_list[0], -com_list[1], com_list[2]]
         else:
             return com_list.copy()
@@ -2835,19 +2840,19 @@ def mirror_center_of_mass_left_right(center_of_mass):
 
 def calculate_mirrored_physical_properties_from_mesh(mesh_file_path, mass, density=1.0):
     """
-    メッシュファイルからY軸ミラーリングされた物理プロパティを計算
+    Compute physical properties from Y-axis mirrored mesh file.
 
-    この関数は、STL/OBJ/DAEメッシュファイルをY軸でミラーリングし、
-    ミラーリングされたジオメトリから物理プロパティ（体積、重心、慣性テンソル）を
-    再計算します。PartsEditorで使用されている標準的な方法です。
+    Mirrors STL/OBJ/DAE mesh along Y-axis and recomputes physical properties
+    (volume, center of mass, inertia tensor) from the mirrored geometry.
+    Standard method used in PartsEditor.
 
     Args:
-        mesh_file_path: str - メッシュファイルのパス（.stl, .obj, .dae）
-        mass: float - 質量（kg）
-        density: float - 密度（kg/m³）、massが指定されていない場合に使用
+        mesh_file_path: str - Path to mesh file (.stl, .obj, .dae)
+        mass: float - Mass (kg)
+        density: float - Density (kg/m³), used when mass is not specified
 
     Returns:
-        dict: ミラーリングされた物理プロパティ
+        dict: Mirrored physical properties
             {
                 'volume': float,
                 'mass': float,
@@ -2857,32 +2862,32 @@ def calculate_mirrored_physical_properties_from_mesh(mesh_file_path, mass, densi
                     'ixy': float, 'ixz': float, 'iyz': float
                 }
             }
-        エラー時はNoneを返す
+        Returns None on error.
 
     Example:
         >>> props = calculate_mirrored_physical_properties_from_mesh(
         ...     'l_arm.stl', mass=0.5)
-        >>> print(props['center_of_mass'])  # Y座標が反転された重心
-        >>> print(props['inertia']['ixy'])  # 符号反転された非対角成分
+        >>> print(props['center_of_mass'])  # Center of mass with Y inverted
+        >>> print(props['inertia']['ixy'])  # Negated off-diagonal component
     """
     import vtk
     import numpy as np
 
     try:
-        # メッシュファイルを読み込む
+        # Load mesh file
         poly_data, volume_unused, extracted_color = load_mesh_to_polydata(mesh_file_path)
 
-        # Y軸反転の変換を設定
+        # Set Y-axis flip transform
         transform = vtk.vtkTransform()
         transform.Scale(1, -1, 1)
 
-        # 変換を適用
+        # Apply transform
         transformer = vtk.vtkTransformPolyDataFilter()
         transformer.SetInputData(poly_data)
         transformer.SetTransform(transform)
         transformer.Update()
 
-        # 法線の修正
+        # Fix normals
         normal_generator = vtk.vtkPolyDataNormals()
         normal_generator.SetInputData(transformer.GetOutput())
         normal_generator.ConsistencyOn()
@@ -2893,29 +2898,29 @@ def calculate_mirrored_physical_properties_from_mesh(mesh_file_path, mass, densi
 
         mirrored_poly_data = normal_generator.GetOutput()
 
-        # 体積を計算
+        # Compute volume
         mass_properties = vtk.vtkMassProperties()
         mass_properties.SetInputData(mirrored_poly_data)
         mass_properties.Update()
         volume = mass_properties.GetVolume()
 
-        # 質量が指定されていない場合は体積×密度で計算
+        # Compute mass from volume * density if not specified
         if mass is None or mass <= 0:
             mass = volume * density
 
-        # 重心を計算
+        # Compute center of mass
         com_filter = vtk.vtkCenterOfMass()
         com_filter.SetInputData(mirrored_poly_data)
         com_filter.SetUseScalarsAsWeights(False)
         com_filter.Update()
         center_of_mass = list(com_filter.GetCenter())
 
-        # 慣性テンソルを計算（is_mirrored=Trueでミラーリングを考慮）
+        # Compute inertia tensor (is_mirrored=True accounts for mirroring)
         inertia_tensor = calculate_inertia_tensor(
             mirrored_poly_data, mass, center_of_mass, is_mirrored=True
         )
 
-        # 辞書形式で返す
+        # Return as dict
         return {
             'volume': volume,
             'mass': mass,
@@ -3019,11 +3024,11 @@ class VTKViewerBase:
         Args:
             camera: vtkCamera instance to apply rotation to
         """
-        # カメラの現在の位置と焦点を取得
+        # Get current camera position and focal point
         position = list(camera.GetPosition())
         focal_point = self.absolute_origin
 
-        # 回転行列を作成
+        # Create rotation matrix
         transform = vtk.vtkTransform()
         transform.PostMultiply()
         transform.Translate(*focal_point)
@@ -3032,11 +3037,11 @@ class VTKViewerBase:
         transform.RotateY(self.camera_rotation[1])  # Yaw
         transform.Translate(*[-x for x in focal_point])
 
-        # カメラの位置を回転
+        # Rotate camera position
         new_position = transform.TransformPoint(position)
         camera.SetPosition(new_position)
 
-        # カメラの上方向を更新
+        # Update camera up vector
         up = [0, 0, 1]
         new_up = transform.TransformVector(up)
         camera.SetViewUp(new_up)
@@ -3856,71 +3861,71 @@ class ConversionUtils:
 # ============================================================================
 
 def normalize_name_for_matching(name):
-    """名前をマッチング用に正規化する。
+    """Normalize name for matching.
     
-    大文字小文字、ハイフン、アンダースコア、ドットを無視して比較できるようにする。
+    Enables comparison ignoring case, hyphens, underscores, and dots.
     
     Args:
-        name: 正規化する名前
+        name: Name to normalize
     
     Returns:
-        正規化された名前
+        Normalized name
     """
     return name.lower().replace('_', '').replace('-', '').replace('.', '').strip()
 
 
 def match_package_name(package_name, dir_name):
-    """パッケージ名とディレクトリ名が一致するかチェックする。
+    """Check if package name matches directory name.
     
-    複数のマッチング方法を試行：
-    1. 完全一致（正規化後）
-    2. 部分一致（正規化後）- パッケージ名がディレクトリ名の先頭に含まれる
-    3. 元の名前での部分一致（大文字小文字を無視）
+    Tries multiple matching strategies:
+    1. Exact match (after normalization)
+    2. Partial match (after normalization) - package name contained in dir name
+    3. Partial match on original names (case insensitive)
     
     Args:
-        package_name: パッケージ名
-        dir_name: ディレクトリ名
+        package_name: Package name
+        dir_name: Directory name
     
     Returns:
-        一致する場合はTrue、そうでない場合はFalse
+        True if match, False otherwise
     """
     if not package_name or not dir_name:
         return False
     
     package_normalized = normalize_name_for_matching(package_name)
     dir_normalized = normalize_name_for_matching(dir_name)
-    
-    # 完全一致
+
+    # Exact match
     if package_normalized == dir_normalized:
         return True
-    
-    # 部分一致（パッケージ名がディレクトリ名の先頭に含まれる、またはその逆）
-    # 例: 'premaidai_description' と 'premaidai_description-master'
+
+    # Partial match (package in dir or vice versa)
+    # e.g. 'premaidai_description' and 'premaidai_description-master'
     if package_normalized in dir_normalized or dir_normalized in package_normalized:
         return True
-    
-    # 元の名前での部分一致（大文字小文字を無視）
+
+    # Partial match on original names (case insensitive)
     package_lower = package_name.lower().strip()
     dir_lower = dir_name.lower().strip()
-    
-    # パッケージ名がディレクトリ名の先頭に含まれる（例: 'premaidai_description' in 'premaidai_description-master'）
+
+    # Package name contained in dir name (e.g. 'premaidai_description' in 'premaidai_description-master')
     if package_lower in dir_lower:
         return True
-    
-    # ディレクトリ名がパッケージ名の先頭に含まれる（例: 'premaidai' in 'premaidai_description'）
+
+    # Dir name contained in package name (e.g. 'premaidai' in 'premaidai_description')
     if dir_lower in package_lower:
         return True
-    
-    # 共通のプレフィックスをチェック（より柔軟なマッチング）
-    # パッケージ名の最初の部分が一致する場合（例: 'premaidai' が両方に含まれる）
+
+    # Check common prefix (more flexible matching)
+    # First part of package name matches (e.g. 'premaidai' in both)
     package_words = package_lower.replace('_', ' ').replace('-', ' ').split()
     dir_words = dir_lower.replace('_', ' ').replace('-', ' ').split()
     
     if package_words and dir_words:
-        # 最初の単語が一致する場合
+        # First word matches
         if package_words[0] == dir_words[0] and len(package_words[0]) >= 3:
             return True
-        # パッケージ名の主要部分がディレクトリ名に含まれる
+        # Major part of package name contained in dir name
         for word in package_words:
             if len(word) >= 3 and word in dir_lower:
                 return True
@@ -3929,21 +3934,21 @@ def match_package_name(package_name, dir_name):
 
 
 def find_package_root(xacro_file_path, package_name, max_search_depth=10, verbose=False):
-    """パッケージ名からパッケージのルートディレクトリを推測する。
+    """Guess package root directory from package name.
     
-    汎用的なパッケージ検索アルゴリズム：
-    1. xacroファイルのディレクトリから親ディレクトリを探索
-    2. 各階層でパッケージ名とディレクトリ名をマッチング
-    3. 見つかった最初のマッチを返す
+    Generic package search algorithm:
+    1. Search parent directories from xacro file's directory
+    2. Match package name with directory name at each level
+    3. Return first match found
     
     Args:
-        xacro_file_path: xacroファイルのパス
-        package_name: パッケージ名（例: 'premaidai_description'）
-        max_search_depth: 最大探索階層数（デフォルト: 10）
-        verbose: 詳細なログを出力するかどうか
+        xacro_file_path: Path to xacro file
+        package_name: Package name (e.g. 'premaidai_description')
+        max_search_depth: Max search depth (default: 10)
+        verbose: Whether to output verbose logs
     
     Returns:
-        パッケージのルートディレクトリのパス、見つからない場合はNone
+        Package root path, or None if not found
     """
     if not package_name or not package_name.strip():
         if verbose:
@@ -3953,12 +3958,12 @@ def find_package_root(xacro_file_path, package_name, max_search_depth=10, verbos
     package_name = package_name.strip()
     xacro_abs_path = os.path.abspath(xacro_file_path)
     current_path = os.path.dirname(xacro_abs_path)
-    root_path = os.path.abspath(os.sep)  # システムのルートパス
-    
+    root_path = os.path.abspath(os.sep)  # System root path
+
     if verbose:
         print(f"  Searching for package '{package_name}' starting from: {current_path}")
-    
-    # 親ディレクトリを探索
+
+    # Search parent directories
     search_depth = 0
     while current_path and current_path != root_path and search_depth < max_search_depth:
         if os.path.isdir(current_path):
@@ -3966,16 +3971,16 @@ def find_package_root(xacro_file_path, package_name, max_search_depth=10, verbos
             
             if verbose:
                 print(f"    Checking directory: {dir_name} at {current_path}")
-            
-            # パッケージ名とディレクトリ名をマッチング
+
+            # Match package name with directory name
             if match_package_name(package_name, dir_name):
                 if verbose:
                     print(f"  Found package root: {current_path} (matched '{package_name}' with '{dir_name}')")
                 return current_path
-        
-        # 親ディレクトリに移動
+
+        # Move to parent directory
         parent_path = os.path.dirname(current_path)
-        if parent_path == current_path:  # ルートに到達
+        if parent_path == current_path:  # Reached root
             break
         current_path = parent_path
         search_depth += 1
@@ -3986,79 +3991,79 @@ def find_package_root(xacro_file_path, package_name, max_search_depth=10, verbos
 
 
 def resolve_ros_find_syntax(path_with_find, xacro_file_path, verbose=False):
-    """ROSの$(find package_name)構文を解決する。
+    """Resolve ROS $(find package_name) syntax.
     
     Args:
-        path_with_find: $(find package_name)/path/to/file 形式のパス
-        xacro_file_path: xacroファイルのパス
-        verbose: 詳細なログを出力するかどうか
+        path_with_find: Path in form $(find package_name)/path/to/file
+        xacro_file_path: Path to xacro file
+        verbose: Whether to output verbose logs
     
     Returns:
-        解決されたパス、解決できない場合は元のパス
+        Resolved path, or original path if resolution fails
     """
     import re
-    
-    # $(find package_name) パターンを検索
+
+    # Search for $(find package_name) pattern
     find_pattern = r'\$\(find\s+([^)]+)\)'
-    
+
     def replace_find(match):
         package_name = match.group(1).strip()
         package_root = find_package_root(xacro_file_path, package_name, max_search_depth=10, verbose=verbose)
-        
+
         if package_root:
-            # $(find package_name) をパッケージルートに置き換え
+            # Replace $(find package_name) with package root
             if verbose:
                 print(f"  Resolved $(find {package_name}) -> {package_root}")
             return package_root
         else:
-            # 見つからない場合は元のまま
+            # Keep original if not found
             if verbose:
                 print(f"  Warning: Could not resolve $(find {package_name})")
             return match.group(0)
-    
-    # すべての$(find ...)を置き換え
+
+    # Replace all $(find ...)
     resolved_path = re.sub(find_pattern, replace_find, path_with_find)
-    
-    # パスを正規化
+
+    # Normalize path
     resolved_path = os.path.normpath(resolved_path)
     
     return resolved_path
 
 
 def generate_search_candidates(relative_path, base_dir, parent_depth=1, child_depth=1, include_siblings=True):
-    """ファイルパス解決のための探索候補を生成する。
+    """Generate search candidates for file path resolution.
     
-    汎用的な探索候補生成アルゴリズム：
-    1. 基準ディレクトリからの相対パス
-    2. 親ディレクトリ（指定階層まで）からの相対パス
-    3. 子ディレクトリ（指定階層まで）からの相対パス
-    4. 兄弟ディレクトリからの相対パス（オプション）
+    Generic search candidate algorithm:
+    1. Relative path from base directory
+    2. Relative path from parent directories (up to specified depth)
+    3. Relative path from child directories (up to specified depth)
+    4. Relative path from sibling directories (optional)
     
     Args:
-        relative_path: 解決したい相対パス
-        base_dir: 基準ディレクトリ
-        parent_depth: 親ディレクトリの探索階層数（デフォルト: 1）
-        child_depth: 子ディレクトリの探索階層数（デフォルト: 1）
-        include_siblings: 兄弟ディレクトリを含めるかどうか（デフォルト: True）
+        relative_path: Relative path to resolve
+        base_dir: Base directory
+        parent_depth: Parent directory search depth (default: 1)
+        child_depth: Child directory search depth (default: 1)
+        include_siblings: Whether to include sibling directories (default: True)
     
     Returns:
-        探索候補のリスト（重複なし、正規化済み）
+        List of search candidates (no duplicates, normalized)
     """
     candidates = []
     base_dir = os.path.abspath(base_dir)
-    
-    # 1. 基準ディレクトリからの相対パス
+
+    # 1. Relative path from base directory
     candidates.append(os.path.normpath(os.path.join(base_dir, relative_path)))
-    
-    # 2. 親ディレクトリからの相対パス（指定階層まで）
+
+    # 2. Relative path from parent directories (up to specified depth)
     current_parent = base_dir
     for _ in range(parent_depth):
         parent_dir = os.path.dirname(current_parent)
-        if parent_dir == current_parent:  # ルートに到達
+        if parent_dir == current_parent:  # Reached root
             break
         candidates.append(os.path.normpath(os.path.join(parent_dir, relative_path)))
-        
-        # ../で始まるパスの場合、../を除去したパスも試す
+
+        # For paths starting with ../, also try path with ../ stripped
         if relative_path.startswith('../'):
             path_without_parent = relative_path
             depth = 0
@@ -4066,16 +4071,16 @@ def generate_search_candidates(relative_path, base_dir, parent_depth=1, child_de
                 path_without_parent = path_without_parent[3:]
                 depth += 1
             if depth > 0:
-                # 親ディレクトリから相対パスを解決
+                # Resolve relative path from parent directory
                 for i in range(min(depth, parent_depth)):
                     parent_candidate = os.path.normpath(os.path.join(parent_dir, path_without_parent))
                     candidates.append(parent_candidate)
         
         current_parent = parent_dir
-    
-    # 3. 子ディレクトリからの相対パス（指定階層まで）
+
+    # 3. Relative path from child directories (up to specified depth)
     def collect_child_dirs(directory, max_depth, current_depth=0):
-        """子ディレクトリを再帰的に収集する"""
+        """Recursively collect child directories"""
         child_dirs = []
         if current_depth >= max_depth:
             return child_dirs
@@ -4086,7 +4091,7 @@ def generate_search_candidates(relative_path, base_dir, parent_depth=1, child_de
                     item_path = os.path.join(directory, item)
                     if os.path.isdir(item_path):
                         child_dirs.append(item_path)
-                        # 再帰的に子ディレクトリを収集
+                        # Recursively collect child directories
                         child_dirs.extend(collect_child_dirs(item_path, max_depth, current_depth + 1))
             except (OSError, PermissionError):
                 pass
@@ -4095,8 +4100,8 @@ def generate_search_candidates(relative_path, base_dir, parent_depth=1, child_de
     child_dirs = collect_child_dirs(base_dir, child_depth)
     for child_dir in child_dirs:
         candidates.append(os.path.normpath(os.path.join(child_dir, relative_path)))
-    
-    # 4. 兄弟ディレクトリからの相対パス（オプション）
+
+    # 4. Relative path from sibling directories (optional)
     if include_siblings:
         parent_dir = os.path.dirname(base_dir)
         if os.path.isdir(parent_dir):
@@ -4107,18 +4112,18 @@ def generate_search_candidates(relative_path, base_dir, parent_depth=1, child_de
                         candidates.append(os.path.normpath(os.path.join(sibling_path, relative_path)))
             except (OSError, PermissionError):
                 pass
-    
-    # 5. ファイル名のみの場合、各ディレクトリで検索
+
+    # 5. If filename only, search in each directory
     if os.path.basename(relative_path) == relative_path:
-        # ファイル名のみの場合は、各ディレクトリで直接検索
+        # For filename-only, search directly in each directory
         all_dirs = [base_dir]
         all_dirs.extend([os.path.dirname(base_dir)] if parent_depth > 0 else [])
         all_dirs.extend(child_dirs)
         
         for search_dir in all_dirs:
             candidates.append(os.path.normpath(os.path.join(search_dir, relative_path)))
-    
-    # 重複を除去
+
+    # Remove duplicates
     seen = set()
     unique_candidates = []
     for candidate in candidates:
@@ -4131,42 +4136,42 @@ def generate_search_candidates(relative_path, base_dir, parent_depth=1, child_de
 
 
 def resolve_file_path_aggressive(relative_path, base_file_path, parent_depth=1, child_depth=1, verbose=False):
-    """強力にファイルパスを解決する関数。
+    """Aggressively resolve file path.
     
-    汎用的なファイルパス解決アルゴリズム：
-    1. ROSの$(find ...)構文を解決
-    2. 探索候補を生成（親/子ディレクトリ、兄弟ディレクトリ）
-    3. 各候補の存在を確認
+    Generic file path resolution algorithm:
+    1. Resolve ROS $(find ...) syntax
+    2. Generate search candidates (parent/child/sibling directories)
+    3. Check existence of each candidate
     
     Args:
-        relative_path: 解決したい相対パス（ファイル名または相対パス）
-        base_file_path: 基準となるファイルのパス（xacroファイルなど）
-        parent_depth: 親ディレクトリの探索階層数（デフォルト: 1）
-        child_depth: 子ディレクトリの探索階層数（デフォルト: 1）
-        verbose: 詳細なログを出力するかどうか
+        relative_path: Relative path to resolve (filename or relative path)
+        base_file_path: Base file path (e.g. xacro file)
+        parent_depth: Parent directory search depth (default: 1)
+        child_depth: Child directory search depth (default: 1)
+        verbose: Whether to output verbose logs
     
     Returns:
-        見つかったファイルの絶対パス、見つからない場合はNone
+        Absolute path of found file, or None if not found
     """
     if not relative_path:
         return None
-    
-    # $(find package_name)構文を解決
+
+    # Resolve $(find package_name) syntax
     if '$(' in relative_path and 'find' in relative_path:
         relative_path = resolve_ros_find_syntax(relative_path, base_file_path, verbose)
-        # 解決後、絶対パスになっている可能性がある
+        # After resolution, path may be absolute
         if os.path.isabs(relative_path) and os.path.exists(relative_path) and os.path.isfile(relative_path):
             if verbose:
                 print(f"  Resolved ROS find syntax: {relative_path}")
             return relative_path
-    
-    # 基準ファイルのディレクトリ
+
+    # Base file directory
     base_dir = os.path.dirname(os.path.abspath(base_file_path))
-    
-    # 探索候補を生成
+
+    # Generate search candidates
     candidates = generate_search_candidates(relative_path, base_dir, parent_depth, child_depth)
-    
-    # 各候補の存在を確認
+
+    # Check existence of each candidate
     for candidate in candidates:
         if os.path.exists(candidate) and os.path.isfile(candidate):
             if verbose:
@@ -4179,26 +4184,26 @@ def resolve_file_path_aggressive(relative_path, base_file_path, parent_depth=1, 
 
 
 def resolve_path_in_xml_element(elem, attr_names, xacro_file_path, verbose=False):
-    """XML要素の指定された属性のパスを解決する。
+    """Resolve path in specified attributes of XML element.
     
-    汎用的なXML属性パス解決関数：
-    1. 指定された属性名のリストから値を取得
-    2. $(find ...)構文を解決
-    3. 相対パスを解決
-    4. 解決されたパスを属性に設定
+    Generic XML attribute path resolution:
+    1. Get value from specified attribute names
+    2. Resolve $(find ...) syntax
+    3. Resolve relative path
+    4. Set resolved path to attribute
     
     Args:
-        elem: XML要素
-        attr_names: パスを含む可能性のある属性名のリスト（例: ['filename', 'file', 'uri']）
-        xacro_file_path: xacroファイルのパス
-        verbose: 詳細なログを出力するかどうか
+        elem: XML element
+        attr_names: List of attribute names that may contain paths (e.g. ['filename', 'file', 'uri'])
+        xacro_file_path: Path to xacro file
+        verbose: Whether to output verbose logs
     
     Returns:
-        パスが解決されて変更された場合はTrue、そうでない場合はFalse
+        True if path was resolved and modified, False otherwise
     """
     modified = False
-    
-    # 指定された属性名から値を取得
+
+    # Get value from specified attribute names
     path_value = None
     attr_name = None
     for name in attr_names:
@@ -4211,8 +4216,8 @@ def resolve_path_in_xml_element(elem, attr_names, xacro_file_path, verbose=False
         return False
     
     original_path = path_value
-    
-    # $(find ...)構文を解決
+
+    # Resolve $(find ...) syntax
     if '$(' in path_value and 'find' in path_value:
         resolved_path = resolve_ros_find_syntax(path_value, xacro_file_path, verbose)
         if resolved_path != path_value:
@@ -4221,8 +4226,8 @@ def resolve_path_in_xml_element(elem, attr_names, xacro_file_path, verbose=False
             if verbose:
                 print(f"  Resolved ROS find in {attr_name}: {original_path} -> {resolved_path}")
             path_value = resolved_path
-    
-    # 相対パスを解決（package://は除外）
+
+    # Resolve relative path (package:// excluded)
     if (not os.path.isabs(path_value) and 
         not path_value.startswith('package://') and
         not path_value.startswith('file://')):
