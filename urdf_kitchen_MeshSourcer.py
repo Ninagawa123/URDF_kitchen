@@ -289,6 +289,13 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.load_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
         button_layout.addWidget(self.load_button)
 
+        self.return_mesh_button = QPushButton("Return Mesh")
+        self.return_mesh_button.setFocusPolicy(Qt.NoFocus)
+        self.return_mesh_button.clicked.connect(self.return_mesh_to_assembler)
+        self.return_mesh_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(self.return_mesh_button)
+        self.return_mesh_button.setVisible(False)  # Shown only when launched from Assembler (argv[3] set)
+
         right_layout.addLayout(button_layout)
 
         # Initialize collider state before setting up UI
@@ -327,6 +334,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.vtk_initialized = False
         self.vtk_fully_ready = False  # VTK initialization complete flag
         self.pending_file_to_load = None  # File to load after initialization
+        self.pending_collider_data = None  # Collider dict from Assembler (argv[2]) when launched from Inspector
+        self.return_file_path = None  # Path to write return JSON when Return Mesh clicked (argv[3])
+        self.return_node_name = None  # Node name for return (argv[4])
+        self.return_collider_index = 0  # Collider row index for return (argv[5])
 
         self.model_bounds = None
         self.stl_actor = None
@@ -423,6 +434,15 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 self.file_name_label.setText(f"File: {self.pending_file_to_load}")
                 self.current_stl_path = self.pending_file_to_load
                 self.pending_file_to_load = None
+                # Auto-load collider XML from same directory (meshname_collider.xml)
+                base_name = os.path.splitext(self.current_stl_path)[0]
+                collider_xml_path = base_name + "_collider.xml"
+                if os.path.exists(collider_xml_path):
+                    self._load_collider_from_path(collider_xml_path)
+                # Apply collider from Assembler (argv[2]) when launched from Inspector with URDF/MJCF import
+                if self.pending_collider_data:
+                    self._apply_collider_from_dict(self.pending_collider_data)
+                    self.pending_collider_data = None
                 # Render to display the loaded file
                 self.render_to_image()
             except Exception as e:
@@ -2002,6 +2022,11 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
             try:
                 self.show_stl(file_path)
+                # Auto-load collider XML from same directory (meshname_collider.xml)
+                base_name = os.path.splitext(file_path)[0]
+                collider_xml_path = base_name + "_collider.xml"
+                if os.path.exists(collider_xml_path):
+                    self._load_collider_from_path(collider_xml_path)
                 # Initialize camera same as R key after loading (for accurate 90-degree rotation with WASD)
                 self.reset_camera()
 
@@ -2771,6 +2796,127 @@ class MainWindow(VTKViewerBase, QMainWindow):
             import traceback
             traceback.print_exc()
 
+    def _apply_collider_from_dict(self, collider_data):
+        """Apply collider from Assembler collider_data dict (from argv[2] when no collider XML exists).
+        Sets type, geometry, position, rotation, and Show Collider ON.
+        Skips the first-show auto-draft (Rough Fit) so Assembler's values are preserved.
+        """
+        if not collider_data or not isinstance(collider_data, dict):
+            return
+        # Skip first-show auto-draft: when Show Collider is checked for the first time,
+        # on_collider_show_changed normally calls draft_collider() which overwrites with defaults.
+        self.collider_first_show = False
+        data = collider_data.get('data', collider_data) if 'data' in collider_data else collider_data
+        collider_type = data.get('type', 'box')
+        if collider_type not in ["box", "sphere", "cylinder", "capsule"]:
+            return
+        import math
+        # Set type
+        index = self.collider_type_combo.findText(collider_type)
+        if index >= 0:
+            self.collider_type_combo.setCurrentIndex(index)
+        self.collider_type = collider_type
+        # Set geometry
+        geometry = data.get('geometry', {})
+        if collider_type == "box":
+            sx = float(geometry.get('size_x', 1.0))
+            sy = float(geometry.get('size_y', 1.0))
+            sz = float(geometry.get('size_z', 1.0))
+            self.collider_params[collider_type] = [sx, sy, sz]
+        elif collider_type == "sphere":
+            r = float(geometry.get('radius', 0.5))
+            self.collider_params[collider_type] = [r]
+        elif collider_type in ["cylinder", "capsule"]:
+            r = float(geometry.get('radius', 0.5))
+            L = float(geometry.get('length', 1.0))
+            self.collider_params[collider_type] = [r, L]
+        # Position (top-level or in data)
+        pos = collider_data.get('position', data.get('position', [0.0, 0.0, 0.0]))
+        self.collider_position = [float(pos[0]), float(pos[1]), float(pos[2])]
+        for i, v in enumerate(self.collider_position):
+            if i < len(self.collider_position_inputs):
+                self.collider_position_inputs[i].setText(f"{v:.4f}")
+        # Rotation: Assembler uses degrees
+        rot_deg = collider_data.get('rotation', data.get('rotation', [0.0, 0.0, 0.0]))
+        rot_rad = [math.radians(float(rot_deg[0])), math.radians(float(rot_deg[1])), math.radians(float(rot_deg[2]))]
+        self.collider_rotation = rot_rad
+        for i, v in enumerate(rot_deg):
+            if i < len(self.collider_rotation_inputs):
+                self.collider_rotation_inputs[i].setText(f"{float(v):.2f}")
+        self.collider_rotation_quaternion = euler_to_quaternion(float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2]))
+        self.update_collider_param_inputs()
+        self.collider_show_checkbox.setChecked(True)
+        self.update_collider_display()
+        print(f"Applied collider from Assembler: type={collider_type}")
+
+    def _load_collider_from_path(self, file_path):
+        """Load collider from XML file path (no dialog). Used when launched from Assembler."""
+        if not file_path or not os.path.exists(file_path):
+            return
+        try:
+            import xml.etree.ElementTree as ET
+
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+            if root.tag != "urdf_kitchen_collider":
+                return
+            collider_elem = root.find("collider")
+            if collider_elem is None:
+                return
+            collider_type = collider_elem.get("type")
+            if collider_type not in ["box", "sphere", "cylinder", "capsule"]:
+                return
+            index = self.collider_type_combo.findText(collider_type)
+            if index >= 0:
+                self.collider_type_combo.setCurrentIndex(index)
+            geometry_elem = collider_elem.find("geometry")
+            if geometry_elem is not None:
+                if collider_type == "box":
+                    size_x = float(geometry_elem.get("size_x", "1.0"))
+                    size_y = float(geometry_elem.get("size_y", "1.0"))
+                    size_z = float(geometry_elem.get("size_z", "1.0"))
+                    self.collider_params[collider_type] = [size_x, size_y, size_z]
+                elif collider_type == "sphere":
+                    radius = float(geometry_elem.get("radius", "0.5"))
+                    self.collider_params[collider_type] = [radius]
+                elif collider_type in ["cylinder", "capsule"]:
+                    radius = float(geometry_elem.get("radius", "0.5"))
+                    length = float(geometry_elem.get("length", "1.0"))
+                    self.collider_params[collider_type] = [radius, length]
+            position_elem = collider_elem.find("position")
+            if position_elem is not None:
+                x = float(position_elem.get("x", "0.0"))
+                y = float(position_elem.get("y", "0.0"))
+                z = float(position_elem.get("z", "0.0"))
+                self.collider_position = [x, y, z]
+                self.collider_position_inputs[0].setText(f"{x:.4f}")
+                self.collider_position_inputs[1].setText(f"{y:.4f}")
+                self.collider_position_inputs[2].setText(f"{z:.4f}")
+            rotation_elem = collider_elem.find("rotation")
+            if rotation_elem is not None:
+                import math
+                roll_rad = float(rotation_elem.get("roll", "0.0"))
+                pitch_rad = float(rotation_elem.get("pitch", "0.0"))
+                yaw_rad = float(rotation_elem.get("yaw", "0.0"))
+                if any(abs(v) > 3.5 for v in [roll_rad, pitch_rad, yaw_rad]):
+                    roll_rad = math.radians(roll_rad)
+                    pitch_rad = math.radians(pitch_rad)
+                    yaw_rad = math.radians(yaw_rad)
+                self.collider_rotation = [roll_rad, pitch_rad, yaw_rad]
+                roll_deg = math.degrees(roll_rad)
+                pitch_deg = math.degrees(pitch_rad)
+                yaw_deg = math.degrees(yaw_rad)
+                self.collider_rotation_inputs[0].setText(f"{roll_deg:.2f}")
+                self.collider_rotation_inputs[1].setText(f"{pitch_deg:.2f}")
+                self.collider_rotation_inputs[2].setText(f"{yaw_deg:.2f}")
+                self.collider_rotation_quaternion = euler_to_quaternion(
+                    roll_deg, pitch_deg, yaw_deg)
+            self.update_collider_param_inputs()
+            self.update_collider_display()
+            print(f"Auto-loaded collider from: {file_path}")
+        except Exception as e:
+            print(f"Error loading collider from {file_path}: {e}")
+
     def load_collider(self):
         """Load collider from XML file"""
         # Ask user for file location
@@ -2881,6 +3027,57 @@ class MainWindow(VTKViewerBase, QMainWindow):
             print(f"Error loading collider: {e}")
             import traceback
             traceback.print_exc()
+
+    def return_mesh_to_assembler(self):
+        """Write mesh and collider data to return file for Assembler to pick up."""
+        if not self.return_file_path or not self.return_node_name:
+            print("Return Mesh: Not launched from Assembler (no return path)")
+            return
+        if not self.current_stl_path:
+            print("Return Mesh: No mesh loaded")
+            return
+        import json
+        import math
+        # Build collider dict in Assembler format
+        geom = {}
+        if self.collider_type == "box":
+            geom = {
+                'size_x': self.collider_params['box'][0],
+                'size_y': self.collider_params['box'][1],
+                'size_z': self.collider_params['box'][2]
+            }
+        elif self.collider_type == "sphere":
+            geom = {'radius': self.collider_params['sphere'][0]}
+        elif self.collider_type in ["cylinder", "capsule"]:
+            geom = {
+                'radius': self.collider_params[self.collider_type][0],
+                'length': self.collider_params[self.collider_type][1]
+            }
+        rot_deg = [math.degrees(self.collider_rotation[0]), math.degrees(self.collider_rotation[1]), math.degrees(self.collider_rotation[2])]
+        collider_dict = {
+            'type': 'primitive',
+            'enabled': True,
+            'data': {
+                'type': self.collider_type,
+                'geometry': geom,
+                'position': list(self.collider_position),
+                'rotation': rot_deg
+            },
+            'position': list(self.collider_position),
+            'rotation': rot_deg
+        }
+        payload = {
+            'node_name': self.return_node_name,
+            'mesh_path': self.current_stl_path,
+            'collider_index': self.return_collider_index,
+            'collider': collider_dict
+        }
+        try:
+            with open(self.return_file_path, 'w') as f:
+                json.dump(payload, f, indent=2)
+            print(f"Returned mesh and collider to Assembler: {self.return_file_path}")
+        except Exception as e:
+            print(f"Error writing return file: {e}")
 
     def fit_camera_to_model(self):
         if not self.model_bounds:
@@ -3690,6 +3887,28 @@ if __name__ == "__main__":
                 window.setWindowFlags(window.windowFlags() | Qt.WindowStaysOnTopHint)
             else:
                 print(f"Warning: File not found: {file_path}")
+
+        # argv[2]: Collider JSON from Assembler (when no collider XML, e.g. URDF/MJCF import)
+        if len(sys.argv) > 2:
+            try:
+                import json
+                collider_json = sys.argv[2]
+                if collider_json and collider_json.strip().startswith('{'):
+                    parsed = json.loads(collider_json)
+                    window.pending_collider_data = parsed.get('data', parsed)
+            except Exception as e:
+                print(f"Warning: Could not parse collider argv[2]: {e}")
+
+        # argv[3-5]: Return Mesh support (launched from Assembler Inspector)
+        if len(sys.argv) > 3:
+            window.return_file_path = sys.argv[3]
+            window.return_node_name = sys.argv[4] if len(sys.argv) > 4 else ""
+            try:
+                window.return_collider_index = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+            except ValueError:
+                window.return_collider_index = 0
+            if window.return_file_path and window.return_node_name:
+                window.return_mesh_button.setVisible(True)
 
         # Show window
         window.show()

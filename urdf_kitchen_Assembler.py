@@ -29,7 +29,7 @@ from Qt import QtWidgets, QtCore, QtGui
 from NodeGraphQt import NodeGraph, BaseNode
 import vtk
 from PySide6.QtWidgets import QFileDialog, QLabel
-from PySide6.QtCore import QPointF, QTimer, Qt
+from PySide6.QtCore import QPointF, QTimer, Qt, QFileSystemWatcher
 from PySide6.QtGui import QDoubleValidator, QIntValidator, QPalette, QColor, QImage, QPixmap
 from PySide6.QtNetwork import QLocalSocket
 import os
@@ -37,6 +37,8 @@ import xml.etree.ElementTree as ET
 import base64
 import shutil
 import datetime
+import tempfile
+import json
 import numpy as np
 import trimesh
 import math
@@ -538,6 +540,8 @@ class InspectorWindow(QtWidgets.QWidget):
         self.current_node = None
         self.stl_viewer = stl_viewer
         self.port_widgets = []
+        self.mesh_sourcer_return_watcher = None
+        self.mesh_sourcer_return_path = None
 
         # Debounce timer for color input fields
         self.color_update_timer = QTimer()
@@ -1922,10 +1926,151 @@ class InspectorWindow(QtWidgets.QWidget):
             if self.stl_viewer:
                 self.stl_viewer.refresh_collider_display()
     
+    def _on_mesh_sourcer_return_file_changed(self, path):
+        """Handle Return Mesh file written by MeshSourcer."""
+        if not path or path != getattr(self, 'mesh_sourcer_return_path', None):
+            return
+        try:
+            if not os.path.exists(path):
+                return
+            with open(path, 'r') as f:
+                payload = json.load(f)
+            node_name = payload.get('node_name')
+            mesh_path = payload.get('mesh_path')
+            collider_index = payload.get('collider_index', 0)
+            collider = payload.get('collider')
+            if not node_name or not mesh_path:
+                return
+            # Find node by name
+            node = None
+            if hasattr(self, 'graph') and self.graph:
+                for n in self.graph.all_nodes():
+                    if hasattr(n, 'name') and n.name() == node_name:
+                        node = n
+                        break
+            if not node:
+                return
+            # Update mesh path and load mesh (same as Import Mesh)
+            node.stl_file = mesh_path
+            if self.stl_viewer:
+                self.stl_viewer.load_stl_for_node(node)
+                self.stl_viewer.render_to_image()
+            # Update collider
+            if collider is not None and hasattr(node, 'colliders'):
+                while len(node.colliders) <= collider_index:
+                    node.colliders.append({
+                        'type': None, 'enabled': False, 'data': None, 'mesh': None,
+                        'mesh_scale': [1.0, 1.0, 1.0], 'position': [0.0, 0.0, 0.0],
+                        'rotation': [0.0, 0.0, 0.0]
+                    })
+                node.colliders[collider_index] = collider
+            # Refresh Inspector (same as Import Mesh flow)
+            if self.current_node is node:
+                self.update_info(node)
+                self.update_collider_rows(node)
+                if self.stl_viewer:
+                    self.stl_viewer.refresh_collider_display()
+                    self.stl_viewer.render_to_image()
+            else:
+                if self.stl_viewer and node in getattr(self.stl_viewer, 'stl_actors', {}):
+                    self.stl_viewer.load_stl_for_node(node)
+                    self.stl_viewer.refresh_collider_display()
+                    self.stl_viewer.render_to_image()
+            # Recalculate positions (same as Import Mesh)
+            if hasattr(self, 'graph') and self.graph:
+                self.graph.recalculate_all_positions()
+            # Cleanup
+            if self.mesh_sourcer_return_watcher:
+                self.mesh_sourcer_return_watcher.removePath(path)
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            self.mesh_sourcer_return_path = None
+            print(f"Returned mesh and collider from MeshSourcer to node: {node_name}")
+        except Exception as e:
+            print(f"Error processing MeshSourcer return: {e}")
+            import traceback
+            traceback.print_exc()
+
     def open_mesh_sourcer_for_row(self, collider_index):
-        """Open mesh sourcer for a specific collider row"""
-        # TODO: Implement mesh sourcer for specific row
-        print(f"Mesh Sourcer for row {collider_index} (not yet implemented)")
+        """Open MeshSourcer with the node's mesh file and collider/XML info.
+        If the collider row has its own mesh file, use that; otherwise use the node's main mesh.
+        """
+        if not self.current_node:
+            print("No node selected")
+            return
+
+        mesh_file = None
+        # Prefer mesh from collider row if it has one
+        if (hasattr(self.current_node, 'colliders') and
+                0 <= collider_index < len(self.current_node.colliders)):
+            collider = self.current_node.colliders[collider_index]
+            row_mesh = collider.get('mesh')
+            if row_mesh and os.path.exists(row_mesh):
+                mesh_file = row_mesh
+
+        # Fallback to node's main mesh
+        if not mesh_file:
+            mesh_file = getattr(self.current_node, 'stl_file', None)
+
+        if not mesh_file or not os.path.exists(mesh_file):
+            print("No mesh file available for this node. Load a mesh first.")
+            return
+
+        try:
+            script_dir = os.path.dirname(os.path.abspath(__file__))
+            mesh_sourcer_path = os.path.join(script_dir, "urdf_kitchen_MeshSourcer.py")
+            if not os.path.exists(mesh_sourcer_path):
+                print(f"MeshSourcer not found at: {mesh_sourcer_path}")
+                return
+
+            cmd_args = [sys.executable, mesh_sourcer_path, mesh_file]
+
+            # Pass full collider data (type, size, position, rotation) to MeshSourcer (argv[2])
+            # Use row's collider, or first primitive collider found
+            collider_json = "{}"
+            if hasattr(self.current_node, 'colliders') and self.current_node.colliders:
+                collider = None
+                if 0 <= collider_index < len(self.current_node.colliders):
+                    c = self.current_node.colliders[collider_index]
+                    if c.get('enabled') and c.get('type') == 'primitive' and c.get('data'):
+                        collider = c
+                if collider is None:
+                    for c in self.current_node.colliders:
+                        if c.get('enabled') and c.get('type') == 'primitive' and c.get('data'):
+                            collider = c
+                            break
+                if collider:
+                    data = collider['data']
+                    collider_json = json.dumps({
+                        'type': 'primitive',
+                        'data': data,
+                        'position': collider.get('position', data.get('position', [0.0, 0.0, 0.0])),
+                        'rotation': collider.get('rotation', data.get('rotation', [0.0, 0.0, 0.0]))
+                    })
+            cmd_args.append(collider_json)
+
+            # Create temp file for Return Mesh and set up watcher (argv[3-5])
+            fd, return_path = tempfile.mkstemp(suffix='.json', prefix='urdf_kitchen_return_')
+            os.close(fd)
+            with open(return_path, 'w') as f:
+                f.write('{}')
+            node_name = self.current_node.name() if hasattr(self.current_node, 'name') else ''
+            cmd_args.extend([return_path, node_name, str(collider_index)])
+
+            if self.mesh_sourcer_return_watcher is None:
+                self.mesh_sourcer_return_watcher = QFileSystemWatcher()
+                self.mesh_sourcer_return_watcher.fileChanged.connect(self._on_mesh_sourcer_return_file_changed)
+            self.mesh_sourcer_return_watcher.addPath(return_path)
+            self.mesh_sourcer_return_path = return_path
+
+            subprocess.Popen(cmd_args)
+            print(f"Launched MeshSourcer with: {mesh_file}")
+        except Exception as e:
+            print(f"Error launching MeshSourcer: {e}")
+            import traceback
+            traceback.print_exc()
     
     def update_collider_rows(self, node):
         """Update collider rows UI from node data"""
