@@ -7,7 +7,7 @@ Description: URDF/MJCF Import functionality for URDF Kitchen.
 
 Author      : Ninagawa123
 Created On  : Nov 28, 2024
-Update.     : Feb 19, 2026
+Update.     : Feb 23, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -677,13 +677,15 @@ class URDFParser:
                             scale_str = mesh_elem.get('scale', '1.0 1.0 1.0')
                             scale = [float(v) for v in scale_str.split()]
                             
-                            # Add to colliders list
+                            # Add to colliders list (include position/rotation from collision origin)
                             link_data['colliders'].append({
                                 'type': 'mesh',
                                 'enabled': True,
                                 'data': None,
                                 'mesh': resolved_path,
-                                'mesh_scale': scale
+                                'mesh_scale': scale,
+                                'position': pos,
+                                'rotation': rpy
                             })
                             
                             # Backward compatibility: store first mesh collider
@@ -715,13 +717,15 @@ class URDFParser:
                                     'rotation': rpy  # degrees
                                 }
                                 
-                                # Add to colliders list
+                                # Add to colliders list (position/rotation at top level for display)
                                 link_data['colliders'].append({
                                     'type': 'primitive',
                                     'enabled': True,
                                     'data': collider_data,
                                     'mesh': None,
-                                    'mesh_scale': [1.0, 1.0, 1.0]
+                                    'mesh_scale': [1.0, 1.0, 1.0],
+                                    'position': pos,
+                                    'rotation': rpy
                                 })
                                 
                                 # Backward compatibility: store first primitive collider
@@ -743,13 +747,15 @@ class URDFParser:
                             'rotation': rpy  # degrees
                         }
                         
-                        # Add to colliders list
+                        # Add to colliders list (position/rotation at top level for display)
                         link_data['colliders'].append({
                             'type': 'primitive',
                             'enabled': True,
                             'data': collider_data,
                             'mesh': None,
-                            'mesh_scale': [1.0, 1.0, 1.0]
+                            'mesh_scale': [1.0, 1.0, 1.0],
+                            'position': pos,
+                            'rotation': rpy
                         })
                         
                         # Backward compatibility: store first primitive collider
@@ -774,13 +780,15 @@ class URDFParser:
                             'rotation': rpy  # degrees
                         }
                         
-                        # Add to colliders list
+                        # Add to colliders list (position/rotation at top level for display)
                         link_data['colliders'].append({
                             'type': 'primitive',
                             'enabled': True,
                             'data': collider_data,
                             'mesh': None,
-                            'mesh_scale': [1.0, 1.0, 1.0]
+                            'mesh_scale': [1.0, 1.0, 1.0],
+                            'position': pos,
+                            'rotation': rpy
                         })
                         
                         # Backward compatibility: store first primitive collider

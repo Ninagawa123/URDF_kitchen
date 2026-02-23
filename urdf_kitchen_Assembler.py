@@ -4,7 +4,7 @@ Description: A Python script to assembling files configured with urdf_kitchen_Pa
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Feb 19, 2026
+Update.     : Feb 23, 2026
 Version     : 0.1.0
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
@@ -94,6 +94,7 @@ DEFAULT_MJCF_OPTION_IMPRATIO = 100  # Impedance ratio for MJCF <option>
 DEFAULT_MJCF_OPTION_TIMESTEP = 0.002  # Simulation timestep for MJCF <option>
 DEFAULT_MJCF_OPTION_ITERATIONS = 30  # Solver iterations for MJCF <option>
 DEFAULT_MJCF_MESH_SIMPLIFY_THRESHOLD = 50000  # Face count threshold for mesh simplification warning
+DEFAULT_MJCF_MESH_MAX_FACES = 100000000  # Max face count for mesh export (100M; was 1M, increased for large CAD meshes)
 DEFAULT_NODE_GRID_ENABLED = True  # Enable/disable node grid snapping
 DEFAULT_NODE_GRID_SIZE = 50  # Node grid size (pixels)
 # Legacy constants for backward compatibility (to be removed)
@@ -2334,7 +2335,7 @@ class InspectorWindow(QtWidgets.QWidget):
             self._update_limit_labels_for_axis(axis_id)
 
     def _update_limit_labels_for_axis(self, axis_id):
-        """Slide選択時はラベルをLower/Upper(m)に、それ以外はMin/Max Angle(deg)に切り替え"""
+        """Switch labels to Lower/Upper(m) when Slide is selected, otherwise Min/Max Angle(deg)"""
         is_slide = (axis_id == 5)
 
         # Show/hide slide axis buttons
@@ -2375,7 +2376,7 @@ class InspectorWindow(QtWidgets.QWidget):
                 self.upper_limit_input.setText(str(round(math.degrees(upper), 2)))
 
     def update_slide_axis(self):
-        """Slide軸選択変更時のハンドラ"""
+        """Handler for Slide axis selection change"""
         if self.current_node:
             self.current_node.slide_axis = self.slide_axis_group.checkedId()
 
@@ -4767,7 +4768,7 @@ class InspectorWindow(QtWidgets.QWidget):
 
 
 def normalize_number_input(text):
-    """全角数字・記号を半角に変換するヘルパー関数"""
+    """Helper function to convert full-width digits and symbols to half-width"""
     # Fullwidth digits -> halfwidth digits
     fullwidth_digits = '０１２３４５６７８９'
     halfwidth_digits = '0123456789'
@@ -5059,6 +5060,24 @@ class SettingsDialog(QtWidgets.QDialog):
         mjcf_layout.addWidget(simplify_desc, row, 0, 1, 3)
         row += 1
 
+        # Mesh max faces (export limit)
+        mjcf_layout.addWidget(QtWidgets.QLabel("Mesh max faces (export limit):"), row, 0)
+        self.mjcf_mesh_max_faces_input = QtWidgets.QLineEdit()
+        self.mjcf_mesh_max_faces_input.setFixedWidth(100)
+        self.mjcf_mesh_max_faces_input.setValidator(QIntValidator(100000, 1000000000))
+        self.mjcf_mesh_max_faces_input.setText(str(self.graph.default_mjcf_mesh_max_faces))
+        mjcf_layout.addWidget(self.mjcf_mesh_max_faces_input, row, 1)
+        mjcf_layout.addWidget(QtWidgets.QLabel("faces"), row, 2)
+        row += 1
+
+        max_faces_desc = QtWidgets.QLabel(
+            "Meshes exceeding this face count are skipped during MJCF export. Default: 100M."
+        )
+        max_faces_desc.setStyleSheet("color: gray; font-size: 11px;")
+        max_faces_desc.setWordWrap(True)
+        mjcf_layout.addWidget(max_faces_desc, row, 0, 1, 3)
+        row += 1
+
         mjcf_group.setLayout(mjcf_layout)
         layout.addWidget(mjcf_group)
 
@@ -5334,6 +5353,8 @@ class SettingsDialog(QtWidgets.QDialog):
             self.graph.default_mjcf_option_iterations = mjcf_iterations
             mjcf_mesh_simplify = int(normalize_number_input(self.mjcf_mesh_simplify_input.text()))
             self.graph.default_mjcf_mesh_simplify_threshold = mjcf_mesh_simplify
+            mjcf_mesh_max_faces = int(normalize_number_input(self.mjcf_mesh_max_faces_input.text()))
+            self.graph.default_mjcf_mesh_max_faces = mjcf_mesh_max_faces
 
             # Node node grid
             grid_enabled = self.grid_enabled_checkbox.isChecked()
@@ -6978,9 +6999,9 @@ class STLViewerWidget(QtWidgets.QWidget):
                 if collider_type == 'primitive':
                     collider_data = collider.get('data')
                     if collider_data:
-                        # Position rotation collider
-                        position = collider.get('position', [0, 0, 0])
-                        rotation = collider.get('rotation', [0, 0, 0])
+                        # Position/rotation: prefer top level, fallback to data (for URDF-imported colliders)
+                        position = collider.get('position', collider_data.get('position', [0, 0, 0]))
+                        rotation = collider.get('rotation', collider_data.get('rotation', [0, 0, 0]))
                         print(f"    → Creating primitive collider: {collider_data.get('type', 'unknown')}")
                         print(f"       position: {position}, rotation: {rotation}")
                         actor = self.create_primitive_collider_actor(collider_data, node, position=position, rotation=rotation)
@@ -7380,9 +7401,10 @@ class STLViewerWidget(QtWidgets.QWidget):
 
                 # Primitive + node_transform primitive: pos/rot
                 if collider_type == 'primitive':
-                    # Position rotation collider collider_data
-                    position = collider.get('position', [0, 0, 0])
-                    rotation = collider.get('rotation', [0, 0, 0])  # degrees
+                    # Position/rotation: prefer top level, fallback to data (for URDF-imported colliders)
+                    collider_data = collider.get('data', {})
+                    position = collider.get('position', collider_data.get('position', [0, 0, 0]))
+                    rotation = collider.get('rotation', collider_data.get('rotation', [0, 0, 0]))  # degrees
 
                     collider_local_transform = vtk.vtkTransform()
                     collider_local_transform.PostMultiply()
@@ -8378,6 +8400,7 @@ class CustomNodeGraph(NodeGraph):
         self.default_mjcf_option_timestep = DEFAULT_MJCF_OPTION_TIMESTEP
         self.default_mjcf_option_iterations = DEFAULT_MJCF_OPTION_ITERATIONS
         self.default_mjcf_mesh_simplify_threshold = DEFAULT_MJCF_MESH_SIMPLIFY_THRESHOLD
+        self.default_mjcf_mesh_max_faces = DEFAULT_MJCF_MESH_MAX_FACES
 
         # Set Node Grid Node Grid
         self.node_grid_enabled = DEFAULT_NODE_GRID_ENABLED
@@ -11512,6 +11535,7 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(mjcf_defaults_elem, "option_timestep").text = str(self.default_mjcf_option_timestep)
             ET.SubElement(mjcf_defaults_elem, "option_iterations").text = str(self.default_mjcf_option_iterations)
             ET.SubElement(mjcf_defaults_elem, "mesh_simplify_threshold").text = str(self.default_mjcf_mesh_simplify_threshold)
+            ET.SubElement(mjcf_defaults_elem, "mesh_max_faces").text = str(self.default_mjcf_mesh_max_faces)
             print(f"Saved MJCF defaults: impratio={self.default_mjcf_option_impratio}, "
                   f"joint_damping={self.default_mjcf_joint_damping}, geom_friction={self.default_mjcf_geom_friction}, "
                   f"geom_margin={self.default_mjcf_geom_margin}, geom_condim={self.default_mjcf_geom_condim}, "
@@ -11793,6 +11817,9 @@ class CustomNodeGraph(NodeGraph):
                     elem = mjcf_defaults_elem.find("mesh_simplify_threshold")
                     if elem is not None and elem.text:
                         self.default_mjcf_mesh_simplify_threshold = int(elem.text)
+                    elem = mjcf_defaults_elem.find("mesh_max_faces")
+                    if elem is not None and elem.text:
+                        self.default_mjcf_mesh_max_faces = int(elem.text)
                     print(f"Restored MJCF defaults: impratio={self.default_mjcf_option_impratio}, "
                           f"joint_damping={self.default_mjcf_joint_damping}, geom_friction={self.default_mjcf_geom_friction}, "
                           f"geom_margin={self.default_mjcf_geom_margin}, geom_condim={self.default_mjcf_geom_condim}, "
@@ -14804,8 +14831,8 @@ class CustomNodeGraph(NodeGraph):
                         if num_faces < 1:
                             print(f"Warning: Skipping mesh '{original_filename}' - no faces found (file may be empty or invalid)")
                             continue
-                        elif num_faces > 1000000:
-                            print(f"Warning: Skipping mesh '{original_filename}' - too many faces: {num_faces} (limit: 1,000,000)")
+                        elif num_faces > self.default_mjcf_mesh_max_faces:
+                            print(f"Warning: Skipping mesh '{original_filename}' - too many faces: {num_faces} (limit: {self.default_mjcf_mesh_max_faces:,})")
                             skipped_meshes.append((output_filename, num_faces))
                             continue
                         elif num_faces > mesh_simplify_threshold:
@@ -14988,8 +15015,8 @@ class CustomNodeGraph(NodeGraph):
                                     if num_faces < 1:
                                         print(f"Warning: Skipping collider mesh '{collider_mesh_path}' - no faces found")
                                         continue
-                                    elif num_faces > 1000000:
-                                        print(f"Warning: Skipping collider mesh '{collider_mesh_path}' - too many faces: {num_faces} (limit: 1,000,000)")
+                                    elif num_faces > self.default_mjcf_mesh_max_faces:
+                                        print(f"Warning: Skipping collider mesh '{collider_mesh_path}' - too many faces: {num_faces} (limit: {self.default_mjcf_mesh_max_faces:,})")
                                         continue
                                     
                                     # Generate OBJ
@@ -15711,24 +15738,24 @@ class CustomNodeGraph(NodeGraph):
         print(f"Created actuators file: {file_path}")
 
     def _collect_coincident_constraints(self):
-        """CoincidentNodeを探索し、閉リンク制約用のデータを収集する
+        """Search for CoincidentNodes and collect data for closed-loop constraints
 
         Returns:
-            list: 制約データのリスト。各要素は以下の辞書:
-                - name: 制約名
-                - body1: 1つ目の親ボディ名
-                - body2: 2つ目の親ボディ名
-                - anchor1: body1のローカル座標でのアンカー位置
-                - anchor2: body2のローカル座標でのアンカー位置
+            list: List of constraint data. Each element is a dict with:
+                - name: Constraint name
+                - body1: First parent body name
+                - body2: Second parent body name
+                - anchor1: Anchor position in body1's local coordinates
+                - anchor2: Anchor position in body2's local coordinates
         """
         constraints = []
 
         for node in self.all_nodes():
-            # CoincidentNodeのみ処理
+            # Process only CoincidentNodes
             if not isinstance(node, CoincidentNode):
                 continue
 
-            # 2つの入力ポートから接続情報を取得
+            # Get connection info from the two input ports
             input_ports = node.input_ports()
             if len(input_ports) < 2:
                 print(f"Warning: CoincidentNode '{node.name()}' has insufficient input ports")
@@ -15745,7 +15772,7 @@ class CustomNodeGraph(NodeGraph):
                 parent_node = parent_port.node()
                 parent_port_name = parent_port.name()
 
-                # ポート名からポイントインデックスを計算 (out_1 -> 0, out_2 -> 1)
+                # Compute point index from port name (out_1 -> 0, out_2 -> 1)
                 point_index = 0
                 if parent_port_name.startswith('out_'):
                     try:
@@ -15756,7 +15783,7 @@ class CustomNodeGraph(NodeGraph):
                 elif parent_port_name == 'out':
                     point_index = 0
 
-                # 親ノードのポイントからアンカー位置を取得
+                # Get anchor position from parent node's points
                 anchor_xyz = [0.0, 0.0, 0.0]
                 if hasattr(parent_node, 'points') and point_index < len(parent_node.points):
                     point_data = parent_node.points[point_index]
@@ -15768,7 +15795,7 @@ class CustomNodeGraph(NodeGraph):
                     'anchor': anchor_xyz
                 })
 
-            # 2つの親ノードが接続されている場合のみ制約を作成
+            # Create constraint only when both parent nodes are connected
             if len(parent_data) >= 2:
                 constraint = {
                     'name': f"coincident_{node.name()}",
