@@ -1,0 +1,22 @@
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    QT_QPA_PLATFORM=offscreen
+
+WORKDIR /app
+
+# System libs typically needed by PySide6 in headless mode.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libglib2.0-0 libgl1 libxkbcommon0 libegl1 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY pyproject.toml /app/pyproject.toml
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir \
+       PySide6 trimesh networkx NodeGraphQt numpy pycollada vtk xacrodoc Qt.py
+
+COPY . /app
+
+EXPOSE 8091
+CMD ["python3", "scripts/export_service.py"]

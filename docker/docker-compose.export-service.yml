@@ -1,0 +1,16 @@
+services:
+  urdf-kitchen-export:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.export-service
+    image: urdf-kitchen-export:local
+    environment:
+      URDF_KITCHEN_SERVICE_HOST: 0.0.0.0
+      URDF_KITCHEN_SERVICE_PORT: 8091
+      URDF_KITCHEN_EXPORT_TIMEOUT_SECONDS: 300
+      QT_QPA_PLATFORM: offscreen
+    ports:
+      - "8091:8091"
+    volumes:
+      # Mount workspace so absolute paths from host can be rewritten to /workspace in caller.
+      - /home/stuart/KinematicTrees:/workspace
