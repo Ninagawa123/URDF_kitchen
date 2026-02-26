@@ -334,9 +334,8 @@ def _prepare_input_model_for_import(input_model: Path) -> Path:
         return input_model
 
     mesh_map = {}
+    # Keep lookup local to the model folder for predictable runtime.
     search_roots = [input_model.parent]
-    if input_model.parent.parent != input_model.parent:
-        search_roots.append(input_model.parent.parent)
 
     for root in search_roots:
         for candidate in sorted(root.rglob('*')):
