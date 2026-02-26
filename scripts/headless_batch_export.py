@@ -142,7 +142,11 @@ def _backfill_mesh_exports_from_source(input_model: Path, out_root: Path):
     """Populate stl/unity mesh folders from source `meshes/` when exporter outputs are sparse."""
     src_mesh_root = input_model.parent / 'meshes'
     if not src_mesh_root.exists() or not src_mesh_root.is_dir():
-        return {'backfilled': 0, 'failed': 0, 'source': str(src_mesh_root), 'used': False}
+        alt_root = input_model.parent.parent / 'meshes'
+        if alt_root.exists() and alt_root.is_dir():
+            src_mesh_root = alt_root
+        else:
+            return {'backfilled': 0, 'failed': 0, 'source': str(src_mesh_root), 'used': False}
 
     stl_mesh_dir = out_root / 'stl' / 'meshes'
     dae_mesh_dir = out_root / 'dae' / 'meshes'
@@ -335,7 +339,11 @@ def _prepare_input_model_for_import(input_model: Path) -> Path:
 
     mesh_map = {}
     # Keep lookup local to the model folder for predictable runtime.
-    search_roots = [input_model.parent]
+    search_roots = [
+        input_model.parent,
+        input_model.parent.parent,
+        input_model.parent.parent / 'meshes',
+    ]
 
     for root in search_roots:
         for candidate in sorted(root.rglob('*')):
@@ -364,6 +372,100 @@ def _prepare_input_model_for_import(input_model: Path) -> Path:
     return patched
 
 
+
+def _iter_possible_mesh_roots(input_model: Path, out_root: Path) -> list[Path]:
+    roots = [
+        input_model.parent / 'meshes',
+        input_model.parent.parent / 'meshes',
+        input_model.parent / 'assets',
+        input_model.parent.parent / 'assets',
+        out_root,
+    ]
+
+    for fmt in ["dae", "stl", "unity", "mjcf"]:
+        candidate = out_root / fmt
+        if candidate.exists() and candidate.is_dir():
+            roots.append(candidate)
+
+    fallback = os.getenv('URDF_KITCHEN_MESH_FALLBACK_ROOT', '').strip()
+    if fallback:
+        for part in fallback.split(os.pathsep):
+            part = part.strip()
+            if part:
+                p = Path(part).expanduser()
+                if p.exists() and p.is_dir():
+                    roots.append(p)
+
+    return roots
+
+
+def _fallback_copy_mesh(ref_name: str, preferred_ext: str, input_model: Path, out_root: Path, candidate_roots: list[Path]) -> str | None:
+    target_name = Path(ref_name).name
+    stem = Path(target_name).stem.lower()
+
+    # Direct name match in known roots/subdirectories.
+    check_names = [target_name, f"{stem}{preferred_ext}", f"{stem}.dae", f"{stem}.obj", f"{stem}.stl"]
+    seeds = [
+        Path(p) for p in candidate_roots
+    ]
+
+    for base in seeds:
+        if not base.exists() or not base.is_dir():
+            continue
+
+        # Known mesh dirs are cheap and deterministic.
+        candidate_dirs = []
+        for rel_dir in ["", "meshes", "assets", "miro_robot_unity_description", "miro_robot_unity_description/meshes", "realfix_mjcf", "realfix_mjcf/assets", "miro_mjcf", "miro_mjcf/assets"]:
+            d = base / rel_dir if rel_dir else base
+            if d.exists() and d.is_dir():
+                candidate_dirs.append(d)
+
+        # If a root contains nested package libraries, scan 2-level mesh folders.
+        # This is intentionally narrow to keep runtime predictable.
+        if base.name == "RobotDescriptions":
+            candidate_dirs.extend(
+                child for child in base.glob('*/*/meshes')
+                if child.is_dir()
+            )
+        elif base.name == "Robots":
+            candidate_dirs.extend(
+                child for child in base.glob('*/meshes')
+                if child.is_dir()
+            )
+
+        for d in candidate_dirs:
+            for name in check_names:
+                c = d / name
+                if c.exists() and c.is_file():
+                    return str(c)
+
+        # Fallback for MJCF exports that keep assets nested under known package folders.
+        for rel_root in ["miro_robot_unity_description", "realfix_mjcf", "miro_mjcf"]:
+            asset_root = base / rel_root / 'assets'
+            if not asset_root.exists() or not asset_root.is_dir():
+                continue
+            for name in check_names:
+                # direct lookup
+                c = asset_root / name
+                if c.exists() and c.is_file():
+                    return str(c)
+                # one-level nested search
+                for sub in asset_root.glob('*'):
+                    if sub.is_dir():
+                        c2 = sub / name
+                        if c2.exists() and c2.is_file():
+                            return str(c2)
+
+    # Last fallback: bounded scan for files that still match by stem.
+    candidates = [
+        p for p in out_root.rglob('**/*')
+        if p.is_file() and Path(p).suffix.lower() in {'.stl', '.dae', '.obj'} and Path(p).stem.lower() == stem
+    ]
+    if candidates:
+        return str(sorted(candidates)[0])
+
+    return None
+
 def copy_original_model_to_output_folders(input_model: Path, out_root: Path):
     """Copy original URDF into each output folder and rewrite mesh filenames to local exports."""
     # Per-folder target mesh format produced by batch export.
@@ -375,6 +477,8 @@ def copy_original_model_to_output_folders(input_model: Path, out_root: Path):
     }
 
     source_text = input_model.read_text(encoding="utf-8")
+    mesh_refs = re.findall(r'filename\s*=\s*"([^"]+)"', source_text)
+    fallback_roots = _iter_possible_mesh_roots(input_model, out_root)
 
     for folder, pref_ext in preferred_mesh_ext.items():
         target_dir = out_root / folder
@@ -384,6 +488,38 @@ def copy_original_model_to_output_folders(input_model: Path, out_root: Path):
 
         mesh_map = _index_mesh_files(target_dir)
         rewritten, updated, unresolved = _rewrite_urdf_mesh_filenames(source_text, mesh_map, pref_ext)
+
+        # Last-mile patch for still-unresolved mesh refs by copying from available roots.
+        if unresolved > 0:
+            rewritten_refs = {}
+            for ref in mesh_refs:
+                rel = _resolve_mesh_reference(ref, mesh_map, pref_ext)
+                if rel:
+                    rewritten_refs[ref] = rel
+                    continue
+
+                source_mesh = _fallback_copy_mesh(ref, pref_ext, input_model, out_root, fallback_roots)
+                if not source_mesh:
+                    continue
+
+                source_path = Path(source_mesh)
+                dst_dir = target_dir / 'meshes'
+                dst_dir.mkdir(parents=True, exist_ok=True)
+                dst = dst_dir / source_path.name
+                if not dst.exists() and source_path.exists():
+                    try:
+                        shutil.copy2(source_path, dst)
+                    except Exception:
+                        continue
+                rewritten_refs[ref] = f"meshes/{dst.name}"
+
+            if rewritten_refs:
+                def late_repl(match):
+                    original = match.group(1)
+                    if original in rewritten_refs:
+                        return f'filename="{rewritten_refs[original]}"'
+                    return match.group(0)
+                rewritten = re.sub(r'filename\s*=\s*"([^"]+)"', late_repl, rewritten)
 
         target.write_text(rewritten, encoding="utf-8")
         print(f"[INFO] wrote {target} (mesh refs updated={updated}, unresolved={unresolved}, pref={pref_ext})")
