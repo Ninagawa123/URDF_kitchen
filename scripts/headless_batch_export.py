@@ -236,36 +236,133 @@ def _index_mesh_files(target_dir: Path):
     return mesh_map
 
 
-def _rewrite_urdf_mesh_filenames(urdf_text: str, mesh_map: dict, preferred_ext: str):
-    """Rewrite mesh filename= paths to exported meshes in this output folder."""
-    # Keep a deterministic fallback order if preferred ext is missing for a stem.
+def _normalise_mesh_stem(stem: str) -> str:
+    s = stem.lower()
+    s = re.sub(r'^(mesh|collision|visual)\d*[_-]?', '', s)
+    s = re.sub(r'[^a-z0-9]+', '_', s).strip('_')
+    return s
+
+
+def _resolve_mesh_reference(original_ref: str, mesh_map: dict, preferred_ext: str):
     fallback = {
         ".stl": [".dae", ".obj"],
         ".dae": [".stl", ".obj"],
         ".obj": [".dae", ".stl"],
     }
-    ext_order = [preferred_ext] + fallback.get(preferred_ext, [])
 
+    original_name = Path(original_ref.replace("\\", "/")).name
+    original_stem = Path(original_name).stem.lower()
+    original_norm = _normalise_mesh_stem(original_stem)
+    original_ext = Path(original_name).suffix.lower()
+
+    ext_order = []
+    if preferred_ext in {".stl", ".dae", ".obj"}:
+        ext_order.append(preferred_ext)
+    if original_ext in {".stl", ".dae", ".obj"} and original_ext not in ext_order:
+        ext_order.append(original_ext)
+    for ext in fallback.get(preferred_ext, []):
+        if ext not in ext_order:
+            ext_order.append(ext)
+
+    for ext in ext_order:
+        exact = mesh_map.get((original_stem, ext))
+        if exact:
+            return exact
+
+    candidates = []
+    for (stem, ext), rel in mesh_map.items():
+        if ext not in ext_order:
+            continue
+        norm = _normalise_mesh_stem(stem)
+        score = -1
+
+        if norm == original_norm and norm:
+            score = 120
+        elif norm.endswith(original_norm) and original_norm:
+            score = 100
+        elif original_norm.endswith(norm) and norm:
+            score = 95
+        elif original_norm and norm and (original_norm in norm or norm in original_norm):
+            score = 80
+        else:
+            a = set(filter(None, original_norm.split('_')))
+            b = set(filter(None, norm.split('_')))
+            overlap = len(a & b)
+            if overlap > 0:
+                score = 60 + overlap
+
+        if score >= 0:
+            # Prefer shallower path and shorter names for tie-breaks.
+            candidates.append((score, -rel.count('/'), -len(rel), rel))
+
+    if not candidates:
+        return None
+
+    candidates.sort(reverse=True)
+    return candidates[0][3]
+
+
+def _rewrite_urdf_mesh_filenames(urdf_text: str, mesh_map: dict, preferred_ext: str):
+    """Rewrite mesh filename= paths to exported meshes in this output folder."""
     updated = 0
     unresolved = 0
 
     def repl(match):
         nonlocal updated, unresolved
         original = match.group(1)
-        name = Path(original.replace("\\", "/")).name
-        stem = Path(name).stem.lower()
-
-        for ext in ext_order:
-            rel = mesh_map.get((stem, ext))
-            if rel:
-                updated += 1
-                return f'filename="{rel}"'
+        rel = _resolve_mesh_reference(original, mesh_map, preferred_ext)
+        if rel:
+            updated += 1
+            return f'filename="{rel}"'
 
         unresolved += 1
         return match.group(0)
 
     out = re.sub(r'filename="([^"]+)"', repl, urdf_text)
     return out, updated, unresolved
+
+
+def _prepare_input_model_for_import(input_model: Path) -> Path:
+    """Repair mesh filename links in URDF before import when package paths are legacy/misaligned."""
+    ext = input_model.suffix.lower()
+    if ext not in {'.urdf', '.xml'}:
+        return input_model
+
+    try:
+        source_text = input_model.read_text(encoding='utf-8')
+    except Exception:
+        return input_model
+
+    mesh_map = {}
+    search_roots = [input_model.parent]
+    if input_model.parent.parent != input_model.parent:
+        search_roots.append(input_model.parent.parent)
+
+    for root in search_roots:
+        for candidate in sorted(root.rglob('*')):
+            if not candidate.is_file():
+                continue
+            ext = candidate.suffix.lower()
+            if ext not in {'.stl', '.dae', '.obj'}:
+                continue
+            rel = os.path.relpath(candidate, input_model.parent).replace('\\', '/')
+            key = (candidate.stem.lower(), ext)
+            prev = mesh_map.get(key)
+            if prev is None or rel.count('/') < prev.count('/'):
+                mesh_map[key] = rel
+
+    if not mesh_map:
+        return input_model
+
+    preferred_ext = '.obj'
+    rewritten, updated, unresolved = _rewrite_urdf_mesh_filenames(source_text, mesh_map, preferred_ext)
+    if updated == 0:
+        return input_model
+
+    patched = input_model.parent / f"{input_model.stem}.resolved{input_model.suffix}"
+    patched.write_text(rewritten, encoding='utf-8')
+    print(f"[INFO] repaired input mesh references: {input_model.name} -> {patched.name} (updated={updated}, unresolved={unresolved})")
+    return patched
 
 
 def copy_original_model_to_output_folders(input_model: Path, out_root: Path):
@@ -283,7 +380,8 @@ def copy_original_model_to_output_folders(input_model: Path, out_root: Path):
     for folder, pref_ext in preferred_mesh_ext.items():
         target_dir = out_root / folder
         target_dir.mkdir(parents=True, exist_ok=True)
-        target = target_dir / input_model.name
+        target_name = "source.urdf" if input_model.suffix.lower() == ".urdf" else input_model.name
+        target = target_dir / target_name
 
         mesh_map = _index_mesh_files(target_dir)
         rewritten, updated, unresolved = _rewrite_urdf_mesh_filenames(source_text, mesh_map, pref_ext)
@@ -303,6 +401,7 @@ def make_graph(app: QtWidgets.QApplication):
 
 def run(input_model: Path, out_root: Path, robot_name: str, base_height: float):
     ensure_dirs(out_root)
+    resolved_input_model = _prepare_input_model_for_import(input_model)
 
     app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(sys.argv)
     graph = make_graph(app)
@@ -320,7 +419,7 @@ def run(input_model: Path, out_root: Path, robot_name: str, base_height: float):
         pass
 
     with DialogPatcher(
-        input_model=input_model,
+        input_model=resolved_input_model,
         out_root=out_root,
         mjcf_dir_name=f"{robot_name}_mjcf"
     ):
@@ -350,10 +449,12 @@ def run(input_model: Path, out_root: Path, robot_name: str, base_height: float):
     if pre_stl == 0 or pre_unity == 0:
         backfill_report = _backfill_mesh_exports_from_source(input_model, out_root)
 
-    copy_original_model_to_output_folders(input_model, out_root)
+    copy_original_model_to_output_folders(resolved_input_model, out_root)
 
     print("\n=== Batch export summary ===")
     print(f"Input model : {input_model}")
+    if resolved_input_model != input_model:
+        print(f"Resolved input : {resolved_input_model}")
     print(f"Output root : {out_root}")
     print(f"Robot name  : {robot_name}")
     print(f"Meshes ok   : {converted}")
