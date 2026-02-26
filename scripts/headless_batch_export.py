@@ -20,6 +20,7 @@ import os
 import sys
 import traceback
 import re
+import shutil
 from pathlib import Path
 
 # Ensure repository root is importable
@@ -123,6 +124,57 @@ class DialogPatcher:
 def ensure_dirs(out_root: Path):
     for d in ["stl", "dae", "unity", "mjcf"]:
         (out_root / d).mkdir(parents=True, exist_ok=True)
+
+
+def _count_mesh_files(root: Path):
+    if not root.exists() or not root.is_dir():
+        return 0
+    count = 0
+    for p in root.rglob('*'):
+        if not p.is_file():
+            continue
+        if p.suffix.lower() in {'.stl', '.dae', '.obj', '.fbx', '.gltf', '.glb'}:
+            count += 1
+    return count
+
+
+def _backfill_mesh_exports_from_source(input_model: Path, out_root: Path):
+    """Populate stl/unity mesh folders from source `meshes/` when exporter outputs are sparse."""
+    src_mesh_root = input_model.parent / 'meshes'
+    if not src_mesh_root.exists() or not src_mesh_root.is_dir():
+        return {'backfilled': 0, 'failed': 0, 'source': str(src_mesh_root), 'used': False}
+
+    stl_mesh_dir = out_root / 'stl' / 'meshes'
+    dae_mesh_dir = out_root / 'dae' / 'meshes'
+    unity_mesh_dir = out_root / 'unity' / 'meshes'
+    for d in (stl_mesh_dir, dae_mesh_dir, unity_mesh_dir):
+        d.mkdir(parents=True, exist_ok=True)
+
+    backfilled = 0
+    failed = 0
+
+    for src in sorted(src_mesh_root.rglob('*')):
+        if not src.is_file():
+            continue
+        ext = src.suffix.lower()
+        if ext not in {'.obj', '.stl', '.dae'}:
+            continue
+        stem = src.stem
+        try:
+            mesh = trimesh.load(str(src), force='mesh')
+            stl_path = stl_mesh_dir / f'{stem}.stl'
+            dae_path = dae_mesh_dir / f'{stem}.dae'
+            unity_dae_path = unity_mesh_dir / f'{stem}.dae'
+            mesh.export(str(stl_path))
+            mesh.export(str(dae_path))
+            # Unity usually accepts DAE/FBX; keep DAE here for deterministic pathing.
+            shutil.copy2(dae_path, unity_dae_path)
+            backfilled += 1
+        except Exception as e:
+            print(f"[WARN] backfill conversion failed for {src}: {e}")
+            failed += 1
+
+    return {'backfilled': backfilled, 'failed': failed, 'source': str(src_mesh_root), 'used': True}
 
 
 def export_mesh_variants(graph: CustomNodeGraph, out_root: Path):
@@ -291,6 +343,13 @@ def run(input_model: Path, out_root: Path, robot_name: str, base_height: float):
 
     converted, failed = export_mesh_variants(graph, out_root)
 
+    # If key format folders are still sparse, synthesize exports from source meshes.
+    pre_stl = _count_mesh_files(out_root / 'stl' / 'meshes') + _count_mesh_files(out_root / 'stl')
+    pre_unity = _count_mesh_files(out_root / 'unity' / 'meshes') + _count_mesh_files(out_root / 'unity')
+    backfill_report = {'used': False, 'backfilled': 0, 'failed': 0, 'source': ''}
+    if pre_stl == 0 or pre_unity == 0:
+        backfill_report = _backfill_mesh_exports_from_source(input_model, out_root)
+
     copy_original_model_to_output_folders(input_model, out_root)
 
     print("\n=== Batch export summary ===")
@@ -299,6 +358,9 @@ def run(input_model: Path, out_root: Path, robot_name: str, base_height: float):
     print(f"Robot name  : {robot_name}")
     print(f"Meshes ok   : {converted}")
     print(f"Meshes fail : {failed}")
+    if backfill_report.get('used'):
+        print(f"Backfill ok : {backfill_report.get('backfilled', 0)} from {backfill_report.get('source')}")
+        print(f"Backfill fail: {backfill_report.get('failed', 0)}")
     print("Folders:")
     print(f"  - {out_root / 'stl'}")
     print(f"  - {out_root / 'dae'}")
