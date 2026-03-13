@@ -37,13 +37,23 @@ except ImportError:
     print("Warning: trimesh not available. COLLADA (.dae) support disabled.")
     print("Install with: pip install trimesh")
 
+# Import CoACD mesh processing tools for collision mesh generation
+try:
+    from mesh_tools.decompose import decompose as mesh_decompose
+    from mesh_tools.clean import clean as mesh_clean
+    COACD_AVAILABLE = True
+except ImportError:
+    COACD_AVAILABLE = False
+    print("Warning: mesh_tools/coacd not available. Collision mesh generation disabled.")
+    print("Install with: pip install coacd>=1.0.7")
+
 from PySide6.QtWidgets import (
     QApplication, QFileDialog, QMainWindow, QVBoxLayout, QWidget,
     QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout,
     QComboBox, QGroupBox, QScrollArea, QButtonGroup, QRadioButton, QSizePolicy,
-    QDoubleSpinBox
+    QDoubleSpinBox, QProgressBar
 )
-from PySide6.QtCore import QTimer, Qt, QObject, QRegularExpression
+from PySide6.QtCore import QTimer, Qt, QObject, QRegularExpression, QThread, Signal
 from PySide6.QtGui import QRegularExpressionValidator
 
 # Import URDF Kitchen utilities
@@ -201,6 +211,74 @@ class GlobalKeyEventFilter(QObject):
         return False
 
 
+class CollisionMeshWorker(QThread):
+    """Background worker for CoACD collision mesh generation."""
+    progress = Signal(int, str)  # (percentage, stage_message)
+    finished = Signal(dict)      # result_info dict on success
+    error = Signal(str)          # error message on failure
+
+    def __init__(self, input_path, do_clean, fix_normals, remove_dupes,
+                 threshold, max_hulls, resolution, merge):
+        super().__init__()
+        self.input_path = input_path
+        self.do_clean = do_clean
+        self.fix_normals = fix_normals
+        self.remove_dupes = remove_dupes
+        self.threshold = threshold
+        self.max_hulls = max_hulls
+        self.resolution = resolution
+        self.merge = merge
+
+    def run(self):
+        import tempfile
+        try:
+            decompose_input = self.input_path
+            clean_tmp = None
+
+            # Stage 1: Clean (0% -> 15%)
+            if self.do_clean:
+                self.progress.emit(5, "Cleaning mesh...")
+                clean_tmp = tempfile.NamedTemporaryFile(suffix=".stl", delete=False)
+                clean_tmp.close()
+                mesh_clean(
+                    self.input_path, clean_tmp.name,
+                    fix_normals=self.fix_normals,
+                    remove_duplicates=self.remove_dupes,
+                )
+                decompose_input = clean_tmp.name
+                self.progress.emit(15, "Cleaning complete")
+
+            # Stage 2: Decompose (15% -> 90%)
+            self.progress.emit(20, "Decomposing (CoACD)... this may take a moment")
+            out_tmp = tempfile.NamedTemporaryFile(suffix=".stl", delete=False)
+            out_tmp.close()
+            num_hulls, result_info = mesh_decompose(
+                decompose_input, out_tmp.name,
+                threshold=self.threshold,
+                max_hulls=self.max_hulls,
+                resolution=self.resolution,
+                merge=self.merge,
+            )
+            self.progress.emit(90, "Decomposition complete")
+
+            # Stage 3: Finalize (90% -> 100%)
+            self.progress.emit(95, "Finalizing...")
+            result_info['output_path'] = out_tmp.name
+            result_info['merge'] = self.merge
+
+            # Clean up temp clean file
+            if clean_tmp and os.path.exists(clean_tmp.name):
+                os.remove(clean_tmp.name)
+
+            self.progress.emit(100, "Done")
+            self.finished.emit(result_info)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error.emit(str(e))
+
+
 class MainWindow(VTKViewerBase, QMainWindow):
     def __init__(self):
         QMainWindow.__init__(self)
@@ -320,10 +398,18 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.collider_radius_length_active = False
         self.collider_rotation_active = False
 
+        # Collision mesh generator state
+        self.collision_mesh_actors = []  # VTK actors for collision hull overlay
+        self.collision_mesh_result = None  # Last decomposition result info
+        self.collision_mesh_generating = False  # Prevent double-clicks
+
         right_layout.addSpacing(10)
         self.setup_reorient_mesh_ui(right_layout)
         right_layout.addSpacing(10)
         self.setup_collider_ui(right_layout)
+
+        right_layout.addSpacing(10)
+        self.setup_collision_mesh_ui(right_layout)
 
         right_layout.addSpacing(10)
         self.setup_batch_converter_ui(right_layout)
@@ -439,6 +525,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 collider_xml_path = base_name + "_collider.xml"
                 if os.path.exists(collider_xml_path):
                     self._load_collider_from_path(collider_xml_path)
+                # Auto-load collision mesh from same directory (meshname_collision.stl or _hull files)
+                self._auto_load_collision_mesh(self.current_stl_path)
                 # Apply collider from Assembler (argv[2]) when launched from Inspector with URDF/MJCF import
                 if self.pending_collider_data:
                     self._apply_collider_from_dict(self.pending_collider_data)
@@ -871,6 +959,462 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         # Initialize parameter inputs for default type (box)
         self.update_collider_param_inputs()
+
+    def setup_collision_mesh_ui(self, layout):
+        """Setup Collision Mesh Generator UI (CoACD convex decomposition)"""
+        collision_group = QGroupBox("Collision Mesh Generator")
+        collision_layout = QVBoxLayout()
+        collision_layout.setSpacing(4)
+        collision_layout.setContentsMargins(8, 8, 8, 8)
+
+        if not COACD_AVAILABLE:
+            unavailable_label = QLabel("CoACD not installed. Run: pip install coacd>=1.0.7")
+            unavailable_label.setStyleSheet("color: #ff6666;")
+            unavailable_label.setWordWrap(True)
+            collision_layout.addWidget(unavailable_label)
+            collision_group.setLayout(collision_layout)
+            layout.addWidget(collision_group)
+            return
+
+        # Clean options row
+        clean_layout = QHBoxLayout()
+        clean_layout.setSpacing(4)
+        self.collision_clean_checkbox = QCheckBox("Clean before decompose")
+        self.collision_clean_checkbox.setChecked(True)
+        self.collision_clean_checkbox.setFocusPolicy(Qt.NoFocus)
+        clean_layout.addWidget(self.collision_clean_checkbox)
+        clean_layout.addStretch()
+        collision_layout.addLayout(clean_layout)
+
+        clean_opts_layout = QHBoxLayout()
+        clean_opts_layout.setSpacing(4)
+        clean_opts_layout.addSpacing(20)
+        self.collision_fix_normals = QCheckBox("Fix normals")
+        self.collision_fix_normals.setChecked(True)
+        self.collision_fix_normals.setFocusPolicy(Qt.NoFocus)
+        clean_opts_layout.addWidget(self.collision_fix_normals)
+        self.collision_remove_dupes = QCheckBox("Remove duplicates")
+        self.collision_remove_dupes.setChecked(True)
+        self.collision_remove_dupes.setFocusPolicy(Qt.NoFocus)
+        clean_opts_layout.addWidget(self.collision_remove_dupes)
+        clean_opts_layout.addStretch()
+        collision_layout.addLayout(clean_opts_layout)
+
+        collision_layout.addSpacing(4)
+
+        # Decomposition parameters
+        params_grid = QGridLayout()
+        params_grid.setHorizontalSpacing(8)
+        params_grid.setVerticalSpacing(4)
+
+        params_grid.addWidget(QLabel("Threshold:"), 0, 0)
+        self.collision_threshold = QDoubleSpinBox()
+        self.collision_threshold.setRange(0.01, 1.0)
+        self.collision_threshold.setSingleStep(0.01)
+        self.collision_threshold.setValue(0.05)
+        self.collision_threshold.setDecimals(2)
+        self.collision_threshold.setMaximumWidth(70)
+        self.collision_threshold.setFocusPolicy(Qt.ClickFocus)
+        params_grid.addWidget(self.collision_threshold, 0, 1)
+
+        params_grid.addWidget(QLabel("Max hulls:"), 0, 2)
+        self.collision_max_hulls = QLineEdit("-1")
+        self.collision_max_hulls.setMaximumWidth(50)
+        self.collision_max_hulls.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d+$')))
+        self.collision_max_hulls.setFocusPolicy(Qt.ClickFocus)
+        params_grid.addWidget(self.collision_max_hulls, 0, 3)
+
+        params_grid.addWidget(QLabel("Resolution:"), 1, 0)
+        self.collision_resolution = QLineEdit("2000")
+        self.collision_resolution.setMaximumWidth(70)
+        self.collision_resolution.setValidator(QRegularExpressionValidator(QRegularExpression(r'^\d+$')))
+        self.collision_resolution.setFocusPolicy(Qt.ClickFocus)
+        params_grid.addWidget(self.collision_resolution, 1, 1)
+
+        collision_layout.addLayout(params_grid)
+
+        collision_layout.addSpacing(4)
+
+        # Merge mode radio buttons
+        mode_layout = QHBoxLayout()
+        mode_layout.setSpacing(8)
+        self.collision_mode_group = QButtonGroup(self)
+        self.collision_merged_radio = QRadioButton("Merged (single file)")
+        self.collision_merged_radio.setChecked(True)
+        self.collision_merged_radio.setFocusPolicy(Qt.NoFocus)
+        self.collision_multihull_radio = QRadioButton("Multi-hull (per hull)")
+        self.collision_multihull_radio.setFocusPolicy(Qt.NoFocus)
+        self.collision_mode_group.addButton(self.collision_merged_radio)
+        self.collision_mode_group.addButton(self.collision_multihull_radio)
+        mode_layout.addWidget(self.collision_merged_radio)
+        mode_layout.addWidget(self.collision_multihull_radio)
+        mode_layout.addStretch()
+        collision_layout.addLayout(mode_layout)
+
+        collision_layout.addSpacing(6)
+
+        # Show overlay checkbox + buttons row
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(4)
+
+        self.collision_show_checkbox = QCheckBox("Show")
+        self.collision_show_checkbox.setChecked(True)
+        self.collision_show_checkbox.setFocusPolicy(Qt.NoFocus)
+        self.collision_show_checkbox.stateChanged.connect(self.on_collision_show_changed)
+        action_layout.addWidget(self.collision_show_checkbox)
+
+        action_layout.addSpacing(8)
+
+        generate_button = QPushButton("Generate")
+        generate_button.setFocusPolicy(Qt.NoFocus)
+        generate_button.clicked.connect(self.generate_collision_mesh)
+        generate_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        action_layout.addWidget(generate_button)
+
+        export_button = QPushButton("Export Collision Mesh")
+        export_button.setFocusPolicy(Qt.NoFocus)
+        export_button.clicked.connect(self.export_collision_mesh)
+        export_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        action_layout.addWidget(export_button)
+
+        collision_layout.addLayout(action_layout)
+
+        collision_layout.addSpacing(4)
+
+        # Progress bar
+        self.collision_progress_bar = QProgressBar()
+        self.collision_progress_bar.setRange(0, 100)
+        self.collision_progress_bar.setValue(0)
+        self.collision_progress_bar.setTextVisible(True)
+        self.collision_progress_bar.setFormat("%p%")
+        self.collision_progress_bar.setMaximumHeight(18)
+        self.collision_progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #555;
+                border-radius: 3px;
+                background-color: #2a2a2a;
+                text-align: center;
+                color: #cccccc;
+            }
+            QProgressBar::chunk {
+                background-color: #00aaff;
+                border-radius: 2px;
+            }
+        """)
+        self.collision_progress_bar.setVisible(False)
+        collision_layout.addWidget(self.collision_progress_bar)
+
+        # Status label
+        self.collision_status_label = QLabel("Status: Ready")
+        self.collision_status_label.setWordWrap(True)
+        self.collision_status_label.setStyleSheet("color: #aaaaaa;")
+        collision_layout.addWidget(self.collision_status_label)
+
+        collision_group.setLayout(collision_layout)
+        layout.addWidget(collision_group)
+
+    def generate_collision_mesh(self):
+        """Run CoACD convex decomposition on the currently loaded mesh (threaded)."""
+        if not COACD_AVAILABLE:
+            self.collision_status_label.setText("Status: CoACD not installed")
+            return
+        if not self.current_stl_path:
+            self.collision_status_label.setText("Status: No mesh loaded")
+            return
+        if self.collision_mesh_generating:
+            return
+
+        self.collision_mesh_generating = True
+
+        # Show progress bar and update status
+        self.collision_progress_bar.setVisible(True)
+        self.collision_progress_bar.setValue(0)
+        self.collision_status_label.setText("Status: Starting...")
+        self.collision_status_label.setStyleSheet("color: #ffcc00;")
+
+        # Read params from UI before launching thread
+        input_path = self.current_stl_path
+        threshold = self.collision_threshold.value()
+        max_hulls = int(self.collision_max_hulls.text() or "-1")
+        resolution = int(self.collision_resolution.text() or "2000")
+        merge = self.collision_merged_radio.isChecked()
+        do_clean = self.collision_clean_checkbox.isChecked()
+        fix_normals = self.collision_fix_normals.isChecked()
+        remove_dupes = self.collision_remove_dupes.isChecked()
+
+        # Create and start worker thread
+        self._collision_worker = CollisionMeshWorker(
+            input_path, do_clean, fix_normals, remove_dupes,
+            threshold, max_hulls, resolution, merge,
+        )
+        self._collision_worker.progress.connect(self._on_collision_progress)
+        self._collision_worker.finished.connect(self._on_collision_finished)
+        self._collision_worker.error.connect(self._on_collision_error)
+        self._collision_worker.start()
+
+    def _on_collision_progress(self, percentage, message):
+        """Handle progress updates from the worker thread."""
+        self.collision_progress_bar.setValue(percentage)
+        self.collision_status_label.setText(f"Status: {message}")
+
+    def _on_collision_finished(self, result_info):
+        """Handle successful completion from the worker thread."""
+        self.collision_mesh_result = result_info
+
+        # Update 3D preview
+        if self.collision_show_checkbox.isChecked():
+            self.update_collision_mesh_display()
+
+        # Update status
+        in_f = result_info['input_faces']
+        out_f = result_info['output_faces']
+        num_hulls = result_info['num_hulls']
+        reduction = (1 - out_f / in_f) * 100 if in_f > 0 else 0
+        self.collision_status_label.setText(
+            f"Status: {num_hulls} hull(s), {in_f:,} -> {out_f:,} faces ({reduction:.0f}% reduction)"
+        )
+        self.collision_status_label.setStyleSheet("color: #66ff66;")
+        self.collision_progress_bar.setValue(100)
+
+        # Hide progress bar after a short delay
+        QTimer.singleShot(2000, lambda: self.collision_progress_bar.setVisible(False))
+        self.collision_mesh_generating = False
+
+    def _on_collision_error(self, error_msg):
+        """Handle error from the worker thread."""
+        self.collision_status_label.setText(f"Status: Error - {error_msg}")
+        self.collision_status_label.setStyleSheet("color: #ff6666;")
+        self.collision_progress_bar.setVisible(False)
+        self.collision_mesh_generating = False
+
+    def update_collision_mesh_display(self):
+        """Show/update collision hull overlay in the 3D view."""
+        # Remove old collision mesh actors
+        self.remove_collision_mesh_actors()
+
+        if not self.collision_mesh_result or not self.collision_show_checkbox.isChecked():
+            self.render_to_image()
+            return
+
+        hull_meshes = self.collision_mesh_result.get('hull_meshes', [])
+        if not hull_meshes:
+            return
+
+        # Color palette for distinguishing hulls
+        hull_colors = [
+            (1.0, 0.4, 0.0),  # Orange
+            (0.0, 1.0, 0.5),  # Green
+            (0.4, 0.6, 1.0),  # Blue
+            (1.0, 1.0, 0.0),  # Yellow
+            (1.0, 0.0, 0.6),  # Pink
+            (0.0, 1.0, 1.0),  # Cyan
+            (0.8, 0.4, 1.0),  # Purple
+            (1.0, 0.7, 0.3),  # Gold
+        ]
+
+        for i, hull_tm in enumerate(hull_meshes):
+            color = hull_colors[i % len(hull_colors)]
+
+            # Convert trimesh to VTK polydata
+            points = vtk.vtkPoints()
+            for v in hull_tm.vertices:
+                points.InsertNextPoint(v[0], v[1], v[2])
+
+            triangles = vtk.vtkCellArray()
+            for f in hull_tm.faces:
+                triangle = vtk.vtkTriangle()
+                triangle.GetPointIds().SetId(0, int(f[0]))
+                triangle.GetPointIds().SetId(1, int(f[1]))
+                triangle.GetPointIds().SetId(2, int(f[2]))
+                triangles.InsertNextCell(triangle)
+
+            polydata = vtk.vtkPolyData()
+            polydata.SetPoints(points)
+            polydata.SetPolys(triangles)
+
+            # Wireframe actor
+            mapper_wire = vtk.vtkPolyDataMapper()
+            mapper_wire.SetInputData(polydata)
+            actor_wire = vtk.vtkActor()
+            actor_wire.SetMapper(mapper_wire)
+            actor_wire.GetProperty().SetColor(*color)
+            actor_wire.GetProperty().SetRepresentationToWireframe()
+            actor_wire.GetProperty().SetLineWidth(1.5)
+            self.renderer.AddActor(actor_wire)
+            self.collision_mesh_actors.append(actor_wire)
+
+            # Semi-transparent surface actor
+            mapper_surf = vtk.vtkPolyDataMapper()
+            mapper_surf.SetInputData(polydata)
+            actor_surf = vtk.vtkActor()
+            actor_surf.SetMapper(mapper_surf)
+            actor_surf.GetProperty().SetColor(*color)
+            actor_surf.GetProperty().SetOpacity(0.15)
+            self.renderer.AddActor(actor_surf)
+            self.collision_mesh_actors.append(actor_surf)
+
+        self.render_to_image()
+
+    def remove_collision_mesh_actors(self):
+        """Remove all collision mesh overlay actors from renderer."""
+        for actor in self.collision_mesh_actors:
+            self.renderer.RemoveActor(actor)
+        self.collision_mesh_actors = []
+
+    def _has_renderer(self):
+        """Check if the VTK renderer is available."""
+        return hasattr(self, 'renderer') and self.renderer is not None
+
+    def on_collision_show_changed(self, state):
+        """Toggle collision mesh overlay visibility."""
+        if not self._has_renderer():
+            return
+        if state:
+            if self.collision_mesh_result:
+                self.update_collision_mesh_display()
+        else:
+            self.remove_collision_mesh_actors()
+            self.render_to_image()
+
+    def _auto_load_collision_mesh(self, mesh_path):
+        """Auto-detect and load previously exported collision mesh(es) for the given mesh."""
+        if not COACD_AVAILABLE:
+            return
+
+        base_name = os.path.splitext(mesh_path)[0]
+        ext = os.path.splitext(mesh_path)[1]
+
+        # Check for multi-hull files first (meshname_collision_hull_000.stl, ...)
+        import glob
+        hull_pattern = base_name + "_collision_hull_*" + ext
+        hull_files = sorted(glob.glob(hull_pattern))
+
+        if hull_files:
+            # Multi-hull mode: load each hull as a trimesh
+            hull_meshes = []
+            total_faces = 0
+            total_verts = 0
+            for hull_path in hull_files:
+                hull_tm = trimesh.load(hull_path, force="mesh")
+                hull_meshes.append(hull_tm)
+                total_faces += int(hull_tm.faces.shape[0])
+                total_verts += int(hull_tm.vertices.shape[0])
+
+            # Load original mesh stats for comparison
+            original_mesh = trimesh.load(mesh_path, force="mesh")
+            input_faces = int(original_mesh.faces.shape[0])
+
+            self.collision_mesh_result = {
+                'num_hulls': len(hull_meshes),
+                'input_faces': input_faces,
+                'input_verts': int(original_mesh.vertices.shape[0]),
+                'output_faces': total_faces,
+                'output_verts': total_verts,
+                'hull_meshes': hull_meshes,
+                'merge': False,
+            }
+
+            # Switch UI to multi-hull mode
+            self.collision_multihull_radio.setChecked(True)
+
+            reduction = (1 - total_faces / input_faces) * 100 if input_faces > 0 else 0
+            self.collision_status_label.setText(
+                f"Status: Loaded {len(hull_meshes)} hull(s), {input_faces:,} -> {total_faces:,} faces ({reduction:.0f}% reduction)"
+            )
+            self.collision_status_label.setStyleSheet("color: #66ccff;")
+            print(f"Auto-loaded {len(hull_meshes)} collision hull files for {os.path.basename(mesh_path)}")
+
+            if self.collision_show_checkbox.isChecked() and self._has_renderer():
+                self.update_collision_mesh_display()
+            return
+
+        # Check for single merged file (meshname_collision.stl)
+        merged_path = base_name + "_collision" + ext
+        if os.path.exists(merged_path):
+            merged_tm = trimesh.load(merged_path, force="mesh")
+            original_mesh = trimesh.load(mesh_path, force="mesh")
+            input_faces = int(original_mesh.faces.shape[0])
+            output_faces = int(merged_tm.faces.shape[0])
+
+            self.collision_mesh_result = {
+                'num_hulls': 1,
+                'input_faces': input_faces,
+                'input_verts': int(original_mesh.vertices.shape[0]),
+                'output_faces': output_faces,
+                'output_verts': int(merged_tm.vertices.shape[0]),
+                'hull_meshes': [merged_tm],
+                'output_path': merged_path,
+                'merge': True,
+            }
+
+            # Switch UI to merged mode
+            self.collision_merged_radio.setChecked(True)
+
+            reduction = (1 - output_faces / input_faces) * 100 if input_faces > 0 else 0
+            self.collision_status_label.setText(
+                f"Status: Loaded collision mesh, {input_faces:,} -> {output_faces:,} faces ({reduction:.0f}% reduction)"
+            )
+            self.collision_status_label.setStyleSheet("color: #66ccff;")
+            print(f"Auto-loaded collision mesh: {os.path.basename(merged_path)}")
+
+            if self.collision_show_checkbox.isChecked() and self._has_renderer():
+                self.update_collision_mesh_display()
+
+    def export_collision_mesh(self):
+        """Export the generated collision mesh to file(s)."""
+        if not self.collision_mesh_result:
+            self.collision_status_label.setText("Status: Generate a collision mesh first")
+            self.collision_status_label.setStyleSheet("color: #ff6666;")
+            return
+
+        if not self.current_stl_path:
+            return
+
+        base_name = os.path.splitext(self.current_stl_path)[0]
+        merge = self.collision_mesh_result.get('merge', True)
+
+        if merge:
+            default_path = base_name + "_collision.stl"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Export Collision Mesh", default_path, "STL Files (*.stl)")
+            if not file_path:
+                return
+
+            # Copy from temp to user-chosen path
+            tmp_path = self.collision_mesh_result.get('output_path', '')
+            if os.path.exists(tmp_path):
+                import shutil
+                shutil.copy2(tmp_path, file_path)
+                # Clean up temp file after successful copy
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+                self.collision_mesh_result['output_path'] = file_path
+                self.collision_status_label.setText(f"Status: Exported -> {os.path.basename(file_path)}")
+                self.collision_status_label.setStyleSheet("color: #66ff66;")
+                print(f"Collision mesh exported to: {file_path}")
+            else:
+                self.collision_status_label.setText("Status: Temp file missing, regenerate first")
+                self.collision_status_label.setStyleSheet("color: #ff6666;")
+        else:
+            # Multi-hull: save each hull individually
+            default_dir = os.path.dirname(self.current_stl_path)
+            dir_path = QFileDialog.getExistingDirectory(
+                self, "Select Output Directory for Hull Files", default_dir)
+            if not dir_path:
+                return
+
+            mesh_base = os.path.splitext(os.path.basename(self.current_stl_path))[0]
+            hull_meshes = self.collision_mesh_result.get('hull_meshes', [])
+            for i, hull_tm in enumerate(hull_meshes):
+                hull_path = os.path.join(dir_path, f"{mesh_base}_collision_hull_{i:03d}.stl")
+                hull_tm.export(hull_path)
+
+            num = len(hull_meshes)
+            self.collision_status_label.setText(f"Status: Exported {num} hull files -> {os.path.basename(dir_path)}/")
+            self.collision_status_label.setStyleSheet("color: #66ff66;")
+            print(f"Exported {num} collision hull files to: {dir_path}")
 
     def setup_batch_converter_ui(self, layout):
         """Setup Batch Mesh Converter UI group box"""
@@ -2027,6 +2571,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 collider_xml_path = base_name + "_collider.xml"
                 if os.path.exists(collider_xml_path):
                     self._load_collider_from_path(collider_xml_path)
+                # Auto-load collision mesh from same directory (meshname_collision.stl or _hull files)
+                self._auto_load_collision_mesh(file_path)
                 # Initialize camera same as R key after loading (for accurate 90-degree rotation with WASD)
                 self.reset_camera()
 
