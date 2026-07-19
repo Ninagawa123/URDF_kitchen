@@ -206,6 +206,108 @@ def init_node_properties(node, graph=None):
     
     node.massless_decoration = False
     node.hide_mesh = False  # Default is mesh visible
+    node.is_imu_site = False  # If True, node exports as <site> for MuJoCo IMU sensor placement
+
+
+# IMU node visual: title strip = green, body = default gray (connection-aware)
+IMU_TITLE_COLOR = (70, 25, 110)
+
+
+def _apply_imu_body_color(node):
+    """Set the IMU node's body color to gray, respecting input-connection state."""
+    try:
+        has_input = False
+        for ip in node.input_ports():
+            if ip.connected_ports():
+                has_input = True
+                break
+        rgb = (45, 45, 45) if has_input else (74, 84, 85)
+        node.set_color(*rgb)
+    except Exception:
+        pass
+
+
+def _install_imu_paint(node):
+    """Monkey-patch the node view's _paint_horizontal so the title strip is green
+    while the body respects self.color (kept gray by _apply_imu_body_color).
+    """
+    view = getattr(node, 'view', None)
+    if view is None or getattr(view, '_imu_custom_paint', False):
+        return
+    try:
+        from NodeGraphQt.constants import NodeEnum
+        SELECTED_COLOR = NodeEnum.SELECTED_COLOR.value
+        SELECTED_BORDER_COLOR = NodeEnum.SELECTED_BORDER_COLOR.value
+    except Exception:
+        SELECTED_COLOR = (200, 200, 100, 100)
+        SELECTED_BORDER_COLOR = (200, 200, 100)
+
+    def _paint_horizontal(self, painter, option, widget):
+        painter.save()
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        margin = 1.0
+        rect = self.boundingRect()
+        rect = QtCore.QRectF(rect.left() + margin, rect.top() + margin,
+                             rect.width() - margin * 2, rect.height() - margin * 2)
+        radius = 4.0
+        # Body: uses self.color (gray)
+        painter.setBrush(QtGui.QColor(*self.color))
+        painter.drawRoundedRect(rect, radius, radius)
+        if self.selected:
+            painter.setBrush(QtGui.QColor(*SELECTED_COLOR))
+            painter.drawRoundedRect(rect, radius, radius)
+        # Title strip: green (replaces the default semi-transparent black overlay)
+        padding = (3.0, 2.0)
+        text_rect = self._text_item.boundingRect()
+        text_rect = QtCore.QRectF(text_rect.x() + padding[0],
+                                  rect.y() + padding[1],
+                                  rect.width() - padding[0] - margin,
+                                  text_rect.height() - padding[1] * 2)
+        if self.selected:
+            painter.setBrush(QtGui.QColor(*SELECTED_COLOR))
+        else:
+            painter.setBrush(QtGui.QColor(*IMU_TITLE_COLOR))
+        painter.drawRoundedRect(text_rect, 3.0, 3.0)
+        # Border
+        if self.selected:
+            border_width = 1.2
+            border_color = QtGui.QColor(*SELECTED_BORDER_COLOR)
+        else:
+            border_width = 0.8
+            border_color = QtGui.QColor(*self.border_color)
+        border_rect = QtCore.QRectF(rect.left(), rect.top(), rect.width(), rect.height())
+        pen = QtGui.QPen(border_color, border_width)
+        try:
+            pen.setCosmetic(self.viewer().get_zoom() < 0.0)
+        except Exception:
+            pass
+        path = QtGui.QPainterPath()
+        path.addRoundedRect(border_rect, radius, radius)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setPen(pen)
+        painter.drawPath(path)
+        painter.restore()
+
+    import types
+    view._paint_horizontal = types.MethodType(_paint_horizontal, view)
+    view._imu_custom_paint = True
+    view.update()
+
+
+def _uninstall_imu_paint(node):
+    """Restore the default _paint_horizontal on the view."""
+    view = getattr(node, 'view', None)
+    if view is None:
+        return
+    if '_paint_horizontal' in view.__dict__:
+        del view.__dict__['_paint_horizontal']
+    if hasattr(view, '_imu_custom_paint'):
+        try:
+            del view._imu_custom_paint
+        except Exception:
+            pass
+    view.update()
 
 def create_point_data(index):
     """Create point data"""
@@ -618,12 +720,20 @@ class InspectorWindow(QtWidgets.QWidget):
         self.hide_mesh_checkbox.setChecked(False)  # Default is off (visible)
         massless_layout.addWidget(self.hide_mesh_checkbox)
 
+        massless_layout.addSpacing(20)
+
+        # IMU SITE checkbox — turns the node into a MuJoCo <site> for IMU placement
+        self.imu_site_checkbox = QtWidgets.QCheckBox("IMU SITE")
+        self.imu_site_checkbox.setChecked(False)
+        massless_layout.addWidget(self.imu_site_checkbox)
+
         massless_layout.addStretch()  # Add margin on right
         content_layout.addLayout(massless_layout)
 
         # Connect checkbox state change handlers
         self.massless_checkbox.stateChanged.connect(self.update_massless_decoration)
         self.hide_mesh_checkbox.stateChanged.connect(self.update_hide_mesh)
+        self.imu_site_checkbox.stateChanged.connect(self.update_imu_site)
 
         # Physical Properties section (Volume and Mass in one row)
         physics_layout = QtWidgets.QHBoxLayout()
@@ -1620,7 +1730,7 @@ class InspectorWindow(QtWidgets.QWidget):
         # Set initial text
         if collider_data:
             if collider_data.get('type') == 'primitive':
-                data = collider_data.get('data', {})
+                data = collider_data.get('data') or {}
                 primitive_type = data.get('type', 'unknown').capitalize()
                 mesh_input.setText(f"Primitive {primitive_type}")
             elif collider_data.get('type') == 'mesh':
@@ -2344,6 +2454,15 @@ class InspectorWindow(QtWidgets.QWidget):
                 node.hide_mesh = False
                 self.hide_mesh_checkbox.setChecked(False)
 
+            # Set IMU SITE state
+            if hasattr(self, 'imu_site_checkbox'):
+                imu_val = getattr(node, 'is_imu_site', False)
+                self.imu_site_checkbox.blockSignals(True)
+                self.imu_site_checkbox.setChecked(bool(imu_val))
+                self.imu_site_checkbox.blockSignals(False)
+                if not hasattr(node, 'is_imu_site'):
+                    node.is_imu_site = False
+
             # Set Joint Limits (convert from Radian to Degree for display)
             # Skip if Slide joint (handled by _update_limit_labels_for_axis)
             rot_axis = getattr(node, 'rotation_axis', 0)
@@ -2539,7 +2658,7 @@ class InspectorWindow(QtWidgets.QWidget):
 
             # Update entire graph layout and reapply all transforms including point_angle
             if hasattr(self, 'graph') and self.graph:
-                self.graph.update_node_layout()
+                self.graph.recalculate_all_positions()
             elif self.stl_viewer:
                 # Render directly if graph is not accessible
                 self.stl_viewer.render_to_image()
@@ -4166,6 +4285,47 @@ class InspectorWindow(QtWidgets.QWidget):
                     # If hide=True, hide (VisibilityOff); if hide=False, show (VisibilityOn)
                     actor.SetVisibility(not hide)
                     self.stl_viewer.render_to_image()
+
+    def update_imu_site(self, state):
+        """Toggle IMU SITE flag. When enabled: rename node to IMU_SITE, drop all output ports,
+        and install a custom paint (green title strip + gray body).
+        """
+        if not self.current_node:
+            return
+        is_imu = bool(state)
+        self.current_node.is_imu_site = is_imu
+        DEFAULT_GRAPH_COLOR = (74, 84, 85)
+        if is_imu:
+            # Rename to IMU_SITE (uniqueness is enforced at MJCF export time)
+            try:
+                self.current_node.set_name("IMU_SITE")
+                if hasattr(self, 'name_edit'):
+                    self.name_edit.setText("IMU_SITE")
+            except Exception as e:
+                print(f"IMU SITE: failed to rename node: {e}")
+            # Remove all output ports (max ~64 as a safety cap)
+            try:
+                remaining = getattr(self.current_node, 'output_count', 0)
+                guard = 0
+                while remaining > 0 and guard < 64:
+                    before = remaining
+                    self.current_node.remove_output()
+                    remaining = getattr(self.current_node, 'output_count', 0)
+                    if remaining >= before:
+                        break  # remove_output is a no-op (e.g., BaseLinkNode)
+                    guard += 1
+            except Exception as e:
+                print(f"IMU SITE: failed to remove outputs: {e}")
+            # Apply IMU visual: gray body + green title strip
+            _apply_imu_body_color(self.current_node)
+            _install_imu_paint(self.current_node)
+        else:
+            # Restore default paint and default gray color
+            _uninstall_imu_paint(self.current_node)
+            try:
+                self.current_node.set_color(*DEFAULT_GRAPH_COLOR)
+            except Exception as e:
+                print(f"IMU SITE: failed to restore node color: {e}")
 
     def update_blanklink(self, state):
         """Update Blanklink state (for BaseLinkNode)"""
@@ -7547,7 +7707,8 @@ class STLViewerWidget(QtWidgets.QWidget):
                 # Primitive + node_transform primitive: pos/rot
                 if collider_type == 'primitive':
                     # Position/rotation: prefer top level, fallback to data (for URDF-imported colliders)
-                    collider_data = collider.get('data', {})
+                    # Use `or {}` so a stored data=None (unset collider) doesn't crash the .get() calls below.
+                    collider_data = collider.get('data') or {}
                     position = collider.get('position', collider_data.get('position', [0, 0, 0]))
                     rotation = collider.get('rotation', collider_data.get('rotation', [0, 0, 0]))  # degrees
 
@@ -10673,6 +10834,8 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(node_elem, "massless_decoration").text = str(node.massless_decoration)
         if hasattr(node, 'hide_mesh'):
             ET.SubElement(node_elem, "hide_mesh").text = str(node.hide_mesh)
+        if hasattr(node, 'is_imu_site'):
+            ET.SubElement(node_elem, "is_imu_site").text = str(node.is_imu_site)
         
         # Collider
         if hasattr(node, 'colliders') and node.colliders:
@@ -10681,8 +10844,11 @@ class CustomNodeGraph(NodeGraph):
                 collider_elem = ET.SubElement(colliders_elem, "collider")
                 
                 # Type
-                ET.SubElement(collider_elem, "type").text = collider.get('type') or 'primitive'
-                
+                # NOTE: Do not fall back to 'primitive' here for an unset collider
+                # (type=None, data=None) — that produced a saved <type>primitive</type>
+                # with no <data>, which crashed the inspector on reload.
+                ET.SubElement(collider_elem, "type").text = collider.get('type') or ''
+
                 # /
                 ET.SubElement(collider_elem, "enabled").text = str(collider.get('enabled', True))
                 
@@ -11334,7 +11500,14 @@ class CustomNodeGraph(NodeGraph):
             hide_mesh_elem = node_elem.find("hide_mesh")
             if hide_mesh_elem is not None:
                 node.hide_mesh = hide_mesh_elem.text.lower() == 'true'
-            
+
+            is_imu_site_elem = node_elem.find("is_imu_site")
+            if is_imu_site_elem is not None:
+                node.is_imu_site = is_imu_site_elem.text.lower() == 'true'
+                if node.is_imu_site:
+                    _apply_imu_body_color(node)
+                    _install_imu_paint(node)
+
             # Collider
             colliders_elem = node_elem.find("colliders")
             if colliders_elem is not None:
@@ -15470,6 +15643,10 @@ class CustomNodeGraph(NodeGraph):
         # Check if base_link_mjcf exists (for skipping intermediate nodes)
         base_link_mjcf_exists = self.get_node_by_name('base_link_mjcf') is not None
 
+        # Reset IMU site accumulator for this export
+        self._imu_sites = []
+        self._imu_site_names = set()
+
         with open(file_path, 'w') as f:
             # Todo
             sanitized_model_name = self._sanitize_name(model_name)
@@ -15653,7 +15830,13 @@ class CustomNodeGraph(NodeGraph):
 
             # sensor
             f.write('  <sensor>\n')
-            f.write('    <!-- Add sensors here if needed -->\n')
+            imu_sites = getattr(self, '_imu_sites', [])
+            if imu_sites:
+                for site_name in imu_sites:
+                    f.write(f'    <accelerometer name="{site_name}_accel" site="{site_name}"/>\n')
+                    f.write(f'    <gyro name="{site_name}_gyro" site="{site_name}"/>\n')
+            else:
+                f.write('    <!-- Add sensors here if needed -->\n')
             f.write('  </sensor>\n')
 
             f.write('</mujoco>\n')
@@ -16555,8 +16738,9 @@ class CustomNodeGraph(NodeGraph):
                 
                 collider_type = collider.get('type')
                 position = collider.get('position', [0, 0, 0])
-                
-                if collider_type == 'primitive' and 'data' in collider:
+
+                # Guard against data being None (unset collider) — `'data' in collider` alone would let None through
+                if collider_type == 'primitive' and collider.get('data'):
                     data = collider['data']
                     prim_type = data.get('type', 'box')
                     
@@ -16587,6 +16771,37 @@ class CustomNodeGraph(NodeGraph):
             min_z = -0.1  # NOTE
         
         return min_z
+
+    def _emit_imu_site(self, file, parent_node, port_index, indent_str):
+        """Write a <site> element for an IMU child into the parent's <body>.
+        Position + orientation come from parent's OUTPORT (points[port_index]).
+        Returns the assigned unique site name.
+        """
+        xyz = [0.0, 0.0, 0.0]
+        angle = [0.0, 0.0, 0.0]
+        if hasattr(parent_node, 'points') and port_index < len(parent_node.points):
+            pd = parent_node.points[port_index] or {}
+            xyz = pd.get('xyz', xyz)
+            angle = pd.get('angle', pd.get('rpy', angle))
+        # Uniquify name across the export
+        if not hasattr(self, '_imu_site_names'):
+            self._imu_site_names = set()
+        if not hasattr(self, '_imu_sites'):
+            self._imu_sites = []
+        site_name = "IMU_SITE"
+        counter = 1
+        while site_name in self._imu_site_names:
+            site_name = f"IMU_SITE_{counter}"
+            counter += 1
+        self._imu_site_names.add(site_name)
+        self._imu_sites.append(site_name)
+        file.write(
+            f'{indent_str}  <site name="{site_name}" '
+            f'pos="{xyz[0]} {xyz[1]} {xyz[2]}" '
+            f'euler="{angle[0]} {angle[1]} {angle[2]}" '
+            f'size="0.01" group="4"/>\n'
+        )
+        return site_name
 
     def _write_mjcf_body(self, file, node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent=2, joint_info=None, fix_base_to_ground=False, used_body_names=None, used_joint_names=None, is_root=False, rename_to_base_link=False):
         """MJCF bodytext
@@ -16755,6 +16970,12 @@ class CustomNodeGraph(NodeGraph):
                 for connected_port in port.connected_ports():
                     child_node = connected_port.node()
 
+                    # IMU SITE: emit a <site> in the parent's body and skip the rest
+                    if getattr(child_node, 'is_imu_site', False):
+                        port_index = list(node.output_ports()).index(port)
+                        self._emit_imu_site(file, node, port_index, indent_str)
+                        continue
+
                     # Massless <geom class visual > output massless decoration geom
                     if hasattr(child_node, 'massless_decoration') and child_node.massless_decoration:
                         if child_node in mesh_names:
@@ -16838,7 +17059,7 @@ class CustomNodeGraph(NodeGraph):
         # Joint output
         # Body pos parent offset joint pos 0 0 0 origin
         is_moving_body = False
-        if joint_info:
+        if joint_info and joint_info.get('type') != 'fixed':
             # Add joint
             original_joint_name = joint_info["name"]
             unique_joint_name = original_joint_name
@@ -17086,6 +17307,11 @@ class CustomNodeGraph(NodeGraph):
             for connected_port in port.connected_ports():
                 child_node = connected_port.node()
 
+                # IMU SITE: emit a <site> in the parent's body and skip the rest
+                if getattr(child_node, 'is_imu_site', False):
+                    self._emit_imu_site(file, node, port_index, indent_str)
+                    continue
+
                 # Massless if <geom class visual > skip massless decoration geom
                 if hasattr(child_node, 'massless_decoration') and child_node.massless_decoration:
                     if child_node in mesh_names:
@@ -17169,9 +17395,16 @@ class CustomNodeGraph(NodeGraph):
         elif rot_axis == 5:  # Slide
             joint_type = "slide"
 
-        # If none fixed none
+        # Fixed axis: no <joint> element is emitted, but the body still needs its
+        # pos/rpy from the parent's output point, so return that instead of None
+        # (previously this returned None, which also dropped the body's <pos>).
         if joint_type == "fixed":
-            return None
+            return {
+                'name': None,
+                'type': joint_type,
+                'pos': f"{joint_xyz[0]} {joint_xyz[1]} {joint_xyz[2]}",
+                'rpy': joint_rpy,
+            }
 
         # Generate joint name with axis suffix (roll/pitch/yaw based on rotation_axis)
         child_sanitized_name = self._sanitize_name(child_node.name())

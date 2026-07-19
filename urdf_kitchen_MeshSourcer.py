@@ -801,7 +801,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             sp.setKeyboardTracking(False)
             sp.setAlignment(Qt.AlignRight)
             sp.setMaximumWidth(60)
-            sp.setStyleSheet("color: white;")
+            sp.setStyleSheet("color: white; background-color: #3a3a3a;")
             sp.valueChanged.connect(self.on_mesh_apply_to_view_clicked)
             setattr(self, attr, sp)
             rpy_row.addWidget(lab)
