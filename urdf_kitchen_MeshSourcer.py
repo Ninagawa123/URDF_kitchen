@@ -51,9 +51,9 @@ from PySide6.QtWidgets import (
     QApplication, QFileDialog, QMainWindow, QVBoxLayout, QWidget,
     QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout,
     QComboBox, QGroupBox, QScrollArea, QButtonGroup, QRadioButton, QSizePolicy,
-    QDoubleSpinBox, QProgressBar
+    QDoubleSpinBox, QProgressBar, QDialog, QDialogButtonBox
 )
-from PySide6.QtCore import QTimer, Qt, QObject, QRegularExpression, QThread, Signal
+from PySide6.QtCore import QTimer, Qt, QObject, QRegularExpression, QThread, Signal, QSettings
 from PySide6.QtGui import QRegularExpressionValidator
 
 # Import URDF Kitchen utilities
@@ -402,6 +402,12 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.collision_mesh_actors = []  # VTK actors for collision hull overlay
         self.collision_mesh_result = None  # Last decomposition result info
         self.collision_mesh_generating = False  # Prevent double-clicks
+        # Hull selection / blink state
+        self._selected_collision_hulls = []  # up to 2 hull indices; anti-phase blink when 2 selected
+        self._collision_blink_timer = None
+        self._collision_blink_flag = False
+        self._click_press_pos = None  # distinguish click from drag on vtk_display
+        self._collision_hull_undo_stack = []  # list of hull_meshes snapshots for undo
 
         right_layout.addSpacing(10)
         self.setup_reorient_mesh_ui(right_layout)
@@ -721,10 +727,19 @@ class MainWindow(VTKViewerBase, QMainWindow):
         reorient_layout.setSpacing(4)  # Reduce vertical spacing
         reorient_layout.setContentsMargins(8, 8, 8, 8)  # Reduce margins
 
-        # Volume display
+        # Volume display + Show mesh checkbox on the right
+        volume_row = QHBoxLayout()
+        volume_row.setSpacing(4)
         self.volume_label = QLabel("Volume (m^3): 0.000000")
         self.volume_label.setMaximumWidth(380)  # Prevent horizontal expansion
-        reorient_layout.addWidget(self.volume_label)
+        volume_row.addWidget(self.volume_label)
+        volume_row.addStretch()
+        self.mesh_show_checkbox = QCheckBox("Show")
+        self.mesh_show_checkbox.setChecked(True)
+        self.mesh_show_checkbox.setFocusPolicy(Qt.NoFocus)
+        self.mesh_show_checkbox.stateChanged.connect(self.on_mesh_show_changed)
+        volume_row.addWidget(self.mesh_show_checkbox)
+        reorient_layout.addLayout(volume_row)
         
         # Width and Height display (horizontal layout)
         dimensions_layout = QHBoxLayout()
@@ -821,8 +836,52 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         reorient_layout.addLayout(button_layout)
 
-        reorient_group.setLayout(reorient_layout)
+        self._make_group_collapsible(
+            reorient_group, reorient_layout,
+            "collapsed_origin_coordinates", default_collapsed=False,
+        )
         layout.addWidget(reorient_group)
+
+    def _make_group_collapsible(self, group_box, inner_layout, settings_key, default_collapsed=True):
+        """Make a QGroupBox collapsible: click title to toggle, state persisted via QSettings."""
+        content_widget = QWidget()
+        content_widget.setLayout(inner_layout)
+
+        outer_layout = QVBoxLayout()
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+        outer_layout.addWidget(content_widget)
+        group_box.setLayout(outer_layout)
+
+        original_title = group_box.title()
+
+        # Checkable groupbox: title becomes clickable. Hide the indicator so only the arrow prefix shows.
+        group_box.setCheckable(True)
+        group_box.setStyleSheet(
+            "QGroupBox::indicator { width: 0px; height: 0px; margin: 0px; padding: 0px; }"
+        )
+
+        if not hasattr(self, "_collapsible_settings"):
+            self._collapsible_settings = QSettings("urdf_kitchen", "MeshSourcer")
+        settings = self._collapsible_settings
+        collapsed = settings.value(settings_key, default_collapsed, type=bool)
+
+        def apply_state(is_collapsed):
+            content_widget.setVisible(not is_collapsed)
+            arrow = "▶" if is_collapsed else "▼"
+            group_box.setTitle(f"{arrow} {original_title}")
+
+        group_box.blockSignals(True)
+        group_box.setChecked(not collapsed)
+        group_box.blockSignals(False)
+        apply_state(collapsed)
+
+        def on_toggled(checked):
+            is_collapsed = not checked
+            apply_state(is_collapsed)
+            settings.setValue(settings_key, is_collapsed)
+
+        group_box.toggled.connect(on_toggled)
 
     def setup_collider_ui(self, layout):
         """Setup collider design UI"""
@@ -954,7 +1013,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
         collider_layout.addLayout(button_layout)
 
-        collider_group.setLayout(collider_layout)
+        self._make_group_collapsible(
+            collider_group, collider_layout,
+            "collapsed_collider_design", default_collapsed=False,
+        )
         layout.addWidget(collider_group)
 
         # Initialize parameter inputs for default type (box)
@@ -972,6 +1034,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
             unavailable_label.setStyleSheet("color: #ff6666;")
             unavailable_label.setWordWrap(True)
             collision_layout.addWidget(unavailable_label)
+            # Keep the error message visible: don't collapse this case.
             collision_group.setLayout(collision_layout)
             layout.addWidget(collision_group)
             return
@@ -993,6 +1056,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.collision_fix_normals.setChecked(True)
         self.collision_fix_normals.setFocusPolicy(Qt.NoFocus)
         clean_opts_layout.addWidget(self.collision_fix_normals)
+        clean_opts_layout.addSpacing(20)
         self.collision_remove_dupes = QCheckBox("Remove duplicates")
         self.collision_remove_dupes.setChecked(True)
         self.collision_remove_dupes.setFocusPolicy(Qt.NoFocus)
@@ -1042,8 +1106,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.collision_merged_radio = QRadioButton("Merged (single file)")
         self.collision_merged_radio.setChecked(True)
         self.collision_merged_radio.setFocusPolicy(Qt.NoFocus)
+        self.collision_merged_radio.setStyleSheet("QRadioButton { color: white; }")
         self.collision_multihull_radio = QRadioButton("Multi-hull (per hull)")
         self.collision_multihull_radio.setFocusPolicy(Qt.NoFocus)
+        self.collision_multihull_radio.setStyleSheet("QRadioButton { color: white; }")
         self.collision_mode_group.addButton(self.collision_merged_radio)
         self.collision_mode_group.addButton(self.collision_multihull_radio)
         mode_layout.addWidget(self.collision_merged_radio)
@@ -1110,7 +1176,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
         self.collision_status_label.setStyleSheet("color: #aaaaaa;")
         collision_layout.addWidget(self.collision_status_label)
 
-        collision_group.setLayout(collision_layout)
+        self._make_group_collapsible(
+            collision_group, collision_layout,
+            "collapsed_collision_mesh_generator", default_collapsed=True,
+        )
         layout.addWidget(collision_group)
 
     def generate_collision_mesh(self):
@@ -1160,6 +1229,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
     def _on_collision_finished(self, result_info):
         """Handle successful completion from the worker thread."""
         self.collision_mesh_result = result_info
+        # New decomposition invalidates any previous delete/undo history.
+        self._collision_hull_undo_stack.clear()
 
         # Update 3D preview
         if self.collision_show_checkbox.isChecked():
@@ -1257,13 +1328,221 @@ class MainWindow(VTKViewerBase, QMainWindow):
 
     def remove_collision_mesh_actors(self):
         """Remove all collision mesh overlay actors from renderer."""
+        # Stop blink if a hull was selected — actors are about to be removed.
+        if self._collision_blink_timer is not None:
+            self._collision_blink_timer.stop()
+        self._selected_collision_hulls = []
         for actor in self.collision_mesh_actors:
             self.renderer.RemoveActor(actor)
         self.collision_mesh_actors = []
 
+    def _handle_vtk_click(self, x, y, shift=False):
+        """Pick a collision hull at (x, y) in vtk_display coords.
+        shift=True → toggle-add to selection (up to 2 hulls).
+        shift=False → replace selection with the picked hull, or clear if nothing hit.
+        """
+        if not self.collision_mesh_actors:
+            if not shift:
+                self._deselect_all_collision_hulls()
+            return
+        try:
+            height = self.render_window.GetSize()[1]
+        except Exception:
+            return
+        picker = vtk.vtkPropPicker()
+        picker.InitializePickList()
+        picker.SetPickFromList(1)
+        for actor in self.collision_mesh_actors:
+            picker.AddPickList(actor)
+        # Qt Y is top-origin; VTK Y is bottom-origin
+        picker.Pick(x, height - y, 0, self.renderer)
+        picked = picker.GetActor()
+        if picked is None:
+            if not shift:
+                self._deselect_all_collision_hulls()
+            return
+        hull_idx = None
+        for i, actor in enumerate(self.collision_mesh_actors):
+            if actor is picked:
+                hull_idx = i // 2  # pairs of (wireframe, surface)
+                break
+        if hull_idx is None:
+            if not shift:
+                self._deselect_all_collision_hulls()
+            return
+        if shift:
+            self._toggle_collision_hull_selection(hull_idx)
+        else:
+            self._set_single_collision_hull_selection(hull_idx)
+
+    def _set_single_collision_hull_selection(self, hull_idx):
+        """Replace current selection with a single hull and start blinking."""
+        if self._selected_collision_hulls == [hull_idx]:
+            return
+        # Restore previous colors by rebuilding overlay first
+        if self._selected_collision_hulls:
+            self._selected_collision_hulls = []
+            self.update_collision_mesh_display()
+        self._selected_collision_hulls = [hull_idx]
+        self._start_collision_blink()
+
+    def _toggle_collision_hull_selection(self, hull_idx):
+        """Shift-click: toggle a hull in the current selection (max 2)."""
+        if hull_idx in self._selected_collision_hulls:
+            # Deselect this one
+            self._selected_collision_hulls.remove(hull_idx)
+            # Rebuild overlay to restore colors before re-applying blink for the remaining one
+            remaining = list(self._selected_collision_hulls)
+            self._selected_collision_hulls = []
+            self.update_collision_mesh_display()
+            if remaining:
+                self._selected_collision_hulls = remaining
+                self._start_collision_blink()
+            else:
+                if self._collision_blink_timer is not None:
+                    self._collision_blink_timer.stop()
+            return
+        if len(self._selected_collision_hulls) >= 2:
+            return  # Cap at 2; user must deselect one first
+        self._selected_collision_hulls.append(hull_idx)
+        self._start_collision_blink()
+
+    def _deselect_all_collision_hulls(self):
+        """Cancel all selection and restore original palette colors."""
+        if not self._selected_collision_hulls:
+            return
+        if self._collision_blink_timer is not None:
+            self._collision_blink_timer.stop()
+        self._selected_collision_hulls = []
+        self.update_collision_mesh_display()
+
+    def _start_collision_blink(self):
+        """(Re)start the blink timer and apply immediately."""
+        self._collision_blink_flag = False
+        self._apply_collision_blink()
+        if self._collision_blink_timer is None:
+            self._collision_blink_timer = QTimer(self)
+            self._collision_blink_timer.timeout.connect(self._on_collision_blink_tick)
+        self._collision_blink_timer.start(250)
+
+    def _on_collision_blink_tick(self):
+        if not self._selected_collision_hulls:
+            return
+        self._collision_blink_flag = not self._collision_blink_flag
+        self._apply_collision_blink()
+
+    def _apply_collision_blink(self):
+        if not self._selected_collision_hulls:
+            return
+        red = (1.0, 0.15, 0.15)
+        blue = (0.15, 0.55, 1.0)
+        for i, idx in enumerate(self._selected_collision_hulls):
+            wire_idx = idx * 2
+            surf_idx = idx * 2 + 1
+            if surf_idx >= len(self.collision_mesh_actors):
+                continue
+            # Anti-phase: 2nd selected hull uses the opposite color
+            flag = self._collision_blink_flag if i == 0 else not self._collision_blink_flag
+            color = blue if flag else red
+            self.collision_mesh_actors[wire_idx].GetProperty().SetColor(*color)
+            self.collision_mesh_actors[wire_idx].GetProperty().SetLineWidth(3.0)
+            self.collision_mesh_actors[surf_idx].GetProperty().SetColor(*color)
+            self.collision_mesh_actors[surf_idx].GetProperty().SetOpacity(0.35)
+        self.render_to_image()
+
+    def _delete_selected_collision_hulls(self):
+        """Remove all currently selected hulls from the decomposition result."""
+        if not self._selected_collision_hulls or self.collision_mesh_result is None:
+            return
+        hulls = self.collision_mesh_result.get('hull_meshes', [])
+        # Snapshot for undo (shallow copy of list; hull refs unchanged)
+        self._collision_hull_undo_stack.append(list(hulls))
+        for idx in sorted(self._selected_collision_hulls, reverse=True):
+            if 0 <= idx < len(hulls):
+                hulls.pop(idx)
+        if self._collision_blink_timer is not None:
+            self._collision_blink_timer.stop()
+        self._selected_collision_hulls = []
+        self._refresh_collision_status_label()
+        self.update_collision_mesh_display()
+
+    def _merge_selected_collision_hulls(self):
+        """Merge the 2 selected hulls into a single convex hull spanning both point sets."""
+        if len(self._selected_collision_hulls) != 2 or self.collision_mesh_result is None:
+            return
+        hulls = self.collision_mesh_result.get('hull_meshes', [])
+        a, b = sorted(self._selected_collision_hulls)
+        if not (0 <= a < b < len(hulls)):
+            return
+        try:
+            import trimesh
+        except ImportError:
+            print("Merge failed: trimesh not available")
+            return
+        combined = np.vstack([np.asarray(hulls[a].vertices),
+                              np.asarray(hulls[b].vertices)])
+        try:
+            merged = trimesh.PointCloud(combined).convex_hull
+        except Exception as e:
+            print(f"Merge failed: {e}")
+            return
+        # Snapshot for undo before mutating
+        self._collision_hull_undo_stack.append(list(hulls))
+        # Remove b (higher index) first, then a, insert merged at a
+        hulls.pop(b)
+        hulls.pop(a)
+        hulls.insert(a, merged)
+        if self._collision_blink_timer is not None:
+            self._collision_blink_timer.stop()
+        self._selected_collision_hulls = []
+        self._refresh_collision_status_label()
+        self.update_collision_mesh_display()
+
+    def _undo_last_hull_action(self):
+        """Restore hull_meshes to the most recent snapshot."""
+        if not self._collision_hull_undo_stack or self.collision_mesh_result is None:
+            return
+        snapshot = self._collision_hull_undo_stack.pop()
+        # Replace list contents in place to preserve any external references
+        hulls = self.collision_mesh_result.get('hull_meshes', [])
+        hulls.clear()
+        hulls.extend(snapshot)
+        if self._collision_blink_timer is not None:
+            self._collision_blink_timer.stop()
+        self._selected_collision_hulls = []
+        self._refresh_collision_status_label()
+        self.update_collision_mesh_display()
+
+    def _refresh_collision_status_label(self):
+        """Recompute totals and refresh the collision status label."""
+        if self.collision_mesh_result is None:
+            return
+        try:
+            hulls = self.collision_mesh_result.get('hull_meshes', [])
+            total_v = sum(len(h.vertices) for h in hulls)
+            total_f = sum(len(h.faces) for h in hulls)
+            self.collision_mesh_result['num_hulls'] = len(hulls)
+            self.collision_mesh_result['total_vertices'] = total_v
+            self.collision_mesh_result['total_faces'] = total_f
+            if hasattr(self, 'collision_status_label'):
+                self.collision_status_label.setText(
+                    f"Status: {len(hulls)} hull(s), {total_v:,} → {total_f:,} faces"
+                )
+        except Exception:
+            pass
+
     def _has_renderer(self):
         """Check if the VTK renderer is available."""
         return hasattr(self, 'renderer') and self.renderer is not None
+
+    def on_mesh_show_changed(self, state):
+        """Toggle STL mesh visibility in the 3D view."""
+        if not self._has_renderer():
+            return
+        if self.stl_actor is None:
+            return
+        self.stl_actor.SetVisibility(1 if state else 0)
+        self.render_to_image()
 
     def on_collision_show_changed(self, state):
         """Toggle collision mesh overlay visibility."""
@@ -1313,6 +1592,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 'hull_meshes': hull_meshes,
                 'merge': False,
             }
+            self._collision_hull_undo_stack.clear()
 
             # Switch UI to multi-hull mode
             self.collision_multihull_radio.setChecked(True)
@@ -1346,6 +1626,7 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 'output_path': merged_path,
                 'merge': True,
             }
+            self._collision_hull_undo_stack.clear()
 
             # Switch UI to merged mode
             self.collision_merged_radio.setChecked(True)
@@ -1360,6 +1641,36 @@ class MainWindow(VTKViewerBase, QMainWindow):
             if self.collision_show_checkbox.isChecked() and self._has_renderer():
                 self.update_collision_mesh_display()
 
+    def _ask_collision_export_format(self):
+        """Modal dialog: choose STL or OBJ. Returns 'stl' | 'obj' | None (cancelled)."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Export Collision Mesh")
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("Select output format:"))
+
+        row = QHBoxLayout()
+        group = QButtonGroup(dlg)
+        obj_radio = QRadioButton(".obj")
+        stl_radio = QRadioButton(".stl")
+        obj_radio.setStyleSheet("QRadioButton { color: white; }")
+        stl_radio.setStyleSheet("QRadioButton { color: white; }")
+        obj_radio.setChecked(True)  # Default: OBJ
+        group.addButton(obj_radio)
+        group.addButton(stl_radio)
+        row.addWidget(obj_radio)
+        row.addWidget(stl_radio)
+        row.addStretch()
+        v.addLayout(row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dlg)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        v.addWidget(buttons)
+
+        if dlg.exec() != QDialog.Accepted:
+            return None
+        return "obj" if obj_radio.isChecked() else "stl"
+
     def export_collision_mesh(self):
         """Export the generated collision mesh to file(s)."""
         if not self.collision_mesh_result:
@@ -1370,33 +1681,61 @@ class MainWindow(VTKViewerBase, QMainWindow):
         if not self.current_stl_path:
             return
 
+        fmt = self._ask_collision_export_format()
+        if fmt is None:
+            return
+        ext = "." + fmt
+
         base_name = os.path.splitext(self.current_stl_path)[0]
         merge = self.collision_mesh_result.get('merge', True)
+        hull_meshes = self.collision_mesh_result.get('hull_meshes', [])
+
+        if not hull_meshes:
+            self.collision_status_label.setText("Status: No hulls to export")
+            self.collision_status_label.setStyleSheet("color: #ff6666;")
+            return
+
+        try:
+            import trimesh
+        except ImportError:
+            self.collision_status_label.setText("Status: trimesh not available")
+            self.collision_status_label.setStyleSheet("color: #ff6666;")
+            return
 
         if merge:
-            default_path = base_name + "_collision.stl"
+            default_path = base_name + "_collision" + ext
+            file_filter = f"{fmt.upper()} Files (*{ext})"
             file_path, _ = QFileDialog.getSaveFileName(
-                self, "Export Collision Mesh", default_path, "STL Files (*.stl)")
+                self, "Export Collision Mesh", default_path, file_filter)
             if not file_path:
                 return
+            if not file_path.lower().endswith(ext):
+                file_path += ext
 
-            # Copy from temp to user-chosen path
+            # Combine current hull_meshes (reflects any deletes/merges by the user)
+            try:
+                if len(hull_meshes) == 1:
+                    combined = hull_meshes[0]
+                else:
+                    combined = trimesh.util.concatenate(hull_meshes)
+                combined.export(file_path)
+            except Exception as e:
+                self.collision_status_label.setText(f"Status: Export failed: {e}")
+                self.collision_status_label.setStyleSheet("color: #ff6666;")
+                print(f"Collision mesh export failed: {e}")
+                return
+
+            # Clean up the CoACD temp file if it still exists (no longer authoritative)
             tmp_path = self.collision_mesh_result.get('output_path', '')
-            if os.path.exists(tmp_path):
-                import shutil
-                shutil.copy2(tmp_path, file_path)
-                # Clean up temp file after successful copy
+            if tmp_path and os.path.exists(tmp_path) and tmp_path != file_path:
                 try:
                     os.remove(tmp_path)
                 except OSError:
                     pass
-                self.collision_mesh_result['output_path'] = file_path
-                self.collision_status_label.setText(f"Status: Exported -> {os.path.basename(file_path)}")
-                self.collision_status_label.setStyleSheet("color: #66ff66;")
-                print(f"Collision mesh exported to: {file_path}")
-            else:
-                self.collision_status_label.setText("Status: Temp file missing, regenerate first")
-                self.collision_status_label.setStyleSheet("color: #ff6666;")
+            self.collision_mesh_result['output_path'] = file_path
+            self.collision_status_label.setText(f"Status: Exported -> {os.path.basename(file_path)}")
+            self.collision_status_label.setStyleSheet("color: #66ff66;")
+            print(f"Collision mesh exported to: {file_path}")
         else:
             # Multi-hull: save each hull individually
             default_dir = os.path.dirname(self.current_stl_path)
@@ -1406,15 +1745,14 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 return
 
             mesh_base = os.path.splitext(os.path.basename(self.current_stl_path))[0]
-            hull_meshes = self.collision_mesh_result.get('hull_meshes', [])
             for i, hull_tm in enumerate(hull_meshes):
-                hull_path = os.path.join(dir_path, f"{mesh_base}_collision_hull_{i:03d}.stl")
+                hull_path = os.path.join(dir_path, f"{mesh_base}_collision_hull_{i:03d}{ext}")
                 hull_tm.export(hull_path)
 
             num = len(hull_meshes)
             self.collision_status_label.setText(f"Status: Exported {num} hull files -> {os.path.basename(dir_path)}/")
             self.collision_status_label.setStyleSheet("color: #66ff66;")
-            print(f"Exported {num} collision hull files to: {dir_path}")
+            print(f"Exported {num} collision hull files ({ext}) to: {dir_path}")
 
     def setup_batch_converter_ui(self, layout):
         """Setup Batch Mesh Converter UI group box"""
@@ -1501,7 +1839,10 @@ class MainWindow(VTKViewerBase, QMainWindow):
         convert_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
         converter_layout.addWidget(convert_button)
 
-        converter_group.setLayout(converter_layout)
+        self._make_group_collapsible(
+            converter_group, converter_layout,
+            "collapsed_batch_mesh_converter", default_collapsed=True,
+        )
         layout.addWidget(converter_group)
 
     def clean_polydata(self, polydata):
@@ -3662,6 +4003,27 @@ class MainWindow(VTKViewerBase, QMainWindow):
         shift_pressed = modifiers & Qt.ShiftModifier
         ctrl_pressed = modifiers & Qt.ControlModifier
 
+        # Delete key: remove currently selected collision hull segment(s)
+        if key in (Qt.Key_Delete, Qt.Key_Backspace) and self._selected_collision_hulls:
+            self._delete_selected_collision_hulls()
+            event.accept()
+            return
+
+        # Ctrl+M / Cmd+M: merge the 2 selected hulls into one convex hull
+        if key == Qt.Key_M and (modifiers & Qt.ControlModifier or modifiers & Qt.MetaModifier):
+            if len(self._selected_collision_hulls) == 2:
+                self._merge_selected_collision_hulls()
+                event.accept()
+                return
+
+        # Ctrl+Z / Cmd+Z: undo last collision hull action (delete or merge)
+        # On macOS, Cmd maps to ControlModifier by default; also accept MetaModifier for safety.
+        if key == Qt.Key_Z and (modifiers & Qt.ControlModifier or modifiers & Qt.MetaModifier):
+            if self._collision_hull_undo_stack:
+                self._undo_last_hull_action()
+                event.accept()
+                return
+
         # Tab key: cycle through Position, Size/Radius, Rotation checkboxes
         if key == Qt.Key_Tab:
             event.accept()
@@ -4003,6 +4365,8 @@ class MainWindow(VTKViewerBase, QMainWindow):
                         self.vtk_display.setFocus()
                         self.mouse_pressed = True
                         self.last_mouse_pos = event.position().toPoint()
+                        # Remember press position to distinguish click from drag on release
+                        self._click_press_pos = event.position().toPoint()
                         # CRITICAL: Grab mouse to receive events even outside widget
                         self.vtk_display.grabMouse()
                         return True
@@ -4018,6 +4382,16 @@ class MainWindow(VTKViewerBase, QMainWindow):
                 if isinstance(event, QMouseEvent):
                     # Release on left button stops rotation
                     if event.button() == QtCore.LeftButton:
+                        # Detect click (no significant movement) for hull selection
+                        click_pos = self._click_press_pos
+                        self._click_press_pos = None
+                        if click_pos is not None:
+                            release_pos = event.position().toPoint()
+                            dx = release_pos.x() - click_pos.x()
+                            dy = release_pos.y() - click_pos.y()
+                            if abs(dx) <= 3 and abs(dy) <= 3:
+                                shift = bool(event.modifiers() & Qt.ShiftModifier)
+                                self._handle_vtk_click(click_pos.x(), click_pos.y(), shift=shift)
                         self.mouse_pressed = False
                         self.last_mouse_pos = None
                         # CRITICAL: Release mouse grab
