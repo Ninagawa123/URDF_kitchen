@@ -42,6 +42,14 @@ import json
 import numpy as np
 import trimesh
 import math
+from typing import Any
+
+try:
+    from Robot_Label_Bridge import ConversionStatus, NameConverter, is_preserved_link
+    _ROBOT_LABEL_BRIDGE_AVAILABLE = True
+except ImportError:
+    _ROBOT_LABEL_BRIDGE_AVAILABLE = False
+    ConversionStatus = NameConverter = is_preserved_link = None  # type: ignore
 
 # Import URDF Kitchen utilities for M4 Mac compatibility
 from urdf_kitchen_utils import (
@@ -207,10 +215,14 @@ def init_node_properties(node, graph=None):
     node.massless_decoration = False
     node.hide_mesh = False  # Default is mesh visible
     node.is_imu_site = False  # If True, node exports as <site> for MuJoCo IMU sensor placement
+    node.is_camera_node = False  # If True, node exports as <camera> for MuJoCo camera placement
 
 
 # IMU node visual: title strip = green, body = default gray (connection-aware)
 IMU_TITLE_COLOR = (70, 25, 110)
+
+# Camera node visual: title strip = deep orange, body = default gray (connection-aware)
+CAMERA_TITLE_COLOR = (200, 80, 0)
 
 
 def _apply_imu_body_color(node):
@@ -308,6 +320,101 @@ def _uninstall_imu_paint(node):
         except Exception:
             pass
     view.update()
+
+
+def _apply_camera_body_color(node):
+    """Set the camera node's body color to gray, respecting input-connection state."""
+    try:
+        has_input = False
+        for ip in node.input_ports():
+            if ip.connected_ports():
+                has_input = True
+                break
+        rgb = (45, 45, 45) if has_input else (74, 84, 85)
+        node.set_color(*rgb)
+    except Exception:
+        pass
+
+
+def _install_camera_paint(node):
+    """Monkey-patch the node view's _paint_horizontal so the title strip is deep orange
+    while the body respects self.color (kept gray by _apply_camera_body_color).
+    """
+    view = getattr(node, 'view', None)
+    if view is None or getattr(view, '_camera_custom_paint', False):
+        return
+    try:
+        from NodeGraphQt.constants import NodeEnum
+        SELECTED_COLOR = NodeEnum.SELECTED_COLOR.value
+        SELECTED_BORDER_COLOR = NodeEnum.SELECTED_BORDER_COLOR.value
+    except Exception:
+        SELECTED_COLOR = (200, 200, 100, 100)
+        SELECTED_BORDER_COLOR = (200, 200, 100)
+
+    def _paint_horizontal(self, painter, option, widget):
+        painter.save()
+        painter.setPen(QtCore.Qt.NoPen)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        margin = 1.0
+        rect = self.boundingRect()
+        rect = QtCore.QRectF(rect.left() + margin, rect.top() + margin,
+                             rect.width() - margin * 2, rect.height() - margin * 2)
+        radius = 4.0
+        painter.setBrush(QtGui.QColor(*self.color))
+        painter.drawRoundedRect(rect, radius, radius)
+        if self.selected:
+            painter.setBrush(QtGui.QColor(*SELECTED_COLOR))
+            painter.drawRoundedRect(rect, radius, radius)
+        padding = (3.0, 2.0)
+        text_rect = self._text_item.boundingRect()
+        text_rect = QtCore.QRectF(text_rect.x() + padding[0],
+                                  rect.y() + padding[1],
+                                  rect.width() - padding[0] - margin,
+                                  text_rect.height() - padding[1] * 2)
+        if self.selected:
+            painter.setBrush(QtGui.QColor(*SELECTED_COLOR))
+        else:
+            painter.setBrush(QtGui.QColor(*CAMERA_TITLE_COLOR))
+        painter.drawRoundedRect(text_rect, 3.0, 3.0)
+        if self.selected:
+            border_width = 1.2
+            border_color = QtGui.QColor(*SELECTED_BORDER_COLOR)
+        else:
+            border_width = 0.8
+            border_color = QtGui.QColor(*self.border_color)
+        border_rect = QtCore.QRectF(rect.left(), rect.top(), rect.width(), rect.height())
+        pen = QtGui.QPen(border_color, border_width)
+        try:
+            pen.setCosmetic(self.viewer().get_zoom() < 0.0)
+        except Exception:
+            pass
+        path = QtGui.QPainterPath()
+        path.addRoundedRect(border_rect, radius, radius)
+        painter.setBrush(QtCore.Qt.NoBrush)
+        painter.setPen(pen)
+        painter.drawPath(path)
+        painter.restore()
+
+    import types
+    view._paint_horizontal = types.MethodType(_paint_horizontal, view)
+    view._camera_custom_paint = True
+    view.update()
+
+
+def _uninstall_camera_paint(node):
+    """Restore the default _paint_horizontal on the view."""
+    view = getattr(node, 'view', None)
+    if view is None:
+        return
+    if '_paint_horizontal' in view.__dict__:
+        del view.__dict__['_paint_horizontal']
+    if hasattr(view, '_camera_custom_paint'):
+        try:
+            del view._camera_custom_paint
+        except Exception:
+            pass
+    view.update()
+
 
 def create_point_data(index):
     """Create point data"""
@@ -723,9 +830,14 @@ class InspectorWindow(QtWidgets.QWidget):
         massless_layout.addSpacing(20)
 
         # IMU SITE checkbox — turns the node into a MuJoCo <site> for IMU placement
-        self.imu_site_checkbox = QtWidgets.QCheckBox("IMU SITE")
+        self.imu_site_checkbox = QtWidgets.QCheckBox("IMU SITE    ")
         self.imu_site_checkbox.setChecked(False)
         massless_layout.addWidget(self.imu_site_checkbox)
+
+        # Camera checkbox — turns the node into a MuJoCo <camera>
+        self.camera_node_checkbox = QtWidgets.QCheckBox("Camera SITE")
+        self.camera_node_checkbox.setChecked(False)
+        massless_layout.addWidget(self.camera_node_checkbox)
 
         massless_layout.addStretch()  # Add margin on right
         content_layout.addLayout(massless_layout)
@@ -734,6 +846,7 @@ class InspectorWindow(QtWidgets.QWidget):
         self.massless_checkbox.stateChanged.connect(self.update_massless_decoration)
         self.hide_mesh_checkbox.stateChanged.connect(self.update_hide_mesh)
         self.imu_site_checkbox.stateChanged.connect(self.update_imu_site)
+        self.camera_node_checkbox.stateChanged.connect(self.update_camera_node)
 
         # Physical Properties section (Volume and Mass in one row)
         physics_layout = QtWidgets.QHBoxLayout()
@@ -2463,6 +2576,15 @@ class InspectorWindow(QtWidgets.QWidget):
                 if not hasattr(node, 'is_imu_site'):
                     node.is_imu_site = False
 
+            # Set Camera state
+            if hasattr(self, 'camera_node_checkbox'):
+                cam_val = getattr(node, 'is_camera_node', False)
+                self.camera_node_checkbox.blockSignals(True)
+                self.camera_node_checkbox.setChecked(bool(cam_val))
+                self.camera_node_checkbox.blockSignals(False)
+                if not hasattr(node, 'is_camera_node'):
+                    node.is_camera_node = False
+
             # Set Joint Limits (convert from Radian to Degree for display)
             # Skip if Slide joint (handled by _update_limit_labels_for_axis)
             rot_axis = getattr(node, 'rotation_axis', 0)
@@ -2936,6 +3058,29 @@ class InspectorWindow(QtWidgets.QWidget):
 
 
 
+    def _sync_3d_after_xml_load(self, node, *, mesh_file: str | None = None) -> None:
+        """Refresh 3D view for a node after XML load without leaving duplicate meshes."""
+        if not self.stl_viewer or not node:
+            return
+
+        mesh_path = mesh_file or getattr(node, 'stl_file', None)
+        if mesh_path and os.path.exists(mesh_path):
+            node.stl_file = mesh_path
+            self.stl_viewer._remove_stl_actor(node, remove_colliders=True)
+            self.stl_viewer.load_stl_for_node(node)
+
+        if hasattr(node, 'graph') and node.graph:
+            node.graph.recalculate_all_positions()
+        else:
+            self.stl_viewer.render_to_image()
+
+        if self.stl_viewer.collider_display_enabled:
+            self.stl_viewer.refresh_collider_for_node(node)
+        else:
+            self.stl_viewer._remove_collider_for_node(node)
+
+        self.stl_viewer.render_to_image()
+
     def load_xml(self):
         """Load XML file"""
         if not self.current_node:
@@ -3106,28 +3251,7 @@ class InspectorWindow(QtWidgets.QWidget):
             # Update UI
             self.update_info(self.current_node)
 
-            # Update 3D view
-            if self.stl_viewer:
-                self.stl_viewer.render_to_image()
-                # Also update Collider display
-                self.stl_viewer.refresh_collider_display()
-
-            # Execute same effect as Recalc Positions
-            if hasattr(self.current_node, 'graph') and self.current_node.graph:
-                self.current_node.graph.recalculate_all_positions()
-
-            # Save XML filename
-            self.current_node.xml_file = file_name
-
-        except Exception as e:
-            print(f"Error loading XML: {str(e)}")
-            import traceback
-            traceback.print_exc()
-
-
-            # Execute same effect as Recalc Positions
-            if hasattr(self.current_node, 'graph') and self.current_node.graph:
-                self.current_node.graph.recalculate_all_positions()
+            self._sync_3d_after_xml_load(self.current_node)
 
             # Save XML filename
             self.current_node.xml_file = file_name
@@ -3346,10 +3470,6 @@ class InspectorWindow(QtWidgets.QWidget):
             # Load if mesh file was found or selected
             if mesh_file:
                 self.current_node.stl_file = mesh_file
-                if self.stl_viewer:
-                    self.stl_viewer.load_stl_for_node(self.current_node)
-                    # Apply color to STL model
-                    self.apply_color_to_stl()
 
             # Auto-detect and load Collider Mesh
             collider_xml_path = os.path.join(xml_dir, f"{xml_name}_collider.xml")
@@ -3392,15 +3512,9 @@ class InspectorWindow(QtWidgets.QWidget):
             # Update UI
             self.update_info(self.current_node)
 
-            # Update 3D view
-            if self.stl_viewer:
-                self.stl_viewer.render_to_image()
-                # Also update Collider display
-                self.stl_viewer.refresh_collider_display()
-
-            # Execute same effect as Recalc Positions
-            if hasattr(self.current_node, 'graph') and self.current_node.graph:
-                self.current_node.graph.recalculate_all_positions()
+            if mesh_file:
+                self.apply_color_to_stl()
+            self._sync_3d_after_xml_load(self.current_node, mesh_file=mesh_file)
 
             # Save XML filename
             self.current_node.xml_file = xml_file
@@ -4055,20 +4169,11 @@ class InspectorWindow(QtWidgets.QWidget):
 
             # Reload mesh if stl_file exists
             stl_file = getattr(node, 'stl_file', None)
-            if stl_file and os.path.exists(stl_file) and self.stl_viewer:
-                self.stl_viewer.load_stl_for_node(node)
 
             # Update UI
             self.update_info(self.current_node)
 
-            # Update 3D view
-            if self.stl_viewer:
-                self.stl_viewer.render_to_image()
-                self.stl_viewer.refresh_collider_display()
-
-            # Recalc positions
-            if hasattr(self.current_node, 'graph') and self.current_node.graph:
-                self.current_node.graph.recalculate_all_positions()
+            self._sync_3d_after_xml_load(node, mesh_file=stl_file if stl_file and os.path.exists(stl_file) else None)
 
             node.xml_file = xml_file
             print(f"Reload completed: {xml_file}")
@@ -4326,6 +4431,47 @@ class InspectorWindow(QtWidgets.QWidget):
                 self.current_node.set_color(*DEFAULT_GRAPH_COLOR)
             except Exception as e:
                 print(f"IMU SITE: failed to restore node color: {e}")
+
+    def update_camera_node(self, state):
+        """Toggle Camera flag. When enabled: rename node to CAMERA_NODE, drop all output ports,
+        and install a custom paint (deep orange title strip + gray body).
+        """
+        if not self.current_node:
+            return
+        is_cam = bool(state)
+        self.current_node.is_camera_node = is_cam
+        DEFAULT_GRAPH_COLOR = (74, 84, 85)
+        if is_cam:
+            # Rename to CAMERA_NODE (uniqueness is enforced at MJCF export time)
+            try:
+                self.current_node.set_name("CAMERA_NODE")
+                if hasattr(self, 'name_edit'):
+                    self.name_edit.setText("CAMERA_NODE")
+            except Exception as e:
+                print(f"Camera: failed to rename node: {e}")
+            # Remove all output ports (max ~64 as a safety cap)
+            try:
+                remaining = getattr(self.current_node, 'output_count', 0)
+                guard = 0
+                while remaining > 0 and guard < 64:
+                    before = remaining
+                    self.current_node.remove_output()
+                    remaining = getattr(self.current_node, 'output_count', 0)
+                    if remaining >= before:
+                        break
+                    guard += 1
+            except Exception as e:
+                print(f"Camera: failed to remove outputs: {e}")
+            # Apply camera visual: gray body + deep orange title strip
+            _apply_camera_body_color(self.current_node)
+            _install_camera_paint(self.current_node)
+        else:
+            # Restore default paint and default gray color
+            _uninstall_camera_paint(self.current_node)
+            try:
+                self.current_node.set_color(*DEFAULT_GRAPH_COLOR)
+            except Exception as e:
+                print(f"Camera: failed to restore node color: {e}")
 
     def update_blanklink(self, state):
         """Update Blanklink state (for BaseLinkNode)"""
@@ -5645,6 +5791,7 @@ class SettingsDialog(QtWidgets.QDialog):
             self.graph.default_frictionloss = frictionloss
             self.graph.default_joint_damping = joint_damping
             self.graph.default_stiffness_kp = stiffness_kp
+            self.graph.default_joint_stiffness = stiffness_kp
             self.graph.default_damping_kv = damping_kv
             self.graph.default_timeconst = timeconst
             self.graph.default_angle_range = angle_range_rad
@@ -5652,6 +5799,7 @@ class SettingsDialog(QtWidgets.QDialog):
             # Mjcf
             base_link_height = float(normalize_number_input(self.base_link_height_input.text()))
             self.graph.default_base_link_height = base_link_height
+            self.graph.base_link_height = base_link_height
             mjcf_timestep = float(normalize_number_input(self.mjcf_timestep_input.text()))
             self.graph.default_mjcf_option_timestep = mjcf_timestep
             mjcf_iterations = int(normalize_number_input(self.mjcf_iterations_input.text()))
@@ -7322,7 +7470,11 @@ class STLViewerWidget(QtWidgets.QWidget):
                 elif collider_type == 'mesh':
                     collider_mesh = collider.get('mesh')
                     collider_mesh_scale = collider.get('mesh_scale', [1.0, 1.0, 1.0])
+                    visual_mesh = getattr(node, 'stl_file', None)
                     if collider_mesh:
+                        if self._mesh_paths_equal(collider_mesh, visual_mesh):
+                            print(f"    → Skipping mesh collider identical to visual mesh: {os.path.basename(collider_mesh)}")
+                            continue
                         print(f"    → Creating mesh collider: {os.path.basename(collider_mesh)}")
                         actor = self.create_mesh_collider_actor(node, collider_mesh, mesh_scale=collider_mesh_scale)
                         if actor:
@@ -7332,18 +7484,7 @@ class STLViewerWidget(QtWidgets.QWidget):
                         else:
                             print(f"    ✗ Failed to create mesh collider actor")
                     else:
-                        # Mesh visual mesh
-                        if node.stl_file:
-                            print(f"    → Creating mesh collider from visual mesh: {os.path.basename(node.stl_file)}")
-                            actor = self.create_mesh_collider_actor(node, node.stl_file, mesh_scale=collider_mesh_scale)
-                            if actor:
-                                self.renderer.AddActor(actor)
-                                actors.append(actor)
-                                print(f"    ✓ Mesh collider actor created from visual mesh")
-                            else:
-                                print(f"    ✗ Failed to create mesh collider actor from visual mesh")
-                        else:
-                            print(f"    ✗ No collider_mesh or visual mesh found")
+                        print(f"    ✗ No collider_mesh specified (visual mesh fallback disabled to avoid duplicate display)")
                 else:
                     print(f"    ✗ Unknown collider_type: {collider_type}")
             
@@ -8157,8 +8298,7 @@ class STLViewerWidget(QtWidgets.QWidget):
                 self.progress_bar.setValue(int(remaining))
                 QtWidgets.QApplication.processEvents()
 
-            if node in self.stl_actors:
-                self.renderer.RemoveActor(self.stl_actors[node])
+            self._remove_stl_actor(node, remove_colliders=False)
 
             self.stl_actors[node] = actor
             self.transforms[node] = transform
@@ -8261,31 +8401,54 @@ class STLViewerWidget(QtWidgets.QWidget):
 
             self.render_to_image()
 
+    def _remove_collider_for_node(self, node) -> None:
+        """Remove collider actors for a single node."""
+        if node not in self.collider_actors:
+            return
+        actors = self.collider_actors.pop(node)
+        if isinstance(actors, list):
+            for actor in actors:
+                self.renderer.RemoveActor(actor)
+        else:
+            self.renderer.RemoveActor(actors)
+
+    def _mesh_paths_equal(self, left: str | None, right: str | None) -> bool:
+        if not left or not right:
+            return False
+        try:
+            return os.path.normcase(os.path.normpath(left)) == os.path.normcase(os.path.normpath(right))
+        except Exception:
+            return left == right
+
+    def _remove_stl_actor(self, node, *, remove_colliders: bool = True) -> None:
+        """Remove visual mesh actor/registries for a node before reloading."""
+        if node in self.stl_actors:
+            try:
+                self.renderer.RemoveActor(self.stl_actors[node])
+            except Exception:
+                pass
+            del self.stl_actors[node]
+        if node in self.transforms:
+            del self.transforms[node]
+        if remove_colliders:
+            self._remove_collider_for_node(node)
+
+    def refresh_collider_for_node(self, node) -> None:
+        """Refresh collider display for one node only."""
+        self._remove_collider_for_node(node)
+        if not self.collider_display_enabled:
+            return
+        self.create_collider_actor_for_node(node)
+        if node in self.collider_actors and node in self.transforms:
+            self.update_collider_transform(node)
+
     def remove_stl_for_node(self, node):
         """nodetextSTLtextCollidertextremove"""
-        # Remove STL
-        if node in self.stl_actors:
-            self.renderer.RemoveActor(self.stl_actors[node])
-            del self.stl_actors[node]
-            if node in self.transforms:
-                del self.transforms[node]
+        self._remove_stl_actor(node, remove_colliders=True)
 
-            # If
-            if node == self.base_connected_node:
-                self.update_coordinate_axes([0, 0, 0])
-                self.base_connected_node = None
-
-        # Remove Collider
-        if node in self.collider_actors:
-            actors = self.collider_actors[node]
-            # Actors list
-            if isinstance(actors, list):
-                for actor in actors:
-                    self.renderer.RemoveActor(actor)
-            else:
-                self.renderer.RemoveActor(actors)
-            del self.collider_actors[node]
-            print(f"Removed Collider for node: {node.name()}")
+        if node == self.base_connected_node:
+            self.update_coordinate_axes([0, 0, 0])
+            self.base_connected_node = None
 
         self.render_to_image()
         print(f"Removed STL for node: {node.name()}")
@@ -9994,9 +10157,285 @@ class CustomNodeGraph(NodeGraph):
         if applied_count > 0:
             self.stl_viewer.render_to_image()
 
+    # ------------------------------------------------------------------
+    # Robot Label Bridge — canonical export name helpers
+    # ------------------------------------------------------------------
+
+    def _reset_canonical_export_state(self) -> None:
+        self._use_canonical_export_names = False
+        self._canonical_link_map: dict[str, str] = {}
+        self._canonical_joint_map_urdf: dict[tuple[str, str], str] = {}
+        self._canonical_joint_map_mjcf: dict[tuple[str, str], str] = {}
+
+    @staticmethod
+    def _bridge_best_target(result) -> str | None:
+        if result is None:
+            return None
+        if result.status == ConversionStatus.RESOLVED and result.target:
+            return result.target
+        if result.status == ConversionStatus.AMBIGUOUS and result.candidates:
+            return result.candidates[0].target
+        return None
+
+    @staticmethod
+    def _is_imu_or_camera_node(node) -> bool:
+        return bool(
+            getattr(node, "is_imu_site", False) or getattr(node, "is_camera_node", False)
+        )
+
+    def _is_imu_or_camera_name(self, name: str) -> bool:
+        node = self.get_node_by_name(name)
+        return node is not None and self._is_imu_or_camera_node(node)
+
+    def _collect_export_graph_edges(self) -> list[tuple[Any, Any, int]]:
+        edges: list[tuple[Any, Any, int]] = []
+        for node in self.all_nodes():
+            if isinstance(node, CoincidentNode):
+                continue
+            for port_idx, port in enumerate(node.output_ports()):
+                for connected_port in port.connected_ports():
+                    child = connected_port.node()
+                    if isinstance(child, CoincidentNode):
+                        continue
+                    if getattr(child, "massless_decoration", False):
+                        continue
+                    edges.append((node, child, port_idx))
+        return edges
+
+    @staticmethod
+    def _joint_axis_vector_for_node(child_node) -> list[float]:
+        rot_axis = getattr(child_node, "rotation_axis", 0)
+        if rot_axis == 0:
+            return [1.0, 0.0, 0.0]
+        if rot_axis == 1:
+            return [0.0, 1.0, 0.0]
+        if rot_axis == 2:
+            return [0.0, 0.0, 1.0]
+        if rot_axis == 5:
+            slide_axis_id = getattr(child_node, "slide_axis", 0)
+            if slide_axis_id == 1:
+                return [0.0, 1.0, 0.0]
+            if slide_axis_id == 2:
+                return [0.0, 0.0, 1.0]
+            return [1.0, 0.0, 0.0]
+        return [0.0, 0.0, 1.0]
+
+    def _ask_canonical_name_export(self, export_kind: str) -> tuple[bool, bool]:
+        """Return (accepted, use_canonical). accepted=False when Cancel."""
+        if not _ROBOT_LABEL_BRIDGE_AVAILABLE:
+            return True, False
+
+        dialog = QtWidgets.QDialog(self.widget)
+        dialog.setWindowTitle(f"{export_kind} Export — Name Options")
+        dialog.setModal(True)
+        layout = QtWidgets.QVBoxLayout(dialog)
+
+        label = QtWidgets.QLabel(
+            "Use Robot Label Bridge to convert link and joint names to canonical short names."
+        )
+        label.setWordWrap(True)
+        layout.addWidget(label)
+
+        checkbox = QtWidgets.QCheckBox("Standardize link and joint names")
+        checkbox.setChecked(False)
+        layout.addWidget(checkbox)
+
+        note = QtWidgets.QLabel(
+            "base_link is kept unchanged. Names that cannot be converted are exported using their original names."
+        )
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #888;")
+        layout.addWidget(note)
+
+        buttons = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QtWidgets.QDialog.Accepted:
+            return False, False
+        return True, checkbox.isChecked()
+
+    def _prepare_canonical_export_maps(self) -> list[tuple[str, str, str]]:
+        unresolved: list[tuple[str, str, str]] = []
+        if not _ROBOT_LABEL_BRIDGE_AVAILABLE:
+            return unresolved
+
+        nc = NameConverter()
+        edges = self._collect_export_graph_edges()
+        link_map: dict[str, str] = {}
+        joint_map_urdf: dict[tuple[str, str], str] = {}
+        joint_map_mjcf: dict[tuple[str, str], str] = {}
+
+        from collections import deque
+
+        queue: deque[tuple[Any, Any | None]] = deque()
+        visited: set[str] = set()
+        base_node = self.get_node_by_name("base_link")
+        if base_node:
+            queue.append((base_node, None))
+
+        while queue:
+            node, parent_node = queue.popleft()
+            name = node.name()
+            if name in visited:
+                continue
+            visited.add(name)
+
+            parent_canon = link_map.get(parent_node.name()) if parent_node else None
+            parent_orig = parent_node.name() if parent_node else None
+
+            if self._is_imu_or_camera_node(node):
+                link_map[name] = name
+            elif is_preserved_link(name):
+                link_map[name] = name
+            else:
+                result = nc.convert(
+                    name,
+                    entity="link",
+                    parent=parent_canon or parent_orig,
+                    child=name,
+                )
+                target = self._bridge_best_target(result)
+                if target:
+                    link_map[name] = target
+                else:
+                    reason = "; ".join(result.reasons) if result and result.reasons else "unresolved"
+                    unresolved.append(("link", name, reason))
+                    link_map[name] = name
+
+            for parent, child, _idx in edges:
+                if parent is node and child.name() not in visited:
+                    queue.append((child, node))
+
+        for node in self.all_nodes():
+            name = node.name()
+            if name in link_map or isinstance(node, CoincidentNode):
+                continue
+            if self._is_imu_or_camera_node(node):
+                link_map[name] = name
+                continue
+            result = nc.convert(name, entity="link")
+            target = self._bridge_best_target(result)
+            if target:
+                link_map[name] = target
+            else:
+                reason = "; ".join(result.reasons) if result and result.reasons else "unresolved"
+                unresolved.append(("link", name, reason))
+                link_map[name] = name
+
+        for parent, child, _port_idx in edges:
+            if self._is_imu_or_camera_node(child):
+                continue
+            parent_name = parent.name()
+            child_name = child.name()
+            parent_canon = link_map.get(parent_name, parent_name)
+            child_canon = link_map.get(child_name, child_name)
+            axis = self._joint_axis_vector_for_node(child)
+
+            urdf_raw = f"{parent_name}_to_{child_name}"
+            urdf_result = nc.convert(
+                urdf_raw,
+                entity="joint",
+                parent=parent_canon,
+                child=child_canon,
+                axis=axis,
+            )
+            urdf_target = self._bridge_best_target(urdf_result)
+            if urdf_target:
+                joint_map_urdf[(parent_name, child_name)] = urdf_target
+            else:
+                reason = "; ".join(urdf_result.reasons) if urdf_result and urdf_result.reasons else "unresolved"
+                unresolved.append(("joint (URDF)", urdf_raw, reason))
+                joint_map_urdf[(parent_name, child_name)] = f"{parent_canon}_to_{child_canon}"
+
+            mjcf_result = nc.convert(
+                child_name,
+                entity="joint",
+                parent=parent_canon,
+                child=child_canon,
+                axis=axis,
+            )
+            mjcf_target = self._bridge_best_target(mjcf_result)
+            if mjcf_target:
+                joint_map_mjcf[(parent_name, child_name)] = mjcf_target
+            else:
+                reason = "; ".join(mjcf_result.reasons) if mjcf_result and mjcf_result.reasons else "unresolved"
+                unresolved.append(("joint (MJCF)", child_name, reason))
+                child_sanitized = self._sanitize_name(child_name)
+                rot_axis = getattr(child, "rotation_axis", 0)
+                suffix = "_roll"
+                if rot_axis == 1:
+                    suffix = "_pitch"
+                elif rot_axis == 2:
+                    suffix = "_yaw"
+                elif rot_axis == 4:
+                    suffix = "_ball"
+                elif rot_axis == 5:
+                    suffix = "_slide"
+                joint_map_mjcf[(parent_name, child_name)] = f"{child_sanitized}{suffix}"
+
+        self._canonical_link_map = link_map
+        self._canonical_joint_map_urdf = joint_map_urdf
+        self._canonical_joint_map_mjcf = joint_map_mjcf
+        return unresolved
+
+    def _show_canonical_unresolved_warning(self, unresolved: list[tuple[str, str, str]]) -> bool:
+        if not unresolved:
+            return True
+
+        lines = [
+            "The following names could not be standardized. "
+            "They will be exported using their original names (or with only the link name applied):\n"
+        ]
+        for kind, name, reason in unresolved[:25]:
+            lines.append(f"  • [{kind}] {name}\n    {reason}")
+        if len(unresolved) > 25:
+            lines.append(f"\n  … and {len(unresolved) - 25} more")
+
+        QtWidgets.QMessageBox.warning(
+            self.widget,
+            "Canonical Name — Unresolved",
+            "\n".join(lines),
+        )
+        return True
+
+    def _export_link_name(self, name: str) -> str:
+        if not getattr(self, "_use_canonical_export_names", False):
+            return name
+        if self._is_imu_or_camera_name(name):
+            return name
+        if is_preserved_link and is_preserved_link(name):
+            return name
+        return self._canonical_link_map.get(name, name)
+
+    def _export_urdf_joint_name(self, parent_node, child_node) -> str:
+        parent_name = parent_node.name()
+        child_name = child_node.name()
+        if self._is_imu_or_camera_node(parent_node) or self._is_imu_or_camera_node(child_node):
+            return f"{parent_name}_to_{child_name}"
+        if not getattr(self, "_use_canonical_export_names", False):
+            return f"{parent_name}_to_{child_name}"
+        return self._canonical_joint_map_urdf.get(
+            (parent_name, child_name),
+            f"{self._export_link_name(parent_name)}_to_{self._export_link_name(child_name)}",
+        )
+
+    def _export_mjcf_joint_name(self, parent_node, child_node, fallback: str) -> str:
+        if self._is_imu_or_camera_node(parent_node) or self._is_imu_or_camera_node(child_node):
+            return fallback
+        if not getattr(self, "_use_canonical_export_names", False):
+            return fallback
+        return self._canonical_joint_map_mjcf.get(
+            (parent_node.name(), child_node.name()),
+            fallback,
+        )
 
     def export_urdf(self):
         """URDFtextーtext"""
+        self._reset_canonical_export_state()
         try:
             # Todo
             self.collect_closed_loop_joints_from_nodes()
@@ -10043,6 +10482,16 @@ class CustomNodeGraph(NodeGraph):
                     return False
 
                 print(f"User chose to continue URDF export, {len(self.closed_loop_joints)} closed-loop joint(s) will be excluded")
+
+            accepted, use_canonical = self._ask_canonical_name_export("URDF")
+            if not accepted:
+                print("URDF export cancelled (name options)")
+                return False
+
+            self._use_canonical_export_names = use_canonical
+            if use_canonical:
+                unresolved = self._prepare_canonical_export_maps()
+                self._show_canonical_unresolved_warning(unresolved)
 
             # Select
             mesh_format_dialog = QtWidgets.QDialog(self.widget)
@@ -10297,6 +10746,8 @@ class CustomNodeGraph(NodeGraph):
                 error_msg
             )
             return False
+        finally:
+            self._reset_canonical_export_state()
 
     def _write_tree_structure(self, file, node, parent_node, visited_nodes, materials, mesh_format=".stl"):
         """textーtext"""
@@ -10324,6 +10775,9 @@ class CustomNodeGraph(NodeGraph):
                 if child_node not in visited_nodes:
                     # Skip CoincidentNode (constraint-only, not a physical link)
                     if isinstance(child_node, CoincidentNode):
+                        continue
+                    # IMU SITE / Camera: MJCF と同様、link・joint は書かない
+                    if self._is_imu_or_camera_node(child_node):
                         continue
                     # Massless decoration link output massless decoration
                     if not (hasattr(child_node, 'massless_decoration') and child_node.massless_decoration):
@@ -10385,7 +10839,7 @@ class CustomNodeGraph(NodeGraph):
 
         if base_node and not is_blank and not is_all_defaults:
             # Blanklink if link output blanklink
-            file.write('  <link name="base_link">\n')
+            file.write(f'  <link name="{self._export_link_name("base_link")}">\n')
 
             # Todo
             if hasattr(base_node, 'mass_value') and hasattr(base_node, 'inertia'):
@@ -10453,7 +10907,7 @@ class CustomNodeGraph(NodeGraph):
             file.write('  </link>\n\n')
         else:
             # Blanklink if link output blanklink
-            file.write('  <link name="base_link"/>\n\n')
+            file.write(f'  <link name="{self._export_link_name("base_link")}"/>\n\n')
 
     def generate_tree_text(self, node, level=0):
         tree_text = "  " * level + node.name() + "\n"
@@ -10836,7 +11290,9 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(node_elem, "hide_mesh").text = str(node.hide_mesh)
         if hasattr(node, 'is_imu_site'):
             ET.SubElement(node_elem, "is_imu_site").text = str(node.is_imu_site)
-        
+        if hasattr(node, 'is_camera_node'):
+            ET.SubElement(node_elem, "is_camera_node").text = str(node.is_camera_node)
+
         # Collider
         if hasattr(node, 'colliders') and node.colliders:
             colliders_elem = ET.SubElement(node_elem, "colliders")
@@ -11508,6 +11964,13 @@ class CustomNodeGraph(NodeGraph):
                     _apply_imu_body_color(node)
                     _install_imu_paint(node)
 
+            is_camera_node_elem = node_elem.find("is_camera_node")
+            if is_camera_node_elem is not None:
+                node.is_camera_node = is_camera_node_elem.text.lower() == 'true'
+                if node.is_camera_node:
+                    _apply_camera_body_color(node)
+                    _install_camera_paint(node)
+
             # Collider
             colliders_elem = node_elem.find("colliders")
             if colliders_elem is not None:
@@ -11752,10 +12215,9 @@ class CustomNodeGraph(NodeGraph):
                     ET.SubElement(root, "meshes_directory").text = self.meshes_dir
                     print(f"Added absolute meshes path: {self.meshes_dir}")
             
-            # Save base_link_height MJCF
-            if hasattr(self, 'base_link_height'):
-                ET.SubElement(root, "base_link_height").text = str(self.base_link_height)
-                print(f"Saving base_link_height: {self.base_link_height}")
+            # Save base_link_height (Settings default for MJCF export)
+            ET.SubElement(root, "base_link_height").text = str(self.default_base_link_height)
+            print(f"Saving base_link_height: {self.default_base_link_height}")
 
             # Save TODO
             print("\nSaving nodes...")
@@ -11826,20 +12288,26 @@ class CustomNodeGraph(NodeGraph):
             print("\nSaving default joint settings...")
             settings_elem = ET.SubElement(root, "default_joint_settings")
             ET.SubElement(settings_elem, "effort").text = str(self.default_joint_effort)
+            ET.SubElement(settings_elem, "max_effort").text = str(self.default_max_effort)
             ET.SubElement(settings_elem, "velocity").text = str(self.default_joint_velocity)
+            ET.SubElement(settings_elem, "max_velocity").text = str(self.default_max_velocity)
             ET.SubElement(settings_elem, "damping").text = str(self.default_joint_damping)
-            ET.SubElement(settings_elem, "stiffness").text = str(self.default_joint_stiffness)
+            ET.SubElement(settings_elem, "stiffness_kp").text = str(self.default_stiffness_kp)
+            ET.SubElement(settings_elem, "stiffness").text = str(self.default_stiffness_kp)
             ET.SubElement(settings_elem, "margin").text = str(self.default_margin)
             ET.SubElement(settings_elem, "armature").text = str(self.default_armature)
             ET.SubElement(settings_elem, "frictionloss").text = str(self.default_frictionloss)
             ET.SubElement(settings_elem, "damping_kv").text = str(self.default_damping_kv)
             ET.SubElement(settings_elem, "timeconst").text = str(self.default_timeconst)
+            ET.SubElement(settings_elem, "angle_range").text = str(self.default_angle_range)
             print(f"Saved default joint settings: effort={self.default_joint_effort}, "
-                  f"velocity={self.default_joint_velocity}, damping={self.default_joint_damping}, "
-                  f"stiffness={self.default_joint_stiffness}, margin={self.default_margin}, "
+                  f"max_effort={self.default_max_effort}, "
+                  f"velocity={self.default_joint_velocity}, max_velocity={self.default_max_velocity}, "
+                  f"damping={self.default_joint_damping}, "
+                  f"stiffness_kp={self.default_stiffness_kp}, margin={self.default_margin}, "
                   f"armature={self.default_armature}, frictionloss={self.default_frictionloss}, "
                   f"damping_kv={self.default_damping_kv}, "
-                  f"timeconst={self.default_timeconst}")
+                  f"timeconst={self.default_timeconst}, angle_range={self.default_angle_range}")
 
             # Save MJCF default values
             print("\nSaving MJCF default values...")
@@ -11858,7 +12326,15 @@ class CustomNodeGraph(NodeGraph):
                   f"joint_damping={self.default_mjcf_joint_damping}, geom_friction={self.default_mjcf_geom_friction}, "
                   f"geom_margin={self.default_mjcf_geom_margin}, geom_condim={self.default_mjcf_geom_condim}, "
                   f"motor_ctrlrange={self.default_mjcf_motor_ctrlrange}, "
-                  f"timestep={self.default_mjcf_option_timestep}, iterations={self.default_mjcf_option_iterations}")
+                  f"timestep={self.default_mjcf_option_timestep}, iterations={self.default_mjcf_option_iterations}, "
+                  f"mesh_simplify_threshold={self.default_mjcf_mesh_simplify_threshold}, "
+                  f"mesh_max_faces={self.default_mjcf_mesh_max_faces}")
+
+            # Save node grid settings
+            node_grid_elem = ET.SubElement(root, "node_grid")
+            node_grid_elem.set("enabled", "true" if self.node_grid_enabled else "false")
+            node_grid_elem.set("size", str(self.node_grid_size))
+            print(f"Saved node grid: enabled={self.node_grid_enabled}, size={self.node_grid_size}")
 
             # Save file
             print("\nWriting to file...")
@@ -11967,12 +12443,12 @@ class CustomNodeGraph(NodeGraph):
             # Load base_link_height
             base_link_height_elem = root.find("base_link_height")
             if base_link_height_elem is not None and base_link_height_elem.text:
-                self.base_link_height = float(base_link_height_elem.text)
-                print(f"Loaded base_link_height: {self.base_link_height}")
+                height = float(base_link_height_elem.text)
+                self.default_base_link_height = height
+                self.base_link_height = height
+                print(f"Loaded base_link_height: {height}")
             else:
-                # Todo
-                if not hasattr(self, 'base_link_height'):
-                    self.base_link_height = self.default_base_link_height
+                self.base_link_height = self.default_base_link_height
                 print(f"Using default base_link_height: {self.base_link_height}")
 
             # Existing node base_link
@@ -12054,17 +12530,32 @@ class CustomNodeGraph(NodeGraph):
                     if effort_elem is not None and effort_elem.text:
                         self.default_joint_effort = float(effort_elem.text)
 
+                    max_effort_elem = settings_elem.find("max_effort")
+                    if max_effort_elem is not None and max_effort_elem.text:
+                        self.default_max_effort = float(max_effort_elem.text)
+
                     velocity_elem = settings_elem.find("velocity")
                     if velocity_elem is not None and velocity_elem.text:
                         self.default_joint_velocity = float(velocity_elem.text)
+
+                    max_velocity_elem = settings_elem.find("max_velocity")
+                    if max_velocity_elem is not None and max_velocity_elem.text:
+                        self.default_max_velocity = float(max_velocity_elem.text)
 
                     damping_elem = settings_elem.find("damping")
                     if damping_elem is not None and damping_elem.text:
                         self.default_joint_damping = float(damping_elem.text)
 
+                    stiffness_kp_elem = settings_elem.find("stiffness_kp")
                     stiffness_elem = settings_elem.find("stiffness")
-                    if stiffness_elem is not None and stiffness_elem.text:
-                        self.default_joint_stiffness = float(stiffness_elem.text)
+                    if stiffness_kp_elem is not None and stiffness_kp_elem.text:
+                        stiffness_val = float(stiffness_kp_elem.text)
+                        self.default_stiffness_kp = stiffness_val
+                        self.default_joint_stiffness = stiffness_val
+                    elif stiffness_elem is not None and stiffness_elem.text:
+                        stiffness_val = float(stiffness_elem.text)
+                        self.default_stiffness_kp = stiffness_val
+                        self.default_joint_stiffness = stiffness_val
 
                     margin_elem = settings_elem.find("margin")
                     if margin_elem is not None and margin_elem.text:
@@ -12086,6 +12577,10 @@ class CustomNodeGraph(NodeGraph):
                     if timeconst_elem is not None and timeconst_elem.text:
                         self.default_timeconst = float(timeconst_elem.text)
 
+                    angle_range_elem = settings_elem.find("angle_range")
+                    if angle_range_elem is not None and angle_range_elem.text:
+                        self.default_angle_range = float(angle_range_elem.text)
+
                     # Error :
                     friction_elem = settings_elem.find("friction")
                     if friction_elem is not None and friction_elem.text:
@@ -12095,10 +12590,13 @@ class CustomNodeGraph(NodeGraph):
                         pass  # NOTE
 
                     print(f"Restored default joint settings: effort={self.default_joint_effort}, "
-                          f"velocity={self.default_joint_velocity}, damping={self.default_joint_damping}, "
-                          f"stiffness={self.default_joint_stiffness}, margin={self.default_margin}, "
+                          f"max_effort={self.default_max_effort}, "
+                          f"velocity={self.default_joint_velocity}, max_velocity={self.default_max_velocity}, "
+                          f"damping={self.default_joint_damping}, "
+                          f"stiffness_kp={self.default_stiffness_kp}, margin={self.default_margin}, "
                           f"armature={self.default_armature}, frictionloss={self.default_frictionloss}, "
-                          f"damping_kv={self.default_damping_kv}")
+                          f"damping_kv={self.default_damping_kv}, timeconst={self.default_timeconst}, "
+                          f"angle_range={self.default_angle_range}")
                 except (ValueError, TypeError) as e:
                     print(f"Error parsing default joint settings, using defaults: {e}")
             else:
@@ -12147,6 +12645,22 @@ class CustomNodeGraph(NodeGraph):
                     print(f"Error parsing MJCF defaults, using defaults: {e}")
             else:
                 print("No MJCF defaults found in project file, using defaults")
+
+            # Load node grid settings
+            node_grid_elem = root.find("node_grid")
+            if node_grid_elem is not None:
+                try:
+                    enabled_attr = (node_grid_elem.get("enabled") or "true").lower()
+                    self.node_grid_enabled = enabled_attr in ("true", "1", "yes")
+                    size_attr = node_grid_elem.get("size")
+                    if size_attr:
+                        self.node_grid_size = int(size_attr)
+                    self.update_grid_display()
+                    print(f"Restored node grid: enabled={self.node_grid_enabled}, size={self.node_grid_size}")
+                except (ValueError, TypeError) as e:
+                    print(f"Error parsing node grid settings, using defaults: {e}")
+            else:
+                print("No node grid settings found in project file, using defaults")
 
             # Meshes
             print("Resolving meshes directory...")
@@ -14348,7 +14862,9 @@ class CustomNodeGraph(NodeGraph):
                             print(f"Warning: Error processing port {port.name()}: {str(e)}")
                         break
 
-            joint_name = f"{parent_node.name()}_to_{child_node.name()}"
+            joint_name = self._export_urdf_joint_name(parent_node, child_node)
+            parent_link = self._export_link_name(parent_node.name())
+            child_link = self._export_link_name(child_node.name())
 
             # Value
             if hasattr(child_node, 'rotation_axis'):
@@ -14356,14 +14872,14 @@ class CustomNodeGraph(NodeGraph):
                 if rot_axis == 3:  # Fixed
                     file.write(f'  <joint name="{joint_name}" type="fixed">\n')
                     file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
-                    file.write(f'    <parent link="{parent_node.name()}"/>\n')
-                    file.write(f'    <child link="{child_node.name()}"/>\n')
+                    file.write(f'    <parent link="{parent_link}"/>\n')
+                    file.write(f'    <child link="{child_link}"/>\n')
                     file.write('  </joint>\n')
                 elif rot_axis == 4:  # Free → fixed (URDF has no ball joint, use fixed)
                     file.write(f'  <joint name="{joint_name}" type="fixed">\n')
                     file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
-                    file.write(f'    <parent link="{parent_node.name()}"/>\n')
-                    file.write(f'    <child link="{child_node.name()}"/>\n')
+                    file.write(f'    <parent link="{parent_link}"/>\n')
+                    file.write(f'    <child link="{child_link}"/>\n')
                     file.write('  </joint>\n')
                 elif rot_axis == 5:  # Slide → prismatic
                     # Default to X axis (use slide_axis if available)
@@ -14372,8 +14888,8 @@ class CustomNodeGraph(NodeGraph):
                     file.write(f'  <joint name="{joint_name}" type="prismatic">\n')
                     file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
                     file.write(f'    <axis xyz="{axis[0]} {axis[1]} {axis[2]}"/>\n')
-                    file.write(f'    <parent link="{parent_node.name()}"/>\n')
-                    file.write(f'    <child link="{child_node.name()}"/>\n')
+                    file.write(f'    <parent link="{parent_link}"/>\n')
+                    file.write(f'    <child link="{child_link}"/>\n')
                     # prismatic uses limits in meters
                     lower = getattr(child_node, 'slide_lower', -0.05)
                     upper = getattr(child_node, 'slide_upper', 0.05)
@@ -14397,8 +14913,8 @@ class CustomNodeGraph(NodeGraph):
 
                     file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
                     file.write(f'    <axis xyz="{axis[0]} {axis[1]} {axis[2]}"/>\n')
-                    file.write(f'    <parent link="{parent_node.name()}"/>\n')
-                    file.write(f'    <child link="{child_node.name()}"/>\n')
+                    file.write(f'    <parent link="{parent_link}"/>\n')
+                    file.write(f'    <child link="{child_link}"/>\n')
 
                     # Get Joint Joint limit
                     lower = getattr(child_node, 'joint_lower', -3.14159)
@@ -14590,7 +15106,7 @@ class CustomNodeGraph(NodeGraph):
     def _write_link(self, file, node, materials, mesh_format=".stl"):
         """text"""
         try:
-            file.write(f'  <link name="{node.name()}">\n')
+            file.write(f'  <link name="{self._export_link_name(node.name())}">\n')
 
             # Todo
             if hasattr(node, 'mass_value') and hasattr(node, 'inertia'):
@@ -14930,6 +15446,7 @@ class CustomNodeGraph(NodeGraph):
                         self._write_tree_structure_unity(file, child_node, node, visited_nodes, materials, unity_dir_name)
 
     def export_mjcf(self):
+        self._reset_canonical_export_state()
         # Confirm : MJCF
         print(f"\n{'='*80}")
         print(f"[MJCF_EXPORT_START] Checking all nodes' inertia before export")
@@ -14986,6 +15503,13 @@ class CustomNodeGraph(NodeGraph):
             fix_base_checkbox = QtWidgets.QCheckBox("Fix Base to Ground")
             fix_base_checkbox.setChecked(False)
             layout.addWidget(fix_base_checkbox)
+
+            canonical_checkbox = QtWidgets.QCheckBox("Standardize link and joint names (Robot Label Bridge)")
+            canonical_checkbox.setChecked(False)
+            layout.addWidget(canonical_checkbox)
+            if not _ROBOT_LABEL_BRIDGE_AVAILABLE:
+                canonical_checkbox.setEnabled(False)
+                canonical_checkbox.setToolTip("Robot_Label_Bridge.py not found")
             
             # Button
             button_layout = QtWidgets.QHBoxLayout()
@@ -15019,6 +15543,13 @@ class CustomNodeGraph(NodeGraph):
 
             # Fix Base to Ground
             fix_base_to_ground = fix_base_checkbox.isChecked()
+
+            self._use_canonical_export_names = (
+                canonical_checkbox.isChecked() and _ROBOT_LABEL_BRIDGE_AVAILABLE
+            )
+            if self._use_canonical_export_names:
+                unresolved = self._prepare_canonical_export_maps()
+                self._show_canonical_unresolved_warning(unresolved)
             
             # Todo
             dir_name = self._sanitize_name(dir_name)
@@ -15488,6 +16019,8 @@ class CustomNodeGraph(NodeGraph):
                 error_msg
             )
             return False
+        finally:
+            self._reset_canonical_export_state()
 
     def _show_scrollable_message_dialog(self, title, message, is_warning=False):
         """Show a scrollable message dialog with max height of 600px."""
@@ -15646,6 +16179,10 @@ class CustomNodeGraph(NodeGraph):
         # Reset IMU site accumulator for this export
         self._imu_sites = []
         self._imu_site_names = set()
+
+        # Reset camera node accumulator for this export
+        self._camera_nodes = []
+        self._camera_node_names = set()
 
         with open(file_path, 'w') as f:
             # Todo
@@ -16156,8 +16693,8 @@ class CustomNodeGraph(NodeGraph):
 
         # Write Coincident constraints (connect)
         for constraint in coincident_constraints:
-            body1 = self._sanitize_name(constraint['body1'])
-            body2 = self._sanitize_name(constraint['body2'])
+            body1 = self._sanitize_name(self._export_link_name(constraint['body1']))
+            body2 = self._sanitize_name(self._export_link_name(constraint['body2']))
             anchor1 = constraint['anchor1']
             anchor2 = constraint['anchor2']
             name = constraint['name']
@@ -16175,8 +16712,8 @@ class CustomNodeGraph(NodeGraph):
             origin_xyz = joint_data.get('origin_xyz', [0.0, 0.0, 0.0])
 
             # Todo
-            parent_sanitized = self._sanitize_name(parent_link)
-            child_sanitized = self._sanitize_name(child_link)
+            parent_sanitized = self._sanitize_name(self._export_link_name(parent_link))
+            child_sanitized = self._sanitize_name(self._export_link_name(child_link))
 
             if original_type == 'ball':
                 # Connect ball joint <connect> output
@@ -16803,6 +17340,37 @@ class CustomNodeGraph(NodeGraph):
         )
         return site_name
 
+    def _emit_camera_node(self, file, parent_node, port_index, indent_str):
+        """Write a <camera> element for a camera child into the parent's <body>.
+        Position + orientation come from parent's OUTPORT (points[port_index]).
+        Returns the assigned unique camera name.
+        """
+        xyz = [0.0, 0.0, 0.0]
+        angle = [0.0, 0.0, 0.0]
+        if hasattr(parent_node, 'points') and port_index < len(parent_node.points):
+            pd = parent_node.points[port_index] or {}
+            xyz = pd.get('xyz', xyz)
+            angle = pd.get('angle', pd.get('rpy', angle))
+        # Uniquify name across the export
+        if not hasattr(self, '_camera_node_names'):
+            self._camera_node_names = set()
+        if not hasattr(self, '_camera_nodes'):
+            self._camera_nodes = []
+        cam_name = "CAMERA_NODE"
+        counter = 1
+        while cam_name in self._camera_node_names:
+            cam_name = f"CAMERA_NODE_{counter}"
+            counter += 1
+        self._camera_node_names.add(cam_name)
+        self._camera_nodes.append(cam_name)
+        file.write(
+            f'{indent_str}  <camera name="{cam_name}" '
+            f'pos="{xyz[0]} {xyz[1]} {xyz[2]}" '
+            f'euler="{angle[0]} {angle[1]} {angle[2]}" '
+            f'fovy="45"/>\n'
+        )
+        return cam_name
+
     def _write_mjcf_body(self, file, node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent=2, joint_info=None, fix_base_to_ground=False, used_body_names=None, used_joint_names=None, is_root=False, rename_to_base_link=False):
         """MJCF bodytext
 
@@ -16845,9 +17413,9 @@ class CustomNodeGraph(NodeGraph):
         if is_root:
             # Use "base_link" as name if rename_to_base_link is True, otherwise use node's actual name
             if rename_to_base_link:
-                sanitized_name = self._sanitize_name("base_link")
+                sanitized_name = self._sanitize_name(self._export_link_name("base_link"))
             else:
-                sanitized_name = self._sanitize_name(node.name())
+                sanitized_name = self._sanitize_name(self._export_link_name(node.name()))
             
             # Add body
             unique_name = sanitized_name
@@ -16976,6 +17544,12 @@ class CustomNodeGraph(NodeGraph):
                         self._emit_imu_site(file, node, port_index, indent_str)
                         continue
 
+                    # Camera: emit a <camera> in the parent's body and skip the rest
+                    if getattr(child_node, 'is_camera_node', False):
+                        port_index = list(node.output_ports()).index(port)
+                        self._emit_camera_node(file, node, port_index, indent_str)
+                        continue
+
                     # Massless <geom class visual > output massless decoration geom
                     if hasattr(child_node, 'massless_decoration') and child_node.massless_decoration:
                         if child_node in mesh_names:
@@ -17018,7 +17592,7 @@ class CustomNodeGraph(NodeGraph):
             return
 
         # Name
-        sanitized_name = self._sanitize_name(node.name())
+        sanitized_name = self._sanitize_name(self._export_link_name(node.name()))
         
         # Add body
         unique_name = sanitized_name
@@ -17312,6 +17886,11 @@ class CustomNodeGraph(NodeGraph):
                     self._emit_imu_site(file, node, port_index, indent_str)
                     continue
 
+                # Camera: emit a <camera> in the parent's body and skip the rest
+                if getattr(child_node, 'is_camera_node', False):
+                    self._emit_camera_node(file, node, port_index, indent_str)
+                    continue
+
                 # Massless if <geom class visual > skip massless decoration geom
                 if hasattr(child_node, 'massless_decoration') and child_node.massless_decoration:
                     if child_node in mesh_names:
@@ -17407,7 +17986,7 @@ class CustomNodeGraph(NodeGraph):
             }
 
         # Generate joint name with axis suffix (roll/pitch/yaw based on rotation_axis)
-        child_sanitized_name = self._sanitize_name(child_node.name())
+        child_sanitized_name = self._sanitize_name(self._export_link_name(child_node.name()))
         # Determine axis suffix based on rotation_axis
         axis_suffix = "_roll"  # Default: X axis (rotation_axis == 0)
         if rot_axis == 0:
@@ -17423,7 +18002,8 @@ class CustomNodeGraph(NodeGraph):
         elif rot_axis == 5:
             axis_suffix = "_slide"   # Slide (prismatic)
         joint_name = f"{child_sanitized_name}{axis_suffix}"
-        motor_name = f"{child_sanitized_name}_motor"
+        joint_name = self._export_mjcf_joint_name(parent_node, child_node, joint_name)
+        motor_name = f"{self._sanitize_name(self._export_link_name(child_node.name()))}_motor"
 
         # Ball joint has no range limit (uses quaternion representation)
         if joint_type == "ball":
