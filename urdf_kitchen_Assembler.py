@@ -6021,6 +6021,8 @@ class STLViewerWidget(QtWidgets.QWidget):
         self.inertial_origin_actors = {}  # Inertial Originactor for display
         self.collider_actors = {}  # Collideractor for display
         self.collider_display_enabled = False  # Colliderdisplay ON/OFF state
+        self.inertia_box_actors = {}  # Inertia box actors for display
+        self.inertia_display_enabled = False  # Inertia display ON/OFF state
 
         layout = QtWidgets.QVBoxLayout(self)
 
@@ -6153,16 +6155,16 @@ class STLViewerWidget(QtWidgets.QWidget):
         self.mesh_toggle = QtWidgets.QPushButton("Mesh")
         self.mesh_toggle.setCheckable(True)
         self.mesh_toggle.setChecked(True)  # ON
-        self.mesh_toggle.setFixedWidth(80)
+        self.mesh_toggle.setFixedWidth(62)
         self.mesh_toggle.setStyleSheet(toggle_button_style)
         self.mesh_toggle.toggled.connect(self.toggle_mesh)
         second_row_layout.addWidget(self.mesh_toggle)
 
         # Wireframe off
-        self.wireframe_toggle = QtWidgets.QPushButton("Wireframe")
+        self.wireframe_toggle = QtWidgets.QPushButton("Wire")
         self.wireframe_toggle.setCheckable(True)
         self.wireframe_toggle.setChecked(False)  # Off by default
-        self.wireframe_toggle.setFixedWidth(80)
+        self.wireframe_toggle.setFixedWidth(62)
         self.wireframe_toggle.setStyleSheet(toggle_button_style)
         self.wireframe_toggle.toggled.connect(self.toggle_wireframe)
         second_row_layout.addWidget(self.wireframe_toggle)
@@ -6171,10 +6173,19 @@ class STLViewerWidget(QtWidgets.QWidget):
         self.collider_toggle = QtWidgets.QPushButton("Collider")
         self.collider_toggle.setCheckable(True)
         self.collider_toggle.setChecked(False)  # Off by default
-        self.collider_toggle.setFixedWidth(80)
+        self.collider_toggle.setFixedWidth(62)
         self.collider_toggle.setStyleSheet(toggle_button_style)
         self.collider_toggle.toggled.connect(self.toggle_collider_display)
         second_row_layout.addWidget(self.collider_toggle)
+
+        # Inertia box display toggle
+        self.inertia_toggle = QtWidgets.QPushButton("Inertia")
+        self.inertia_toggle.setCheckable(True)
+        self.inertia_toggle.setChecked(False)
+        self.inertia_toggle.setFixedWidth(70)
+        self.inertia_toggle.setStyleSheet(toggle_button_style)
+        self.inertia_toggle.toggled.connect(self.toggle_inertia_display)
+        second_row_layout.addWidget(self.inertia_toggle)
 
         second_row_layout.addStretch()
 
@@ -7385,6 +7396,152 @@ class STLViewerWidget(QtWidgets.QWidget):
 
         # Redraw
         self.render_to_image()
+
+    def toggle_inertia_display(self, checked):
+        """Toggle inertia box visualization."""
+        self.inertia_display_enabled = checked
+        if checked:
+            self.show_all_inertia_boxes()
+        else:
+            self.hide_all_inertia_boxes()
+        self.render_to_image()
+
+    def show_all_inertia_boxes(self):
+        """Create and display inertia box actors for all nodes."""
+        self.hide_all_inertia_boxes()
+        if hasattr(self, 'graph') and self.graph:
+            for node in self.graph.all_nodes():
+                self.create_inertia_box_actor_for_node(node)
+
+    def hide_all_inertia_boxes(self):
+        """Remove all inertia box actors from the renderer."""
+        for node, actors in list(self.inertia_box_actors.items()):
+            if isinstance(actors, list):
+                for actor in actors:
+                    self.renderer.RemoveActor(actor)
+            else:
+                self.renderer.RemoveActor(actors)
+        self.inertia_box_actors.clear()
+
+    def create_inertia_box_actor_for_node(self, node):
+        """Create a semi-transparent green box visualizing the inertia tensor of a node.
+
+        The box dimensions are derived from the principal moments of inertia using
+        the same formula MuJoCo uses: for a uniform box with mass m and side lengths
+        a, b, c the principal moments satisfy I1=m(b²+c²)/12, so we invert to get
+        a=sqrt(6*(I2+I3-I1)/m), etc.
+        """
+        if getattr(node, 'massless_decoration', False):
+            return
+
+        inertia = getattr(node, 'inertia', None)
+        mass = getattr(node, 'mass_value', 0.0)
+        if not inertia or mass < 1e-6:
+            return
+
+        ixx = inertia.get('ixx', 0.0)
+        iyy = inertia.get('iyy', 0.0)
+        izz = inertia.get('izz', 0.0)
+        ixy = inertia.get('ixy', 0.0)
+        ixz = inertia.get('ixz', 0.0)
+        iyz = inertia.get('iyz', 0.0)
+
+        if ixx == 0.0 and iyy == 0.0 and izz == 0.0:
+            return
+
+        # Build symmetric inertia tensor and get principal moments via eigendecomposition
+        I = np.array([
+            [ixx, ixy, ixz],
+            [ixy, iyy, iyz],
+            [ixz, iyz, izz],
+        ])
+        try:
+            eigenvalues, eigenvectors = np.linalg.eigh(I)
+        except np.linalg.LinAlgError:
+            return
+
+        # Sort ascending so I1 <= I2 <= I3
+        order = np.argsort(eigenvalues)
+        I1, I2, I3 = eigenvalues[order]
+        eigenvectors = eigenvectors[:, order]
+
+        if I1 < 0.0:
+            return  # Invalid inertia tensor
+
+        # Invert principal moments to box half-side lengths (full side lengths)
+        # a² = 6*(I2+I3-I1)/m, etc.
+        a2 = 6.0 * (I2 + I3 - I1) / mass
+        b2 = 6.0 * (I1 + I3 - I2) / mass
+        c2 = 6.0 * (I1 + I2 - I3) / mass
+
+        if a2 < 0.0 or b2 < 0.0 or c2 < 0.0:
+            return  # Inertia tensor does not correspond to a valid box
+
+        a = float(np.sqrt(max(a2, 0.0)))
+        b = float(np.sqrt(max(b2, 0.0)))
+        c = float(np.sqrt(max(c2, 0.0)))
+
+        if a < 1e-9 and b < 1e-9 and c < 1e-9:
+            return
+
+        # Build rotation matrix from eigenvectors (columns = principal axes)
+        R = eigenvectors  # 3x3, column i is the i-th principal axis
+
+        # Build VTK 4x4 rotation matrix (principal axes orientation)
+        rot_mat = vtk.vtkMatrix4x4()
+        rot_mat.Identity()
+        for row in range(3):
+            for col in range(3):
+                rot_mat.SetElement(row, col, R[row, col])
+
+        # Inertial origin offset (center of mass position in link frame)
+        inertial_origin = getattr(node, 'inertial_origin', None)
+        ox, oy, oz = 0.0, 0.0, 0.0
+        if inertial_origin and isinstance(inertial_origin, dict):
+            xyz = inertial_origin.get('xyz', [0.0, 0.0, 0.0])
+            if xyz and len(xyz) >= 3:
+                ox, oy, oz = float(xyz[0]), float(xyz[1]), float(xyz[2])
+
+        # Create box geometry
+        source = vtk.vtkCubeSource()
+        source.SetXLength(a)
+        source.SetYLength(b)
+        source.SetZLength(c)
+        source.Update()
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(source.GetOutputPort())
+
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(0.0, 0.85, 0.2)   # semi-transparent green
+        actor.GetProperty().SetOpacity(0.35)
+        actor.GetProperty().SetRepresentationToSurface()
+
+        # Local transform: rotate by principal axes then translate to CoM
+        local_t = vtk.vtkTransform()
+        local_t.PostMultiply()
+        local_t.Concatenate(rot_mat)
+        local_t.Translate(ox, oy, oz)
+
+        # Combine with node world transform
+        if node in self.transforms:
+            combined = vtk.vtkTransform()
+            combined.PostMultiply()
+            combined.Concatenate(local_t)
+            combined.Concatenate(self.transforms[node])
+            actor.SetUserTransform(combined)
+        else:
+            actor.SetUserTransform(local_t)
+
+        self.renderer.AddActor(actor)
+        self.inertia_box_actors[node] = actor
+
+    def refresh_inertia_display(self):
+        """Rebuild inertia box actors when node data changes."""
+        if self.inertia_display_enabled:
+            self.show_all_inertia_boxes()
+            self.render_to_image()
 
     def toggle_collider_display(self, checked):
         """Colliderdisplaytext"""
