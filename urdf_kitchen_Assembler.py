@@ -17802,8 +17802,12 @@ class CustomNodeGraph(NodeGraph):
             
             if unique_joint_name != original_joint_name:
                 print(f"  ⚠ Joint name '{original_joint_name}' already exists, renamed to '{unique_joint_name}'")
-                # Update created_joints joint_name actuator
                 joint_info["name"] = unique_joint_name
+                # Sync the created_joints entry appended in _get_joint_info with the unique name
+                if (created_joints and
+                        created_joints[-1].get('joint_name') == original_joint_name):
+                    created_joints[-1]['joint_name'] = unique_joint_name
+                    created_joints[-1]['motor_name'] = f"{unique_joint_name}_motor"
             
             # Remove range limited margin armature frictionloss damping stiffness ref output velocity MJCF MJCF
             joint_attrs = f'{joint_info["range"]}{joint_info["limited"]}{joint_info["margin"]}{joint_info["armature"]}{joint_info["frictionloss"]}{joint_info["damping"]}{joint_info["stiffness"]}{joint_info["ref"]}'
@@ -18160,7 +18164,7 @@ class CustomNodeGraph(NodeGraph):
             axis_suffix = "_slide"   # Slide (prismatic)
         joint_name = f"{child_sanitized_name}{axis_suffix}"
         joint_name = self._export_mjcf_joint_name(parent_node, child_node, joint_name)
-        motor_name = f"{self._sanitize_name(self._export_link_name(child_node.name()))}_motor"
+        motor_name = f"{joint_name}_motor"
 
         # Ball joint has no range limit (uses quaternion representation)
         if joint_type == "ball":
