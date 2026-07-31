@@ -161,6 +161,29 @@ urdf_kitchen_utils.py and urdf_kitchen_Importer.py are module files required for
   
 ---
 
+# MCP
+
+We’ve added MCP support.
+
+Getting started
+
+```
+pip install mcp trimesh
+```
+
+Then, from inside the urdf_kitchen directory:
+```
+claude mcp add urdf-kitchen -- python3 urdf_kitchen_mcp.py
+```
+
+Launch Claude and start a conversation.
+
+It’s still fresh, but please feel free to try it out.
+  
+<img width="600" alt="mcp" src="docs/img/Mcp_img1.png">  
+
+---
+
 ## Bug Reports
 
 We are actively fixing bugs.  
