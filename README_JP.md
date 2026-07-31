@@ -130,7 +130,28 @@ python urdf_kitchen_Assembler.py
 ```
 
 urdf_kitchen_utils.py, urdf_kitchen_Importer.py はアプリの実行に必要なモジュールファイルですので他のコードと同じディレクトリにおいてください。  
+
+<hr>
+
+# MCP
+
+MCPを導入してみました。
+
+使い方は、
+```
+pip install mcp trimesh
+```
+urdf_kitchenディレクトリの中で、
+```
+claude mcp add urdf-kitchen -- python3 urdf_kitchen_mcp.py
+```
+claudeを起動して会話。です。
+出来立てですがぜひお試しください。
   
+<img width="600" alt="mcp" src="docs/img/Mcp_img1.png">  
+  
+<hr>
+
 # バグレポート  
   
 絶賛バグフィックス中です。  
