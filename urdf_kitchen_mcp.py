@@ -1897,5 +1897,427 @@ def export_urdf(
     }
 
 
+@mcp.tool()
+def export_mjcf(
+    filepath: str,
+    output_dir: str,
+    base_link_height: float | None = None,
+    fix_base_to_ground: bool = False,
+    mesh_max_faces: int = 200000,
+) -> dict:
+    """
+    プロジェクト XML から MuJoCo MJCF を headless でエクスポートする。
+
+    STL/DAE/OBJ メッシュを自動で OBJ に変換して assets/ に配置する。
+    GUI なしで実行できる（Qt/VTK 不要）。trimesh が必要（pip install trimesh）。
+
+    出力構造:
+        {output_dir}/{robot_name}_mjcf/
+            model.xml          ← MJCF 本体
+            assets/{*.obj}     ← 変換済みメッシュ
+
+    Args:
+        filepath:           XMLプロジェクトファイルのパス
+        output_dir:         出力先ディレクトリ
+        base_link_height:   ルートボディの z 初期位置 [m]。None でプロジェクト設定値を使用
+        fix_base_to_ground: True でルートを地面に固定（freejoint を付けない）
+        mesh_max_faces:     この面数を超えるメッシュはスキップ（デフォルト 200000）
+
+    Returns:
+        {status, mjcf_path, mesh_count, skipped_meshes, actuator_count, warnings}
+    """
+    try:
+        import trimesh as _tm
+    except ImportError:
+        return {"status": "error", "detail": "trimesh not installed: pip install trimesh"}
+
+    import ast, re
+
+    root, project_dir = _load(filepath)
+    robot_name = (root.findtext("robot_name") or "robot").replace(" ", "_")
+
+    # ── project-level defaults ────────────────────────────────────────────────
+    mj = root.find("mjcf_defaults") or ET.Element("mjcf_defaults")
+    djs = root.find("default_joint_settings") or ET.Element("default_joint_settings")
+
+    def mj_val(tag, fallback):
+        v = mj.findtext(tag)
+        return float(v) if v else fallback
+
+    def djs_val(tag, fallback):
+        v = djs.findtext(tag)
+        return float(v) if v else fallback
+
+    opt_timestep   = mj_val("option_timestep",   0.002)
+    opt_iterations = int(mj_val("option_iterations", 50))
+    opt_impratio   = mj_val("option_impratio",   100.0)
+    def_jdamp      = mj_val("joint_damping",      0.1)
+    def_gfriction  = mj_val("geom_friction",      0.4)
+    def_gmargin    = mj_val("geom_margin",        0.001)
+    def_gcondim    = int(mj_val("geom_condim",    3))
+    def_armature   = djs_val("armature",          0.01)
+    def_frictionloss = djs_val("frictionloss",    0.005)
+    def_timeconst  = djs_val("timeconst",         0.01)
+
+    proj_height = float(root.findtext("base_link_height") or 0.5)
+    z_root = proj_height if base_link_height is None else base_link_height
+
+    # ── collect nodes ─────────────────────────────────────────────────────────
+    nodes_e = root.find("nodes") or ET.Element("nodes")
+    node_data: dict[str, dict] = {}
+    for elem in nodes_e:
+        nd = _parse_node(elem, project_dir)
+        nd["_stl_abs"] = (
+            os.path.join(project_dir, nd["stl_file"]) if nd.get("stl_file") else None
+        )
+        nd["_xml_file_abs"] = (
+            os.path.join(project_dir, elem.findtext("xml_file"))
+            if elem.findtext("xml_file") else None
+        )
+        nd["_color"] = (elem.findtext("color") or "0.5 0.5 0.5 1.0").split()
+        # slide limits
+        nd["slide_lower"] = float(elem.findtext("slide_lower") or -0.05)
+        nd["slide_upper"] = float(elem.findtext("slide_upper") or  0.05)
+        nd["slide_axis"]  = int(elem.findtext("slide_axis") or 0)
+        # collider raw elements
+        nd["_collider_elems"] = list(elem.find("colliders") or [])
+        node_data[nd["name"]] = nd
+
+    # ── connections: parent → [(child, from_port)] ────────────────────────────
+    conns_e = root.find("connections") or ET.Element("connections")
+    children_map: dict[str, list[tuple[str, str]]] = {}
+    for c in conns_e:
+        children_map.setdefault(c.findtext("from_node"), []).append(
+            (c.findtext("to_node"), c.findtext("from_port") or "out")
+        )
+
+    # ── prepare output dirs ───────────────────────────────────────────────────
+    mjcf_dir   = os.path.join(output_dir, f"{robot_name}_mjcf")
+    assets_dir = os.path.join(mjcf_dir, "assets")
+    os.makedirs(assets_dir, exist_ok=True)
+
+    warnings:       list[str] = []
+    converted:      list[str] = []
+    skipped_meshes: list[str] = []
+    mesh_name_map:  dict[str, str] = {}   # stl_abs → asset_name (without ext)
+
+    # ── mesh conversion STL/DAE/OBJ → OBJ ────────────────────────────────────
+    for name, nd in node_data.items():
+        if nd["massless_decoration"] or nd["hide_mesh"] or nd["is_imu_site"] or nd["is_camera_node"]:
+            continue
+        stl_abs = nd.get("_stl_abs")
+        if not stl_abs or not os.path.exists(stl_abs):
+            if stl_abs:
+                warnings.append(f"Mesh not found: {stl_abs}")
+            continue
+        try:
+            mesh = _tm.load(stl_abs, force="mesh")
+            if hasattr(mesh, "geometry"):           # Scene
+                meshes = list(mesh.geometry.values())
+                mesh = meshes[0] if meshes else None
+            if mesh is None:
+                warnings.append(f"Empty mesh: {stl_abs}")
+                continue
+            nf = len(mesh.faces) if hasattr(mesh, "faces") else 0
+            if nf > mesh_max_faces:
+                skipped_meshes.append(f"{name} ({nf} faces)")
+                warnings.append(f"Skipped (too many faces {nf}): {stl_abs}")
+                continue
+            stem = os.path.splitext(os.path.basename(stl_abs))[0]
+            obj_name = f"{stem}.obj"
+            mesh.export(os.path.join(assets_dir, obj_name))
+            mesh_name_map[stl_abs] = stem        # asset name without extension
+            converted.append(obj_name)
+        except Exception as e:
+            warnings.append(f"Mesh conversion failed ({name}): {e}")
+
+    # ── helpers ───────────────────────────────────────────────────────────────
+
+    def _mjcf_fmt(v: float) -> str:
+        if v == 0.0:
+            return "0"
+        s = f"{v:.9g}"
+        return s
+
+    def _parse_geom_dict(geom_text: str) -> dict:
+        """Parse Python-dict-like string from collider geometry field."""
+        try:
+            return ast.literal_eval(geom_text)
+        except Exception:
+            # fallback: regex key-value extraction
+            return {k: v for k, v in re.findall(r"'(\w+)':\s*'([^']*)'", geom_text or "")}
+
+    def _col_geom_str(col_elem: ET.Element) -> str | None:
+        """Return '<geom class="collision" ...>' string for a collider element, or None."""
+        if col_elem.findtext("enabled") != "True":
+            return None
+        col_type = col_elem.findtext("type")
+        pos  = (col_elem.findtext("position") or "0 0 0")
+        rot  = (col_elem.findtext("rotation") or "0 0 0")
+        pos_vals = [float(v) for v in pos.split()]
+        rot_vals = [float(v) for v in rot.split()]
+        pos_str  = " ".join(_mjcf_fmt(v) for v in pos_vals)
+        euler_str = " ".join(_mjcf_fmt(v) for v in rot_vals)
+
+        data_e = col_elem.find("data")
+        if data_e is None:
+            return None
+        shape   = data_e.findtext("type") or ""
+        geom_e  = data_e.find("geometry")
+        geom_txt = geom_e.text if geom_e is not None else ""
+        gd = _parse_geom_dict(geom_txt)
+
+        attr = f'class="collision" pos="{pos_str}"'
+        if any(v != 0.0 for v in rot_vals):
+            attr += f' euler="{euler_str}"'
+
+        if shape == "box":
+            sx = float(gd.get("size_x", 0.01)) / 2
+            sy = float(gd.get("size_y", 0.01)) / 2
+            sz = float(gd.get("size_z", 0.01)) / 2
+            return f'<geom {attr} type="box" size="{_mjcf_fmt(sx)} {_mjcf_fmt(sy)} {_mjcf_fmt(sz)}"/>'
+        elif shape == "sphere":
+            r = float(gd.get("radius", 0.01))
+            return f'<geom {attr} type="sphere" size="{_mjcf_fmt(r)}"/>'
+        elif shape == "cylinder":
+            r = float(gd.get("radius", 0.01))
+            h = float(gd.get("height", 0.02)) / 2
+            return f'<geom {attr} type="cylinder" size="{_mjcf_fmt(r)} {_mjcf_fmt(h)}"/>'
+        elif col_type == "mesh":
+            mesh_ref = col_elem.findtext("mesh") or ""
+            stem = os.path.splitext(mesh_ref)[0]
+            if stem:
+                return f'<geom {attr} type="mesh" mesh="{stem}"/>'
+        return None
+
+    # ── recursive MJCF body writer ────────────────────────────────────────────
+    actuators: list[dict] = []
+    imu_sites: list[str]  = []
+
+    def write_body(f, name: str, pos_xyz: list, indent: int, is_root: bool = False) -> None:
+        nd = node_data.get(name)
+        if nd is None:
+            return
+        if nd["massless_decoration"] or nd["hide_mesh"]:
+            return
+
+        pad = " " * indent
+        pos_s = " ".join(_mjcf_fmt(v) for v in pos_xyz)
+
+        # body open
+        f.write(f'{pad}<body name="{name}" pos="{pos_s}">\n')
+
+        # root: freejoint or fixed
+        if is_root:
+            if not fix_base_to_ground:
+                f.write(f'{pad}  <freejoint />\n')
+        else:
+            # joint
+            axis_name = nd["rotation_axis"]
+            jname = name
+            lo  = math.radians(nd["joint_lower_deg"])
+            hi  = math.radians(nd["joint_upper_deg"])
+            damp = nd["joint_damping"]
+            fric = nd.get("joint_frictionloss", 0.0)
+            arm  = nd["joint_armature"]
+
+            if axis_name in ("X", "Y", "Z"):
+                axis_vec = {"X": "1 0 0", "Y": "0 1 0", "Z": "0 0 1"}[axis_name]
+                f.write(f'{pad}  <joint name="{jname}" type="hinge" '
+                        f'axis="{axis_vec}" range="{_mjcf_fmt(lo)} {_mjcf_fmt(hi)}" '
+                        f'damping="{_mjcf_fmt(damp)}" frictionloss="{_mjcf_fmt(fric)}" '
+                        f'armature="{_mjcf_fmt(arm)}"/>\n')
+                actuators.append({
+                    "joint":  jname,
+                    "name":   f"{jname}_actuator",
+                    "kp":     nd["joint_stiffness"],
+                    "kv":     nd.get("joint_kv", 1.0),
+                    "effort": nd["joint_effort_Nm"],
+                    "lo":     lo, "hi": hi,
+                })
+            elif axis_name == "Slide":
+                s_ax = {0: "1 0 0", 1: "0 1 0", 2: "0 0 1"}.get(nd["slide_axis"], "1 0 0")
+                sl   = nd["slide_lower"]
+                su   = nd["slide_upper"]
+                f.write(f'{pad}  <joint name="{jname}" type="slide" '
+                        f'axis="{s_ax}" range="{_mjcf_fmt(sl)} {_mjcf_fmt(su)}" '
+                        f'damping="{_mjcf_fmt(damp)}" frictionloss="{_mjcf_fmt(fric)}" '
+                        f'armature="{_mjcf_fmt(arm)}"/>\n')
+                actuators.append({
+                    "joint":  jname,
+                    "name":   f"{jname}_actuator",
+                    "kp":     nd["joint_stiffness"],
+                    "kv":     nd.get("joint_kv", 1.0),
+                    "effort": nd["joint_effort_Nm"],
+                    "lo":     sl, "hi": su,
+                })
+            elif axis_name == "Free":
+                f.write(f'{pad}  <joint name="{jname}" type="free"/>\n')
+            # Fixed: no joint tag
+
+        # inertial
+        m = nd["mass_kg"]
+        inertia = nd.get("inertia", {})
+        if m > 0 and inertia:
+            io = nd.get("inertial_origin") or {}
+            com_xyz = " ".join(io.get("xyz", ["0", "0", "0"]))
+            ixx = inertia.get("ixx", 1e-6)
+            ixy = inertia.get("ixy", 0)
+            ixz = inertia.get("ixz", 0)
+            iyy = inertia.get("iyy", 1e-6)
+            iyz = inertia.get("iyz", 0)
+            izz = inertia.get("izz", 1e-6)
+            # MuJoCo 3.x fullinertia order: ixx iyy izz ixy ixz iyz
+            fi = (f"{_mjcf_fmt(ixx)} {_mjcf_fmt(iyy)} {_mjcf_fmt(izz)} "
+                  f"{_mjcf_fmt(ixy)} {_mjcf_fmt(ixz)} {_mjcf_fmt(iyz)}")
+            f.write(f'{pad}  <inertial pos="{com_xyz}" '
+                    f'mass="{_mjcf_fmt(m)}" fullinertia="{fi}"/>\n')
+
+        # visual geom
+        stl_abs = nd.get("_stl_abs")
+        aname = mesh_name_map.get(stl_abs) if stl_abs else None
+        if aname:
+            col = nd["_color"]
+            r, g, b = col[0], col[1], col[2]
+            rgba = f"{r} {g} {b} 1.0"
+            vo = nd.get("visual_origin") or {}
+            vpos = " ".join(vo.get("xyz", ["0", "0", "0"]))
+            f.write(f'{pad}  <geom class="visual" type="mesh" mesh="{aname}" '
+                    f'rgba="{rgba}" pos="{vpos}"/>\n')
+
+        # collision geoms
+        for col_elem in nd["_collider_elems"]:
+            g = _col_geom_str(col_elem)
+            if g:
+                f.write(f'{pad}  {g}\n')
+
+        # children
+        for child_name, from_port in children_map.get(name, []):
+            child_nd = node_data.get(child_name)
+            if child_nd is None:
+                continue
+
+            # IMU site → emit <site> here, not a body
+            if child_nd["is_imu_site"]:
+                pidx = _port_name_to_index(from_port)
+                pts  = _read_parts_xml_points(nd.get("_xml_file_abs"))
+                spos = pts[pidx]["xyz"] if pidx < len(pts) else [0, 0, 0]
+                sp   = " ".join(_mjcf_fmt(v) for v in spos)
+                sname = child_name
+                f.write(f'{pad}  <site name="{sname}" type="box" '
+                        f'size="0.01 0.01 0.01" pos="{sp}"/>\n')
+                imu_sites.append(sname)
+                continue
+
+            # Camera node → emit <camera> here
+            if child_nd["is_camera_node"]:
+                pidx = _port_name_to_index(from_port)
+                pts  = _read_parts_xml_points(nd.get("_xml_file_abs"))
+                cpos = pts[pidx]["xyz"] if pidx < len(pts) else [0, 0, 0]
+                cp   = " ".join(_mjcf_fmt(v) for v in cpos)
+                f.write(f'{pad}  <camera name="{child_name}" pos="{cp}"/>\n')
+                continue
+
+            # skip massless / hidden children (they were added as geoms in parent)
+            if child_nd["massless_decoration"] or child_nd["hide_mesh"]:
+                continue
+
+            # joint origin: from parent's parts XML point
+            pidx     = _port_name_to_index(from_port)
+            pts      = _read_parts_xml_points(nd.get("_xml_file_abs"))
+            jpos_xyz = pts[pidx]["xyz"] if pidx < len(pts) else [0.0, 0.0, 0.0]
+
+            write_body(f, child_name, jpos_xyz, indent + 2)
+
+        f.write(f'{pad}</body>\n')
+
+    # ── find root node ────────────────────────────────────────────────────────
+    has_parent = {c for pairs in children_map.values() for c, _ in pairs}
+    raw_roots = [n for n in node_data if n not in has_parent]
+
+    # BaseLinkNode is massless virtual root — promote its children as effective roots
+    effective_roots: list[tuple[str, list]] = []
+    for r in raw_roots:
+        nd_r = node_data.get(r, {})
+        if nd_r.get("mass_kg", 0) <= 0 and not nd_r.get("_stl_abs"):
+            for child_name, from_port in children_map.get(r, []):
+                effective_roots.append((child_name, [0.0, 0.0, z_root]))
+        else:
+            effective_roots.append((r, [0.0, 0.0, z_root]))
+
+    # ── write MJCF ────────────────────────────────────────────────────────────
+    mjcf_path = os.path.join(mjcf_dir, "model.xml")
+    with open(mjcf_path, "w", encoding="utf-8") as f:
+        f.write(f'<mujoco model="{robot_name}">\n')
+        f.write(f'  <compiler angle="radian" meshdir="assets" autolimits="true"/>\n\n')
+        f.write(f'  <option timestep="{opt_timestep}" iterations="{opt_iterations}" '
+                f'cone="elliptic" impratio="{opt_impratio}"/>\n\n')
+
+        # defaults
+        f.write('  <default>\n')
+        f.write(f'    <joint damping="{def_jdamp}" armature="{def_armature}" '
+                f'frictionloss="{def_frictionloss}"/>\n')
+        f.write(f'    <position inheritrange="1" timeconst="{def_timeconst}"/>\n')
+        f.write(f'    <geom friction="{def_gfriction}" margin="{def_gmargin}" '
+                f'condim="{def_gcondim}"/>\n')
+        f.write('    <default class="collision"><geom group="0"/></default>\n')
+        f.write('    <default class="visual"><geom contype="0" conaffinity="0" group="1"/></default>\n')
+        f.write('  </default>\n\n')
+
+        # asset
+        f.write('  <asset>\n')
+        f.write('    <material name="metal"  rgba=".9 .95 .95 1"/>\n')
+        f.write('    <material name="black"  rgba="0 0 0 1"/>\n')
+        f.write('    <material name="white"  rgba="1 1 1 1"/>\n')
+        f.write('    <material name="gray"   rgba="0.67 0.69 0.77 1"/>\n')
+        for stl_abs, aname in mesh_name_map.items():
+            f.write(f'    <mesh name="{aname}" file="{aname}.obj"/>\n')
+        f.write('  </asset>\n\n')
+
+        # worldbody
+        f.write('  <worldbody>\n')
+        for root_name, root_pos in effective_roots:
+            write_body(f, root_name, root_pos, indent=4, is_root=True)
+        f.write('  </worldbody>\n\n')
+
+        # actuators
+        if actuators:
+            f.write('  <actuator>\n')
+            for act in actuators:
+                kp  = _mjcf_fmt(act["kp"])
+                kv  = _mjcf_fmt(act["kv"])
+                fr  = _mjcf_fmt(act["effort"])
+                lo  = _mjcf_fmt(act["lo"])
+                hi  = _mjcf_fmt(act["hi"])
+                f.write(f'    <position name="{act["name"]}" joint="{act["joint"]}" '
+                        f'gear="1" kp="{kp}" kv="{kv}" '
+                        f'forcerange="-{fr} {fr}" forcelimited="true"/>\n')
+            f.write('  </actuator>\n\n')
+
+        # sensors
+        f.write('  <sensor>\n')
+        if imu_sites:
+            for sname in imu_sites:
+                f.write(f'    <accelerometer name="{sname}_accel" site="{sname}"/>\n')
+                f.write(f'    <gyro name="{sname}_gyro" site="{sname}"/>\n')
+        else:
+            f.write('    <!-- Add sensors here if needed -->\n')
+        f.write('  </sensor>\n')
+
+        f.write('</mujoco>\n')
+
+    return {
+        "status":         "ok",
+        "mjcf_path":      mjcf_path,
+        "mjcf_dir":       mjcf_dir,
+        "mesh_count":     len(converted),
+        "actuator_count": len(actuators),
+        "imu_sites":      imu_sites,
+        "skipped_meshes": skipped_meshes,
+        "warnings":       warnings,
+        "warning_count":  len(warnings),
+    }
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")
