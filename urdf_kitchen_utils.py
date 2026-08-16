@@ -2600,25 +2600,82 @@ def setup_dark_theme(app, theme='default', custom_styles=None):
         app.setStyleSheet(stylesheet)
 
     elif theme == 'assembler':
-        # Assembler theme: cooler dark tones with minimal styling
+        # Assembler theme: cooler dark tones with minimal styling.
+        # Input widgets use LIGHT background + BLACK text explicitly so Windows
+        # native style cannot leave white-on-white / white-on-lightgray text.
         palette = QPalette()
         palette.setColor(QPalette.Window, QColor(53, 53, 53))
         palette.setColor(QPalette.WindowText, QColor(255, 255, 255))
-        palette.setColor(QPalette.Base, QColor(42, 42, 42))
-        palette.setColor(QPalette.AlternateBase, QColor(66, 66, 66))
+        palette.setColor(QPalette.Base, QColor(240, 240, 240))          # input bg (light)
+        palette.setColor(QPalette.AlternateBase, QColor(230, 230, 230))
         palette.setColor(QPalette.ToolTipBase, QColor(255, 255, 255))
-        palette.setColor(QPalette.ToolTipText, QColor(255, 255, 255))
-        palette.setColor(QPalette.Text, QColor(255, 255, 255))
+        palette.setColor(QPalette.ToolTipText, QColor(0, 0, 0))
+        palette.setColor(QPalette.Text, QColor(0, 0, 0))                # input text (black)
         palette.setColor(QPalette.Button, QColor(53, 53, 53))
         palette.setColor(QPalette.ButtonText, QColor(255, 255, 255))
         palette.setColor(QPalette.BrightText, QColor(255, 0, 0))
         palette.setColor(QPalette.Highlight, QColor(42, 130, 218))
-        palette.setColor(QPalette.HighlightedText, QColor(0, 0, 0))
-        palette.setColor(QPalette.PlaceholderText, QColor(180, 180, 180))  # Placeholder text color
+        palette.setColor(QPalette.HighlightedText, QColor(255, 255, 255))
+        palette.setColor(QPalette.PlaceholderText, QColor(120, 120, 120))
         app.setPalette(palette)
 
-        # Set button pressed color in stylesheet (deep blue regardless of focus)
+        # Explicit stylesheet — Windows native style ignores the palette for
+        # some widgets, so we force colors here for every text-bearing input.
         stylesheet = """
+            /* --- Input widgets: light bg + black text (Windows-safe) --- */
+            QLineEdit, QSpinBox, QDoubleSpinBox, QTextEdit, QPlainTextEdit {
+                background-color: #F0F0F0;
+                color: #000000;
+                border: 1px solid #BBBBBB;
+                selection-background-color: #4A90D9;
+                selection-color: #FFFFFF;
+            }
+            QLineEdit:disabled, QSpinBox:disabled, QDoubleSpinBox:disabled,
+            QTextEdit:disabled, QPlainTextEdit:disabled {
+                background-color: #D0D0D0;
+                color: #707070;
+            }
+
+            /* --- ComboBox (pulldown) --- */
+            QComboBox {
+                background-color: #F0F0F0;
+                color: #000000;
+                border: 1px solid #BBBBBB;
+                padding: 1px 4px;
+                selection-background-color: #4A90D9;
+                selection-color: #FFFFFF;
+            }
+            QComboBox:disabled {
+                background-color: #D0D0D0;
+                color: #707070;
+            }
+            QComboBox QAbstractItemView {
+                background-color: #F0F0F0;
+                color: #000000;
+                selection-background-color: #4A90D9;
+                selection-color: #FFFFFF;
+            }
+
+            /* --- Checkbox / Radio label text (dark window bg -> keep white) --- */
+            QCheckBox { color: #FFFFFF; }
+            QRadioButton { color: #FFFFFF; }
+            /* Indicators: explicit border so they remain visible on Windows */
+            QCheckBox::indicator, QRadioButton::indicator {
+                width: 13px;
+                height: 13px;
+                background-color: #F0F0F0;
+                border: 1px solid #888888;
+            }
+            QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+                background-color: #4A90D9;
+                border: 1px solid #2A5A8A;
+            }
+            QCheckBox::indicator:disabled, QRadioButton::indicator:disabled {
+                background-color: #808080;
+                border: 1px solid #555555;
+            }
+
+            /* --- Button pressed states (unchanged) --- */
             QPushButton:pressed {
                 background-color: #1a3a5a;
                 border: 1px solid #2a5a8a;
@@ -2643,6 +2700,59 @@ def setup_dark_theme(app, theme='default', custom_styles=None):
                 border: 1px solid #2a5a8a;
             }
         """
+
+        # Windows-only overrides.
+        # Windows native style ignores several palette entries: buttons come out
+        # as a light gray fill with the palette's white ButtonText (unreadable),
+        # and QGroupBox titles / frame lines render near-black on the dark
+        # window background (also unreadable). Force readable colors here.
+        # Mac (Darwin) already renders these correctly, so leave it alone.
+        import platform as _plat
+        if _plat.system() == "Windows":
+            stylesheet += """
+            /* --- Buttons: force black text on Windows (light native bg) --- */
+            QPushButton {
+                color: #000000;
+            }
+            QPushButton:disabled {
+                color: #707070;
+            }
+            /* Keep the existing dark-blue "pressed / checked" states readable */
+            QPushButton:pressed,
+            QPushButton:pressed:!active,
+            QPushButton:checked,
+            QPushButton:checked:!active {
+                color: #FFFFFF;
+            }
+
+            /* --- Group boxes: light gray title text + light gray frame --- */
+            QGroupBox {
+                color: #D0D0D0;
+                border: 1px solid #808080;
+                border-radius: 4px;
+                margin-top: 12px;
+                padding-top: 10px;
+            }
+            /* Title paints over the frame line so the border does not cut
+               through the letters. Background must be an opaque color that
+               matches the window background (palette Window = rgb(53,53,53)). */
+            QGroupBox::title {
+                color: #D0D0D0;
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                left: 10px;
+                top: 0px;
+                padding: 0 6px;
+                background-color: #353535;
+            }
+
+            /* --- Frames / separators used as section dividers --- */
+            QFrame[frameShape="4"],   /* HLine */
+            QFrame[frameShape="5"] {  /* VLine */
+                color: #808080;
+            }
+            """
+
         app.setStyleSheet(stylesheet)
 
     elif theme == 'mesh_sourcer':

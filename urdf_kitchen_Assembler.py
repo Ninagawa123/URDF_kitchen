@@ -4,8 +4,8 @@ Description: A Python script to assembling files configured with urdf_kitchen_Pa
 
 Author      : Ninagawa123
 Created On  : Nov 24, 2024
-Update.     : Feb 23, 2026
-Version     : 0.1.0
+Update.     : Aug 17, 2026
+Version     : 0.1.1
 License     : MIT License
 URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
 Copyright (c) 2024 Ninagawa123
@@ -45,7 +45,7 @@ import math
 from typing import Any
 
 try:
-    from Robot_Label_Bridge import ConversionStatus, NameConverter, is_preserved_link
+    from RobotLabelBridge import ConversionStatus, NameConverter, is_preserved_link
     _ROBOT_LABEL_BRIDGE_AVAILABLE = True
 except ImportError:
     _ROBOT_LABEL_BRIDGE_AVAILABLE = False
@@ -80,6 +80,19 @@ from urdf_kitchen_Importer import (
 # M4 Mac (Apple Silicon) compatibility
 import platform
 IS_APPLE_SILICON = platform.machine() == 'arm64' and platform.system() == 'Darwin'
+
+
+def _xml_path(text):
+    """Normalize a path string read from XML for cross-platform use.
+
+    Projects saved on Windows store paths with backslashes ("meshes\\foo.stl").
+    On macOS/Linux those backslashes are treated as literal characters, so the
+    file cannot be found. This helper converts backslashes to forward slashes
+    (harmless on Windows too) and strips surrounding whitespace.
+    """
+    if not text:
+        return text
+    return text.strip().replace("\\", "/")
 
 # Default value constants
 DEFAULT_JOINT_EFFORT = 1.37  # N*m
@@ -2586,23 +2599,28 @@ class InspectorWindow(QtWidgets.QWidget):
                     node.is_camera_node = False
 
             # Set Joint Limits (convert from Radian to Degree for display)
+            # UI shows values RELATIVE to the body_angle offset origin, while
+            # the stored joint_lower/upper remain absolute for MJCF/URDF compat.
             # Skip if Slide joint (handled by _update_limit_labels_for_axis)
             rot_axis = getattr(node, 'rotation_axis', 0)
             if rot_axis != 5:  # Not Slide
+                # Determine offset for the joint's rotation axis
+                offset_deg = 0.0
+                if hasattr(node, 'body_angle') and rot_axis in [0, 1, 2]:
+                    offset_deg = math.degrees(node.body_angle[rot_axis])
+
                 if hasattr(node, 'joint_lower'):
-                    # Convert Radian to Degree (round to 2 decimal places)
-                    self.lower_limit_input.setText(str(round(math.degrees(node.joint_lower), 2)))
+                    # UI shows relative value: stored - offset
+                    self.lower_limit_input.setText(str(round(math.degrees(node.joint_lower) - offset_deg, 2)))
                 else:
-                    # DEFAULT_JOINT_LOWER is already in Degree
-                    node.joint_lower = math.radians(DEFAULT_JOINT_LOWER)
+                    # DEFAULT_JOINT_LOWER is already in Degree (relative)
+                    node.joint_lower = math.radians(DEFAULT_JOINT_LOWER) + math.radians(offset_deg)
                     self.lower_limit_input.setText(str(DEFAULT_JOINT_LOWER))
 
                 if hasattr(node, 'joint_upper'):
-                    # Convert Radian to Degree (round to 2 decimal places)
-                    self.upper_limit_input.setText(str(round(math.degrees(node.joint_upper), 2)))
+                    self.upper_limit_input.setText(str(round(math.degrees(node.joint_upper) - offset_deg, 2)))
                 else:
-                    # DEFAULT_JOINT_UPPER is already in Degree
-                    node.joint_upper = math.radians(DEFAULT_JOINT_UPPER)
+                    node.joint_upper = math.radians(DEFAULT_JOINT_UPPER) + math.radians(offset_deg)
                     self.upper_limit_input.setText(str(DEFAULT_JOINT_UPPER))
 
             if hasattr(node, 'joint_effort'):
@@ -2753,13 +2771,18 @@ class InspectorWindow(QtWidgets.QWidget):
             self.upper_limit_input.setValidator(QDoubleValidator(-360.0, 360.0, 5))
             self.lower_limit_input.setPlaceholderText("-180")
             self.upper_limit_input.setPlaceholderText("180")
-            # Display current node's joint angle values
+            # Display current node's joint angle values (relative to body_angle offset)
             if self.current_node:
                 import math
                 lower = getattr(self.current_node, 'joint_lower', math.radians(-180))
                 upper = getattr(self.current_node, 'joint_upper', math.radians(180))
-                self.lower_limit_input.setText(str(round(math.degrees(lower), 2)))
-                self.upper_limit_input.setText(str(round(math.degrees(upper), 2)))
+                rot_axis_disp = getattr(self.current_node, 'rotation_axis', -1)
+                offset_rad_disp = 0.0
+                if (hasattr(self.current_node, 'body_angle') and
+                        rot_axis_disp in [0, 1, 2]):
+                    offset_rad_disp = self.current_node.body_angle[rot_axis_disp]
+                self.lower_limit_input.setText(str(round(math.degrees(lower - offset_rad_disp), 2)))
+                self.upper_limit_input.setText(str(round(math.degrees(upper - offset_rad_disp), 2)))
 
     def update_slide_axis(self):
         """Handler for Slide axis selection change"""
@@ -3039,7 +3062,7 @@ class InspectorWindow(QtWidgets.QWidget):
         # Process collision mesh (legacy XML format support)
         collision_mesh_elem = link_elem.find('collision_mesh') if link_elem is not None else None
         if collision_mesh_elem is not None and collision_mesh_elem.text:
-            collision_mesh_path = os.path.join(xml_dir, collision_mesh_elem.text.strip())
+            collision_mesh_path = os.path.join(xml_dir, _xml_path(collision_mesh_elem.text))
             if os.path.exists(collision_mesh_path):
                 if hasattr(self, 'collider_mesh_input'):
                     self.collider_mesh_input.setText(os.path.basename(collision_mesh_path))
@@ -3142,7 +3165,7 @@ class InspectorWindow(QtWidgets.QWidget):
                     armature = float(limit_elem.get('armature', DEFAULT_ARMATURE))
                     frictionloss = float(limit_elem.get('frictionloss', DEFAULT_FRICTIONLOSS))
 
-                    # Store as Radian values in node
+                    # Store as Radian values in node (URDF values are absolute)
                     self.current_node.joint_lower = lower_rad
                     self.current_node.joint_upper = upper_rad
                     self.current_node.joint_effort = effort
@@ -3151,9 +3174,14 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.current_node.joint_armature = armature
                     self.current_node.joint_frictionloss = frictionloss
 
-                    # Convert to Degree for UI display
-                    self.lower_limit_input.setText(str(round(math.degrees(lower_rad), 2)))
-                    self.upper_limit_input.setText(str(round(math.degrees(upper_rad), 2)))
+                    # UI shows values relative to body_angle offset origin
+                    rot_axis_disp = getattr(self.current_node, 'rotation_axis', -1)
+                    offset_rad_disp = 0.0
+                    if (hasattr(self.current_node, 'body_angle') and
+                            rot_axis_disp in [0, 1, 2]):
+                        offset_rad_disp = self.current_node.body_angle[rot_axis_disp]
+                    self.lower_limit_input.setText(str(round(math.degrees(lower_rad - offset_rad_disp), 2)))
+                    self.upper_limit_input.setText(str(round(math.degrees(upper_rad - offset_rad_disp), 2)))
                     self.effort_input.setText(format_float_no_exp(effort))
                     self.velocity_input.setText(format_float_no_exp(velocity))
                     self.margin_input.setText(format_float_no_exp(margin))
@@ -3324,7 +3352,7 @@ class InspectorWindow(QtWidgets.QWidget):
                     armature = float(limit_elem.get('armature', DEFAULT_ARMATURE))
                     frictionloss = float(limit_elem.get('frictionloss', DEFAULT_FRICTIONLOSS))
 
-                    # Store as Radian values in node
+                    # Store as Radian values in node (values from XML are absolute)
                     self.current_node.joint_lower = lower_rad
                     self.current_node.joint_upper = upper_rad
                     self.current_node.joint_effort = effort
@@ -3335,9 +3363,14 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.current_node.joint_armature = armature
                     self.current_node.joint_frictionloss = frictionloss
 
-                    # Convert to Degree for UI display
-                    self.lower_limit_input.setText(str(round(math.degrees(lower_rad), 2)))
-                    self.upper_limit_input.setText(str(round(math.degrees(upper_rad), 2)))
+                    # UI shows values relative to body_angle offset
+                    rot_axis_disp = getattr(self.current_node, 'rotation_axis', -1)
+                    offset_rad_disp = 0.0
+                    if (hasattr(self.current_node, 'body_angle') and
+                            rot_axis_disp in [0, 1, 2]):
+                        offset_rad_disp = self.current_node.body_angle[rot_axis_disp]
+                    self.lower_limit_input.setText(str(round(math.degrees(lower_rad - offset_rad_disp), 2)))
+                    self.upper_limit_input.setText(str(round(math.degrees(upper_rad - offset_rad_disp), 2)))
                     self.effort_input.setText(format_float_no_exp(effort))
                     self.velocity_input.setText(format_float_no_exp(velocity))
                     if hasattr(self, 'damping_input'):
@@ -4087,8 +4120,14 @@ class InspectorWindow(QtWidgets.QWidget):
                     self.current_node.joint_effort = effort
                     self.current_node.joint_velocity = velocity
 
-                    self.lower_limit_input.setText(str(round(math.degrees(lower_rad), 2)))
-                    self.upper_limit_input.setText(str(round(math.degrees(upper_rad), 2)))
+                    # UI shows values relative to body_angle offset
+                    rot_axis_disp = getattr(self.current_node, 'rotation_axis', -1)
+                    offset_rad_disp = 0.0
+                    if (hasattr(self.current_node, 'body_angle') and
+                            rot_axis_disp in [0, 1, 2]):
+                        offset_rad_disp = self.current_node.body_angle[rot_axis_disp]
+                    self.lower_limit_input.setText(str(round(math.degrees(lower_rad - offset_rad_disp), 2)))
+                    self.upper_limit_input.setText(str(round(math.degrees(upper_rad - offset_rad_disp), 2)))
                     self.effort_input.setText(format_float_no_exp(effort))
                     self.velocity_input.setText(format_float_no_exp(velocity))
 
@@ -4583,14 +4622,17 @@ class InspectorWindow(QtWidgets.QWidget):
                 if upper_text:
                     self.current_node.slide_upper = float(upper_text)
             else:
-                # Save Lower limit Degree Radian transform Lower Degree Radian
+                # UI values are relative to body_angle offset; add offset for storage
+                offset_rad = 0.0
+                if (hasattr(self.current_node, 'body_angle') and
+                        rot_axis in [0, 1, 2]):
+                    offset_rad = self.current_node.body_angle[rot_axis]
                 lower_text = self.lower_limit_input.text()
                 if lower_text:
-                    self.current_node.joint_lower = math.radians(float(lower_text))
-                # Save Upper limit Degree Radian transform Upper Degree Radian
+                    self.current_node.joint_lower = math.radians(float(lower_text)) + offset_rad
                 upper_text = self.upper_limit_input.text()
                 if upper_text:
-                    self.current_node.joint_upper = math.radians(float(upper_text))
+                    self.current_node.joint_upper = math.radians(float(upper_text)) + offset_rad
         except ValueError:
             pass  # Ignore invalid values
 
@@ -4604,36 +4646,46 @@ class InspectorWindow(QtWidgets.QWidget):
             angle_y_deg = float(self.angle_y_input.text()) if self.angle_y_input.text() else 0.0
             angle_z_deg = float(self.angle_z_input.text()) if self.angle_z_input.text() else 0.0
 
-            # Degree radian degree radian
-            self.current_node.body_angle = [math.radians(angle_x_deg), math.radians(angle_y_deg), math.radians(angle_z_deg)]
+            new_body_angle = [math.radians(angle_x_deg), math.radians(angle_y_deg), math.radians(angle_z_deg)]
 
-            # Update out Ang
+            # If offset for the joint's rotation axis changed, shift joint_lower/upper
+            # by the delta so the UI label (which shows stored - offset) stays constant.
+            rot_axis = getattr(self.current_node, 'rotation_axis', -1)
+            if rot_axis in [0, 1, 2]:
+                old_body_angle = getattr(self.current_node, 'body_angle', [0.0, 0.0, 0.0])
+                delta = new_body_angle[rot_axis] - old_body_angle[rot_axis]
+                if abs(delta) > 1e-12:
+                    if hasattr(self.current_node, 'joint_lower'):
+                        self.current_node.joint_lower += delta
+                    if hasattr(self.current_node, 'joint_upper'):
+                        self.current_node.joint_upper += delta
+
+            self.current_node.body_angle = new_body_angle
+
+            # Also sync to parent node's output point['angle'] — these two must
+            # always match (body_angle == parent.points[idx]['angle']).
             if hasattr(self.current_node, 'graph'):
-                graph = self.current_node.graph
-                # Find parent from node input port
                 for input_port in self.current_node.input_ports():
                     connected_ports = input_port.connected_ports()
                     if connected_ports:
                         parent_node = connected_ports[0].node()
                         parent_port_name = connected_ports[0].name()
-
-                        # Compute point index from port name (out_1->0, out_2->1, etc.)
-                        point_index = 0  # Default
+                        point_index = 0
                         if parent_port_name.startswith('out_'):
                             try:
-                                port_num = int(parent_port_name.split('_')[1])
-                                point_index = port_num - 1
+                                point_index = int(parent_port_name.split('_')[1]) - 1
                             except (ValueError, IndexError):
                                 pass
                         elif parent_port_name == 'out':
                             point_index = 0
-
-                        # Update points save angle
                         if hasattr(parent_node, 'points') and point_index < len(parent_node.points):
                             if 'angle' not in parent_node.points[point_index]:
                                 parent_node.points[point_index]['angle'] = [0.0, 0.0, 0.0]
-                            parent_node.points[point_index]['angle'] = [math.radians(angle_x_deg), math.radians(angle_y_deg), math.radians(angle_z_deg)]
-                            print(f"Updated parent node {parent_node.name()} port {point_index+1} angle to [{angle_x_deg}, {angle_y_deg}, {angle_z_deg}] degrees")
+                            parent_node.points[point_index]['angle'] = [
+                                math.radians(angle_x_deg),
+                                math.radians(angle_y_deg),
+                                math.radians(angle_z_deg)
+                            ]
                         break
 
             # Update 3D
@@ -4774,15 +4826,20 @@ class InspectorWindow(QtWidgets.QWidget):
                 if upper_text:
                     self.current_node.slide_upper = float(upper_text)
             else:
-                # Save Lower limit Degree Radian transform Lower Degree Radian
+                # UI values are relative to body_angle offset origin — add offset
+                # to convert to absolute for storage.
+                offset_rad = 0.0
+                if (hasattr(self.current_node, 'body_angle') and
+                        rot_axis in [0, 1, 2]):
+                    offset_rad = self.current_node.body_angle[rot_axis]
+
                 lower_text = self.lower_limit_input.text()
                 if lower_text:
-                    self.current_node.joint_lower = math.radians(float(lower_text))
+                    self.current_node.joint_lower = math.radians(float(lower_text)) + offset_rad
 
-                # Save Upper limit Degree Radian transform Upper Degree Radian
                 upper_text = self.upper_limit_input.text()
                 if upper_text:
-                    self.current_node.joint_upper = math.radians(float(upper_text))
+                    self.current_node.joint_upper = math.radians(float(upper_text)) + offset_rad
 
             # Save Effort Effort
             effort_text = self.effort_input.text()
@@ -6511,25 +6568,24 @@ class STLViewerWidget(QtWidgets.QWidget):
                 else:
                     self.stl_actors[target_node].GetProperty().SetOpacity(1.0)
         
-        # Partseditor transform position partseditor
-        if self.original_transforms:
-            nodes_to_restore = list(self.original_transforms.keys())
-            for restore_node in nodes_to_restore:
-                if restore_node in self.transforms and restore_node in self.original_transforms:
-                    # Original_transforms transform
-                    self.transforms[restore_node].DeepCopy(self.original_transforms[restore_node])
-                    if restore_node in self.stl_actors:
-                        self.stl_actors[restore_node].SetUserTransform(self.transforms[restore_node])
-                del self.original_transforms[restore_node]
-        
+        # Reset joint to zero (= body_angle position). Use show_angle so that
+        # child links are correctly propagated via _rotate_children — restoring
+        # cached original_transforms can leave children stale if body_angle was
+        # changed since those originals were captured.
+        self.current_angle = 0
+        if target_node and target_node in self.stl_actors:
+            self.show_angle(target_node, 0.0)
+
+        # Clean up cached originals
+        self.original_transforms.clear()
+
         # Update PartsEditor PartsEditor 3D
         self.render_to_image()
-        
+
         # Todo
         self.rotating_node = None
         self.rotation_paused = False
         self.pause_counter = 0
-        self.current_angle = 0
 
     def show_angle(self, node, angle_rad):
         """textangletextSTLmodeltextdisplay(text)"""
@@ -6612,38 +6668,27 @@ class STLViewerWidget(QtWidgets.QWidget):
             transform.RotateY(pitch_deg)  # Pitch
             transform.RotateX(roll_deg)   # Roll
 
-        # Apply parent point_angle radian degree - Rotation Axis VTK Z-Y-X Rotation Axis
-        if parent_point_angle and any(a != 0.0 for a in parent_point_angle):
-            parent_point_angle_deg = [math.degrees(a) for a in parent_point_angle]
-            transform.RotateZ(parent_point_angle_deg[2])  # Z-axis rotation
-            transform.RotateY(parent_point_angle_deg[1])  # Y-axis rotation
-            transform.RotateX(parent_point_angle_deg[0])  # X-axis rotation
-            print(f"Applied parent point_angle: X={parent_point_angle_deg[0]}, Y={parent_point_angle_deg[1]}, Z={parent_point_angle_deg[2]} degrees")
+        # Apply body_angle offset via parent_point_angle (they must always match).
+        # Fallback to node.body_angle if parent_point_angle is missing (older
+        # projects / sync not yet propagated).
+        effective_offset = parent_point_angle
+        if not effective_offset or not any(a != 0.0 for a in effective_offset):
+            if hasattr(node, 'body_angle') and any(a != 0.0 for a in node.body_angle):
+                effective_offset = node.body_angle
+        if effective_offset and any(a != 0.0 for a in effective_offset):
+            eo_deg = [math.degrees(a) for a in effective_offset]
+            transform.RotateZ(eo_deg[2])
+            transform.RotateY(eo_deg[1])
+            transform.RotateX(eo_deg[0])
 
-        # Get Angle offset body_angle Angle
-        # Body_angle radian degree transform
-        angle_offset_deg = 0.0
-        if hasattr(node, 'body_angle') and hasattr(node, 'rotation_axis'):
-            body_angle = node.body_angle
-            rotation_axis = node.rotation_axis
-            if rotation_axis == 0:  # X-axis
-                angle_offset_deg = math.degrees(body_angle[0])
-            elif rotation_axis == 1:  # Y-axis
-                angle_offset_deg = math.degrees(body_angle[1])
-            elif rotation_axis == 2:  # Z-axis
-                angle_offset_deg = math.degrees(body_angle[2])
-
-        # Parent point_angle rotate
-        # Angle_rad angle angle offset zero
-        # Angle_rad + angle_offset_rad joint
-        actual_angle_deg = angle_deg + angle_offset_deg
+        # body_angle already applied above — apply only the joint angle here.
         if hasattr(node, 'rotation_axis'):
-            if node.rotation_axis == 0:    # X-axis
-                transform.RotateX(actual_angle_deg)
-            elif node.rotation_axis == 1:  # Y-axis
-                transform.RotateY(actual_angle_deg)
-            elif node.rotation_axis == 2:  # Z-axis
-                transform.RotateZ(actual_angle_deg)
+            if node.rotation_axis == 0:
+                transform.RotateX(angle_deg)
+            elif node.rotation_axis == 1:
+                transform.RotateY(angle_deg)
+            elif node.rotation_axis == 2:
+                transform.RotateZ(angle_deg)
 
         self.stl_actors[node].SetUserTransform(transform)
 
@@ -6844,23 +6889,22 @@ class STLViewerWidget(QtWidgets.QWidget):
                     transform.RotateY(math.degrees(joint_origin_rpy[1]))
                     transform.RotateX(math.degrees(joint_origin_rpy[0]))
 
-                # Apply parent point angle
-                if parent_point_angle and any(a != 0.0 for a in parent_point_angle):
-                    parent_point_angle_deg = [math.degrees(a) for a in parent_point_angle]
-                    transform.RotateZ(parent_point_angle_deg[2])
-                    transform.RotateY(parent_point_angle_deg[1])
-                    transform.RotateX(parent_point_angle_deg[0])
+                # Apply body_angle offset via parent_point_angle (they must match).
+                # Fallback to node.body_angle if parent_point_angle is missing.
+                effective_offset = parent_point_angle
+                if not effective_offset or not any(a != 0.0 for a in effective_offset):
+                    if hasattr(node, 'body_angle') and any(a != 0.0 for a in node.body_angle):
+                        effective_offset = node.body_angle
+                if effective_offset and any(a != 0.0 for a in effective_offset):
+                    eo_deg = [math.degrees(a) for a in effective_offset]
+                    transform.RotateZ(eo_deg[2])
+                    transform.RotateY(eo_deg[1])
+                    transform.RotateX(eo_deg[0])
 
-                # Apply body angle offset
-                body_angle = getattr(node, 'body_angle', [0.0, 0.0, 0.0])
-                offset_roll = math.degrees(body_angle[0])
-                offset_pitch = math.degrees(body_angle[1])
-                offset_yaw = math.degrees(body_angle[2])
-
-                # Apply spinning top wobble rotation in Z-Y-X order
-                transform.RotateZ(yaw_deg + offset_yaw)
-                transform.RotateY(pitch_deg + offset_pitch)
-                transform.RotateX(roll_deg + offset_roll)
+                # body_angle already applied above — apply only the wobble here.
+                transform.RotateZ(yaw_deg)
+                transform.RotateY(pitch_deg)
+                transform.RotateX(roll_deg)
 
                 self.stl_actors[node].SetUserTransform(transform)
 
@@ -7078,36 +7122,26 @@ class STLViewerWidget(QtWidgets.QWidget):
                     transform.RotateY(pitch_deg)  # Pitch
                     transform.RotateX(roll_deg)   # Roll
 
-                # Apply parent point_angle radian degree - Rotation Axis VTK Z-Y-X Rotation Axis
-                if parent_point_angle and any(a != 0.0 for a in parent_point_angle):
-                    parent_point_angle_deg = [math.degrees(a) for a in parent_point_angle]
-                    transform.RotateZ(parent_point_angle_deg[2])  # Z-axis rotation
-                    transform.RotateY(parent_point_angle_deg[1])  # Y-axis rotation
-                    transform.RotateX(parent_point_angle_deg[0])  # X-axis rotation
+                # Apply body_angle offset via parent_point_angle (they must match).
+                # Fallback to node.body_angle if parent_point_angle is missing.
+                effective_offset = parent_point_angle
+                if not effective_offset or not any(a != 0.0 for a in effective_offset):
+                    if hasattr(node, 'body_angle') and any(a != 0.0 for a in node.body_angle):
+                        effective_offset = node.body_angle
+                if effective_offset and any(a != 0.0 for a in effective_offset):
+                    eo_deg = [math.degrees(a) for a in effective_offset]
+                    transform.RotateZ(eo_deg[2])
+                    transform.RotateY(eo_deg[1])
+                    transform.RotateX(eo_deg[0])
 
-                # Get Angle offset body_angle radian degree transform Angle
-                angle_offset_deg = 0.0
-                if hasattr(node, 'body_angle') and hasattr(node, 'rotation_axis'):
-                    body_angle = node.body_angle
-                    rotation_axis = node.rotation_axis
-                    if rotation_axis == 0:  # X-axis
-                        angle_offset_deg = math.degrees(body_angle[0])
-                    elif rotation_axis == 1:  # Y-axis
-                        angle_offset_deg = math.degrees(body_angle[1])
-                    elif rotation_axis == 2:  # Z-axis
-                        angle_offset_deg = math.degrees(body_angle[2])
-                
-                # Apply angle parent point_angle rotate
-                # Current_angle angle angle offset zero
-                # Current_angle + angle_offset joint
-                actual_angle_deg = self.current_angle + angle_offset_deg
+                # body_angle already applied above — apply only the current angle here.
                 if hasattr(node, 'rotation_axis'):
-                    if node.rotation_axis == 0:    # X-axis
-                        transform.RotateX(actual_angle_deg)
-                    elif node.rotation_axis == 1:  # Y-axis
-                        transform.RotateY(actual_angle_deg)
-                    elif node.rotation_axis == 2:  # Z-axis
-                        transform.RotateZ(actual_angle_deg)
+                    if node.rotation_axis == 0:
+                        transform.RotateX(self.current_angle)
+                    elif node.rotation_axis == 1:
+                        transform.RotateY(self.current_angle)
+                    elif node.rotation_axis == 2:
+                        transform.RotateZ(self.current_angle)
 
                 self.stl_actors[node].SetUserTransform(transform)
 
@@ -7176,32 +7210,18 @@ class STLViewerWidget(QtWidgets.QWidget):
                     child_transform.RotateY(pitch_deg)
                     child_transform.RotateX(roll_deg)
 
-                # Apply parent point_angle radian degree VTK Z-Y-X
-                if any(a != 0.0 for a in parent_point_angle):
-                    parent_point_angle_deg = [math.degrees(a) for a in parent_point_angle]
-                    child_transform.RotateZ(parent_point_angle_deg[2])
-                    child_transform.RotateY(parent_point_angle_deg[1])
-                    child_transform.RotateX(parent_point_angle_deg[0])
-
-                # Apply body_angle radian degree VTK
-                # Note body_angle mjcf ref angle if note: mjcf
-                # Rotation_axis rotate
-                child_body_angle = getattr(child_node, 'body_angle', [0.0, 0.0, 0.0])
-                if any(a != 0.0 for a in child_body_angle):
-                    child_body_angle_deg = [math.degrees(a) for a in child_body_angle]
-                    # Rotation_axis rotate
-                    if hasattr(child_node, 'rotation_axis'):
-                        if child_node.rotation_axis == 0 and child_body_angle_deg[0] != 0.0:  # X-axis
-                            child_transform.RotateX(child_body_angle_deg[0])
-                        elif child_node.rotation_axis == 1 and child_body_angle_deg[1] != 0.0:  # Y-axis
-                            child_transform.RotateY(child_body_angle_deg[1])
-                        elif child_node.rotation_axis == 2 and child_body_angle_deg[2] != 0.0:  # Z-axis
-                            child_transform.RotateZ(child_body_angle_deg[2])
-                    else:
-                        # Apply rotation_axis Z-Y-X
-                        child_transform.RotateZ(child_body_angle_deg[2])
-                        child_transform.RotateY(child_body_angle_deg[1])
-                        child_transform.RotateX(child_body_angle_deg[0])
+                # Apply body_angle offset via parent_point_angle (they must match).
+                # Fallback to child_node.body_angle if parent_point_angle is missing.
+                effective_offset = parent_point_angle
+                if not effective_offset or not any(a != 0.0 for a in effective_offset):
+                    cb = getattr(child_node, 'body_angle', [0.0, 0.0, 0.0])
+                    if any(a != 0.0 for a in cb):
+                        effective_offset = cb
+                if effective_offset and any(a != 0.0 for a in effective_offset):
+                    eo_deg = [math.degrees(a) for a in effective_offset]
+                    child_transform.RotateZ(eo_deg[2])
+                    child_transform.RotateY(eo_deg[1])
+                    child_transform.RotateX(eo_deg[0])
 
                 # Apply current
                 child_joint_angle = getattr(child_node, 'current_joint_angle', 0.0)
@@ -7629,7 +7649,17 @@ class STLViewerWidget(QtWidgets.QWidget):
                     collider_mesh_scale = collider.get('mesh_scale', [1.0, 1.0, 1.0])
                     visual_mesh = getattr(node, 'stl_file', None)
                     if collider_mesh:
-                        if self._mesh_paths_equal(collider_mesh, visual_mesh):
+                        # Resolve collider_mesh to absolute path before comparing
+                        # with visual_mesh. Otherwise a relative "part.stl" would
+                        # not match an absolute "/…/part.stl" and we'd render a
+                        # duplicate visual mesh as a collider (looks like the
+                        # model is doubled and Mesh toggle can't hide it).
+                        resolved_collider_mesh = collider_mesh
+                        if not os.path.isabs(resolved_collider_mesh) and visual_mesh:
+                            resolved_collider_mesh = os.path.join(
+                                os.path.dirname(visual_mesh), collider_mesh
+                            )
+                        if self._mesh_paths_equal(resolved_collider_mesh, visual_mesh):
                             print(f"    → Skipping mesh collider identical to visual mesh: {os.path.basename(collider_mesh)}")
                             continue
                         print(f"    → Creating mesh collider: {os.path.basename(collider_mesh)}")
@@ -11349,12 +11379,12 @@ class CustomNodeGraph(NodeGraph):
         
         # Todo
         if hasattr(node, 'stl_file') and node.stl_file:
-            # Transform
+            # Transform — save with forward slashes for cross-platform portability
             try:
-                rel_path = os.path.relpath(node.stl_file, project_dir)
+                rel_path = os.path.relpath(node.stl_file, project_dir).replace(os.sep, "/")
                 ET.SubElement(node_elem, "stl_file").text = rel_path
             except (ValueError, TypeError):
-                ET.SubElement(node_elem, "stl_file").text = node.stl_file
+                ET.SubElement(node_elem, "stl_file").text = node.stl_file.replace(os.sep, "/")
         
         # Todo
         if hasattr(node, 'mass_value'):
@@ -11374,10 +11404,10 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(node_elem, "slide_upper").text = str(node.slide_upper)
         if hasattr(node, 'xml_file') and node.xml_file:
             try:
-                rel_path = os.path.relpath(node.xml_file, project_dir)
+                rel_path = os.path.relpath(node.xml_file, project_dir).replace(os.sep, "/")
                 ET.SubElement(node_elem, "xml_file").text = rel_path
             except (ValueError, TypeError):
-                ET.SubElement(node_elem, "xml_file").text = node.xml_file
+                ET.SubElement(node_elem, "xml_file").text = node.xml_file.replace(os.sep, "/")
         
         # Inertial
         if hasattr(node, 'inertia') and node.inertia:
@@ -11468,10 +11498,10 @@ class CustomNodeGraph(NodeGraph):
                 # Todo
                 if 'mesh' in collider and collider['mesh']:
                     try:
-                        rel_path = os.path.relpath(collider['mesh'], project_dir)
+                        rel_path = os.path.relpath(collider['mesh'], project_dir).replace(os.sep, "/")
                         ET.SubElement(collider_elem, "mesh").text = rel_path
                     except (ValueError, TypeError):
-                        ET.SubElement(collider_elem, "mesh").text = collider['mesh']
+                        ET.SubElement(collider_elem, "mesh").text = str(collider['mesh']).replace(os.sep, "/")
                 
                 # Todo
                 if 'mesh_scale' in collider and collider['mesh_scale']:
@@ -11677,7 +11707,7 @@ class CustomNodeGraph(NodeGraph):
                     # Set base_link_sub base_link
                     # Stl
                     if stl_elem is not None and stl_elem.text:
-                        stl_path = os.path.join(self.project_dir, stl_elem.text)
+                        stl_path = os.path.join(self.project_dir, _xml_path(stl_elem.text))
                         if os.path.exists(stl_path):
                             base_link_sub_node.stl_file = stl_path
                     
@@ -11836,11 +11866,12 @@ class CustomNodeGraph(NodeGraph):
                             # Todo
                             mesh_elem = collider_elem.find("mesh")
                             if mesh_elem is not None and mesh_elem.text:
-                                mesh_path = os.path.join(self.project_dir, mesh_elem.text)
+                                mesh_text = _xml_path(mesh_elem.text)
+                                mesh_path = os.path.join(self.project_dir, mesh_text)
                                 if os.path.exists(mesh_path):
                                     collider['mesh'] = mesh_path
                                 else:
-                                    collider['mesh'] = mesh_elem.text
+                                    collider['mesh'] = mesh_text
                             else:
                                 collider['mesh'] = None
                             
@@ -11973,7 +12004,7 @@ class CustomNodeGraph(NodeGraph):
             # Stl
             stl_elem = node_elem.find("stl_file")
             if stl_elem is not None and stl_elem.text:
-                stl_path = os.path.join(self.project_dir, stl_elem.text)
+                stl_path = os.path.join(self.project_dir, _xml_path(stl_elem.text))
                 if os.path.exists(stl_path):
                     node.stl_file = stl_path
             
@@ -12006,7 +12037,7 @@ class CustomNodeGraph(NodeGraph):
 
             xml_file_elem = node_elem.find("xml_file")
             if xml_file_elem is not None and xml_file_elem.text:
-                xml_path = os.path.join(self.project_dir, xml_file_elem.text)
+                xml_path = os.path.join(self.project_dir, _xml_path(xml_file_elem.text))
                 if os.path.exists(xml_path):
                     node.xml_file = xml_path
             
@@ -12153,11 +12184,12 @@ class CustomNodeGraph(NodeGraph):
                     # Todo
                     mesh_elem = collider_elem.find("mesh")
                     if mesh_elem is not None and mesh_elem.text:
-                        mesh_path = os.path.join(self.project_dir, mesh_elem.text)
+                        mesh_text = _xml_path(mesh_elem.text)
+                        mesh_path = os.path.join(self.project_dir, mesh_text)
                         if os.path.exists(mesh_path):
                             collider['mesh'] = mesh_path
                         else:
-                            collider['mesh'] = mesh_elem.text
+                            collider['mesh'] = mesh_text
                     else:
                         collider['mesh'] = None
                     
@@ -12365,11 +12397,11 @@ class CustomNodeGraph(NodeGraph):
             
             if self.meshes_dir:
                 try:
-                    meshes_rel_path = os.path.relpath(self.meshes_dir, self.project_dir)
+                    meshes_rel_path = os.path.relpath(self.meshes_dir, self.project_dir).replace(os.sep, "/")
                     ET.SubElement(root, "meshes_directory").text = meshes_rel_path
                     print(f"Added meshes directory reference: {meshes_rel_path}")
                 except ValueError:
-                    ET.SubElement(root, "meshes_directory").text = self.meshes_dir
+                    ET.SubElement(root, "meshes_directory").text = str(self.meshes_dir).replace(os.sep, "/")
                     print(f"Added absolute meshes path: {self.meshes_dir}")
             
             # Save base_link_height (Settings default for MJCF export)
@@ -12823,7 +12855,7 @@ class CustomNodeGraph(NodeGraph):
             print("Resolving meshes directory...")
             meshes_dir_elem = root.find("meshes_directory")
             if meshes_dir_elem is not None and meshes_dir_elem.text:
-                meshes_path = os.path.normpath(os.path.join(self.project_dir, meshes_dir_elem.text))
+                meshes_path = os.path.normpath(os.path.join(self.project_dir, _xml_path(meshes_dir_elem.text)))
                 if os.path.exists(meshes_path):
                     self.meshes_dir = meshes_path
                     print(f"Found meshes directory: {meshes_path}")
@@ -13512,7 +13544,7 @@ class CustomNodeGraph(NodeGraph):
                 # Collision mesh process collision
                 collision_mesh_elem = link_elem.find('collision_mesh') if link_elem is not None else None
                 if collision_mesh_elem is not None and collision_mesh_elem.text:
-                    collision_mesh_path = os.path.join(folder_path, collision_mesh_elem.text.strip())
+                    collision_mesh_path = os.path.join(folder_path, _xml_path(collision_mesh_elem.text))
                     if os.path.exists(collision_mesh_path):
                         # Update colliders list
                         if not hasattr(new_node, 'colliders'):
@@ -14408,10 +14440,16 @@ class CustomNodeGraph(NodeGraph):
                 if hasattr(l_node, 'rotation_axis'):
                     r_node.rotation_axis = l_node.rotation_axis
 
-                # Body angle angle offset x y z body angle angle x y z
+                # Body angle: for left-right (Y-plane) mirroring, negate roll (X)
+                # and yaw (Z) components; pitch (Y) stays the same. This keeps
+                # the pose left-right symmetric.
                 if hasattr(l_node, 'body_angle'):
-                    r_node.body_angle = l_node.body_angle.copy()
-                    print(f"  Copied body_angle: {r_node.body_angle}")
+                    r_node.body_angle = [
+                        -l_node.body_angle[0],  # X (roll)  -> negate
+                        l_node.body_angle[1],   # Y (pitch) -> copy
+                        -l_node.body_angle[2],  # Z (yaw)   -> negate
+                    ]
+                    print(f"  Mirrored body_angle: {l_node.body_angle} -> {r_node.body_angle}")
 
                 # Mesh scale visual origin process mesh visual
                 # Existing mesh r_
@@ -14516,13 +14554,33 @@ class CustomNodeGraph(NodeGraph):
 
                     if l_has_valid_colliders:
                         r_node.colliders = copy.deepcopy(l_node.colliders)
-                        # L_ r_ transform
+                        # Mirror each collider for left-right symmetry:
+                        #  - position: Y negated
+                        #  - rotation: roll (X) and yaw (Z) negated, pitch (Y) kept
+                        #  - mesh path: l_ -> r_
                         for collider in r_node.colliders:
+                            # Mirror outer position/rotation
+                            if 'position' in collider and len(collider['position']) == 3:
+                                p = collider['position']
+                                collider['position'] = [p[0], -p[1], p[2]]
+                            if 'rotation' in collider and len(collider['rotation']) == 3:
+                                r = collider['rotation']
+                                collider['rotation'] = [-r[0], r[1], -r[2]]
+                            # Also mirror nested data.position / data.rotation (used as fallback)
+                            data = collider.get('data')
+                            if isinstance(data, dict):
+                                if 'position' in data and len(data['position']) == 3:
+                                    p = data['position']
+                                    data['position'] = [p[0], -p[1], p[2]]
+                                if 'rotation' in data and len(data['rotation']) == 3:
+                                    r = data['rotation']
+                                    data['rotation'] = [-r[0], r[1], -r[2]]
+                            # Rewrite mesh path l_ -> r_
                             if collider.get('mesh') and 'l_' in collider['mesh']:
                                 original_mesh = collider['mesh']
                                 collider['mesh'] = original_mesh.replace('l_', 'r_', 1)
                                 print(f"    Collider mesh path converted: {original_mesh} -> {collider['mesh']}")
-                        print(f"  Copied {len(r_node.colliders)} collider(s) from l_ node")
+                        print(f"  Copied and mirrored {len(r_node.colliders)} collider(s) from l_ node")
 
                     # Apply Collider
                     r_collider_found = False
@@ -15078,6 +15136,16 @@ class CustomNodeGraph(NodeGraph):
                     upper = getattr(child_node, 'joint_upper', 3.14159)
                     effort = getattr(child_node, 'joint_effort', 10.0)
                     velocity = getattr(child_node, 'joint_velocity', 3.0)
+
+                    # URDF joint origin RPY already carries body_angle (via
+                    # parent.points['angle']). The joint's limit is measured from
+                    # that origin, so subtract body_angle to convert stored
+                    # absolute limits into origin-relative limits.
+                    if (hasattr(child_node, 'body_angle') and
+                            rot_axis in [0, 1, 2]):
+                        body_offset = child_node.body_angle[rot_axis]
+                        lower -= body_offset
+                        upper -= body_offset
 
                     # Effort velocity urdf limit
                     file.write(f'    <limit lower="{lower}" upper="{upper}" effort="{effort}" velocity="{velocity}"/>\n')
@@ -15666,7 +15734,7 @@ class CustomNodeGraph(NodeGraph):
             layout.addWidget(canonical_checkbox)
             if not _ROBOT_LABEL_BRIDGE_AVAILABLE:
                 canonical_checkbox.setEnabled(False)
-                canonical_checkbox.setToolTip("Robot_Label_Bridge.py not found")
+                canonical_checkbox.setToolTip("RobotLabelBridge.py not found")
             
             # Button
             button_layout = QtWidgets.QHBoxLayout()
@@ -17766,24 +17834,28 @@ class CustomNodeGraph(NodeGraph):
         # Add joint_info body orientation
         pos_attr = f' pos="{joint_info["pos"]}"' if joint_info else ''
 
-        # Body orientation joint_info rpy urdf joint origin rpy parent child body orientation: rpy urdf rpy
-        # Body_angle
+        # Body orientation: joint_info rpy (joint origin) with body_angle baked in.
+        # body_angle is NOT written as joint ref (MuJoCo: actual_rotation = qpos - ref,
+        # so ref would invert the sign at qpos=0). Instead compose it into body quat.
         orientation_attr = ""
-        rpy_to_use = None
-        
-        # 1 joint_info rpy urdf joint origin rpy 1. rpy urdf rpy
+
+        # Base quaternion from joint origin RPY or body_angle (root body)
         if joint_info and 'rpy' in joint_info:
-            rpy_to_use = joint_info['rpy']
-        # 2 body_angle body 2.
+            q_base = self._rpy_to_quat(joint_info['rpy'])
         elif hasattr(node, 'body_angle') and node.body_angle != [0.0, 0.0, 0.0]:
-            rpy_to_use = node.body_angle
-        
-        # Generate RPY quaternion xyaxes RPY
-        if rpy_to_use and rpy_to_use != [0.0, 0.0, 0.0]:
-            # Quaternion
-            quat = self._rpy_to_quat(rpy_to_use)
-            quat_str = f"{format_float_no_exp(quat[0])} {format_float_no_exp(quat[1])} {format_float_no_exp(quat[2])} {format_float_no_exp(quat[3])}"
-            orientation_attr = f' quat="{quat_str}"'
+            # Root body with no parent joint: body_angle IS the orientation
+            q_base = self._rpy_to_quat(node.body_angle)
+        else:
+            q_base = None
+
+        # body_angle is already encoded in joint_info['rpy'] (via parent.points['angle']),
+        # so q_base already carries it. No additional composition needed.
+
+        if q_base is not None:
+            identity = np.array([1.0, 0.0, 0.0, 0.0])
+            if np.any(np.abs(q_base - identity) > 1e-9):
+                quat_str = f"{format_float_no_exp(q_base[0])} {format_float_no_exp(q_base[1])} {format_float_no_exp(q_base[2])} {format_float_no_exp(q_base[3])}"
+                orientation_attr = f' quat="{quat_str}"'
 
         file.write(f'{indent_str}<body name="{unique_name}"{pos_attr}{orientation_attr}>\n')
 
@@ -18200,6 +18272,13 @@ class CustomNodeGraph(NodeGraph):
         elif hasattr(child_node, 'joint_lower') and hasattr(child_node, 'joint_upper'):
             lower = child_node.joint_lower  # Stored in radians
             upper = child_node.joint_upper  # Stored in radians
+            # body_angle is baked into body quat, so the joint's zero is now at
+            # the body_angle position. Adjust range to be relative to that zero.
+            if (hasattr(child_node, 'body_angle') and hasattr(child_node, 'rotation_axis') and
+                    child_node.rotation_axis in [0, 1, 2]):
+                body_offset = child_node.body_angle[child_node.rotation_axis]
+                lower -= body_offset
+                upper -= body_offset
             # MJCF requires range[0] < range[1], so swap if needed
             if lower >= upper:
                 # If lower >= upper, use default range or swap values
@@ -18208,11 +18287,11 @@ class CustomNodeGraph(NodeGraph):
                     # If they're equal, use default range
                     lower = -3.14159
                     upper = 3.14159
-                    print(f"  Warning: Joint '{joint_name}' has equal lower/upper limits ({child_node.joint_lower:.6f}), using default range [-π, π]")
+                    print(f"  Warning: Joint '{joint_name}' has equal lower/upper limits, using default range [-π, π]")
                 else:
                     # Swap if lower > upper
                     lower, upper = upper, lower
-                    print(f"  Warning: Joint '{joint_name}' has lower >= upper ({child_node.joint_lower:.6f} >= {child_node.joint_upper:.6f}), swapped to [{lower:.6f}, {upper:.6f}]")
+                    print(f"  Warning: Joint '{joint_name}' has lower >= upper, swapped to [{lower:.6f}, {upper:.6f}]")
             # Output as radians (already in radians)
             range_str = f' range="{format_float_no_exp(lower)} {format_float_no_exp(upper)}"'
         else:
@@ -18247,19 +18326,10 @@ class CustomNodeGraph(NodeGraph):
         # Stiffness / Kp -> output as actuator's kp, not in joint
         stiffness_str = ""
         
-        # Generate ref body_angle ref: /
-        # Body_angle x_rad y_rad z_rad rotation_axis
-        # Mjcf <compiler angle radian > ref radians output mjcf compiler
+        # body_angle is baked into the body's quat (not output as joint ref).
+        # MuJoCo: actual_rotation = qpos - ref, so using ref here would invert
+        # the direction when the actuator targets qpos=0.
         ref_str = ""
-        if hasattr(child_node, 'body_angle') and hasattr(child_node, 'rotation_axis'):
-            body_angle = child_node.body_angle
-            rotation_axis = child_node.rotation_axis
-            
-            # Get rotation_axis angle radians
-            if rotation_axis in [0, 1, 2] and any(a != 0.0 for a in body_angle):
-                ref_angle_rad = body_angle[rotation_axis]
-                if abs(ref_angle_rad) > 1e-6:  # only
-                    ref_str = f' ref="{format_float_no_exp(ref_angle_rad)}"'
 
         # Add list actuator
         joint_effort = getattr(child_node, 'joint_effort', 10.0)
@@ -18271,23 +18341,22 @@ class CustomNodeGraph(NodeGraph):
         if hasattr(child_node, 'joint_lower') and hasattr(child_node, 'joint_upper'):
             lower = child_node.joint_lower  # Stored in radians
             upper = child_node.joint_upper  # Stored in radians
+            # Same body_angle adjustment as range_str
+            if (hasattr(child_node, 'body_angle') and hasattr(child_node, 'rotation_axis') and
+                    child_node.rotation_axis in [0, 1, 2]):
+                body_offset = child_node.body_angle[child_node.rotation_axis]
+                lower -= body_offset
+                upper -= body_offset
             # MJCF requires range[0] < range[1], so swap if needed
             if lower >= upper:
-                # If lower >= upper, use default range or swap values
-                # Default: ±π radians
                 if abs(lower - upper) < 1e-6:
-                    # If they're equal, use default range
                     lower = -3.14159
                     upper = 3.14159
                 else:
-                    # Swap if lower > upper
                     lower, upper = upper, lower
-            # Output as radians (already in radians)
             range_values = (lower, upper)
         else:
             # If joint_lower/upper are not set, use default range
-            # This is especially important for closed-loop joints (_CL_joint)
-            # Default: ±π radians
             range_values = (-3.14159, 3.14159)
         created_joints.append({
             'joint_name': joint_name,
@@ -18369,7 +18438,7 @@ def load_project(graph):
         meshes_dir = None
         meshes_dir_elem = root.find("meshes_dir")
         if meshes_dir_elem is not None and meshes_dir_elem.text:
-            meshes_dir = os.path.normpath(os.path.join(project_base_dir, meshes_dir_elem.text))
+            meshes_dir = os.path.normpath(os.path.join(project_base_dir, _xml_path(meshes_dir_elem.text)))
             if not os.path.exists(meshes_dir):
                 # Select meshes
                 msg = QtWidgets.QMessageBox()
