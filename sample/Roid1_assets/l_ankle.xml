@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urdf_part>
+    <material name="#FFFFFF">
+        <color rgba="1.000000 1.000000 1.000000 1.0" />
+    </material>
+    <link name="l_ankle">
+        <visual>
+            <origin xyz="0.001028 0.000220 -0.032516" rpy="0 0 0"/>
+            <material name="#FFFFFF" />
+        </visual>
+        <inertial>
+            <origin xyz="0.001028 0.000220 -0.032516"/>
+            <mass value="0.058"/>
+            <volume value="0.000039444343"/>
+            <inertia ixx="0.00003420" ixy="0.00000037" ixz="-0.00000069" iyy="0.00002997" iyz="-0.00000007" izz="0.00002268"/>
+        </inertial>
+        <center_of_mass>0.001028 0.000220 -0.032516</center_of_mass>
+    </link>
+    <point name="point1" type="fixed">
+        <point_xyz>0.000000 -0.011503 -0.038480</point_xyz>
+        <point_angle>0.000000 0.000000 0.000000</point_angle>
+    </point>
+    <joint>
+        <axis xyz="0 1 0" />
+    </joint>
+</urdf_part>

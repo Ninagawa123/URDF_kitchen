@@ -1,0 +1,9 @@
+<?xml version="1.0" ?>
+<urdf_kitchen_collider version="1.0">
+  <mesh_file>l_shoulder.stl</mesh_file>
+  <collider type="cylinder">
+    <geometry radius="0.0100" length="0.0072"/>
+    <position x="0.0000" y="0.0040" z="0.0000"/>
+    <rotation roll="-90.000000" pitch="0.000000" yaw="0.000000"/>
+  </collider>
+</urdf_kitchen_collider>

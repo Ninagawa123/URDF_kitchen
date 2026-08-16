@@ -1,0 +1,4847 @@
+"""
+File Name: urdf_kitchen_MeshSourcer.py
+Description: A Python script for reconfiguring the center coordinates and axis directions of .stl, .dae, .obj files.
+
+Author      : Ninagawa123
+Created On  : Nov 24, 2024
+Update.     : Feb 20, 2026
+Version     : 0.1.0
+License     : MIT License
+URL         : https://github.com/Ninagawa123/URDF_kitchen_beta
+Copyright (c) 2024 Ninagawa123 
+
+python3.11
+pip install --upgrade pip
+pip install numpy
+pip install PySide6
+pip install vtk
+pip install NodeGraphQt
+pip install trimesh
+pip install pycollada
+pip install networkx
+pip install gmsh
+"""
+
+import sys
+import os
+import signal
+import vtk
+import numpy as np
+
+# Import trimesh for COLLADA (.dae) file support
+try:
+    import trimesh
+    TRIMESH_AVAILABLE = True
+except ImportError:
+    TRIMESH_AVAILABLE = False
+    print("Warning: trimesh not available. COLLADA (.dae) support disabled.")
+    print("Install with: pip install trimesh")
+
+# Import CoACD mesh processing tools for collision mesh generation
+try:
+    from mesh_tools.decompose import decompose as mesh_decompose
+    from mesh_tools.clean import clean as mesh_clean
+    COACD_AVAILABLE = True
+except ImportError:
+    COACD_AVAILABLE = False
+    print("Warning: mesh_tools/coacd not available. Collision mesh generation disabled.")
+    print("Install with: pip install coacd>=1.0.7")
+
+from PySide6.QtWidgets import (
+    QApplication, QFileDialog, QMainWindow, QVBoxLayout, QWidget,
+    QPushButton, QHBoxLayout, QCheckBox, QLineEdit, QLabel, QGridLayout,
+    QComboBox, QGroupBox, QScrollArea, QButtonGroup, QRadioButton, QSizePolicy,
+    QDoubleSpinBox, QProgressBar, QDialog, QDialogButtonBox
+)
+from PySide6.QtCore import QTimer, Qt, QObject, QRegularExpression, QThread, Signal, QSettings
+from PySide6.QtGui import QRegularExpressionValidator
+
+# Import URDF Kitchen utilities
+from urdf_kitchen_utils import (
+    OffscreenRenderer, CameraController, AnimatedCameraRotation,
+    AdaptiveMarkerSize, create_crosshair_marker, MouseDragState,
+    calculate_arrow_key_step, get_mesh_file_filter, load_mesh_to_polydata,
+    save_polydata_to_mesh, calculate_inertia_with_trimesh,
+    is_apple_silicon, setup_qt_environment_for_apple_silicon,
+    setup_signal_handlers, setup_signal_processing_timer,
+    euler_to_quaternion, quaternion_to_euler, quaternion_to_matrix,
+    VTKViewerBase
+)
+
+# M4 Mac (Apple Silicon) compatibility
+IS_APPLE_SILICON = is_apple_silicon()
+
+# Always use QVTKRenderWindowInteractor (QVTKOpenGLNativeWidget not available in this VTK build)
+USE_NATIVE_WIDGET = False
+QVTKRenderWindowInteractor = None
+
+try:
+    from vtkmodules.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+except ImportError:
+    try:
+        from vtk.qt.QVTKRenderWindowInteractor import QVTKRenderWindowInteractor
+    except ImportError:
+        print("Error: Could not import QVTKRenderWindowInteractor.")
+        print("Please ensure VTK is installed with Qt support:")
+        print("  pip install --upgrade vtk")
+        import sys
+        sys.exit(1)
+
+# STEP to STL conversion mesh refinement factor
+# Higher value = finer mesh (1.0 = default, 2.0 = 2x finer, 4.0 = 4x finer)
+STEP_MESH_REFINEMENT = 2.0
+
+# STEP file unit conversion scale (mm to meters)
+# STEP files from CAD software are typically in millimeters
+# Set to 0.001 to convert mm to meters, 1.0 to keep original units
+STEP_UNIT_SCALE = 0.001
+
+# Camera control constants (matching PartsEditor)
+CAMERA_ROTATION_SENSITIVITY = 0.5
+CAMERA_PAN_SPEED_FACTOR = 0.001
+CAMERA_ZOOM_FACTOR = 0.1
+CAMERA_ZOOM_IN_SCALE = 0.9
+CAMERA_ZOOM_OUT_SCALE = 1.1
+MOUSE_ZOOM_PAN_SCALE = 2.0
+
+class CustomInteractorStyle(vtk.vtkInteractorStyleTrackballCamera):
+    def __init__(self, parent=None):
+        super(CustomInteractorStyle, self).__init__()
+        self.parent = parent
+        self.AddObserver("CharEvent", self.on_char_event)
+        self.AddObserver("KeyPressEvent", self.on_key_press)
+
+    def on_char_event(self, obj, event):
+        key = self.GetInteractor().GetKeySym()
+        if key == "t":
+            print("[T] Toggle wireframe.")
+            self.toggle_wireframe()
+        elif key == "r":
+            print("[R] Reset camera.")
+            if self.parent:
+                self.parent.reset_camera()
+        elif key == "a":
+            print("[A] Rotate 90° left.")
+            if self.parent:
+                self.parent.rotate_camera(90, 'yaw')
+        elif key == "d":
+            print("[D] Rotate 90° right.")
+            if self.parent:
+                self.parent.rotate_camera(-90, 'yaw')
+        elif key == "w":
+            print("[W] Rotate 90° up.")
+            if self.parent:
+                self.parent.rotate_camera(-90, 'pitch')
+        elif key == "s":
+            print("[S] Rotate 90° down.")
+            if self.parent:
+                self.parent.rotate_camera(90, 'pitch')
+        elif key == "q":
+            print("[Q] Rotate 90° counterclockwise.")
+            if self.parent:
+                self.parent.rotate_camera(90, 'roll')
+        elif key == "e":
+            print("[E] Rotate 90° clockwise.")
+            if self.parent:
+                self.parent.rotate_camera(-90, 'roll')
+        else:
+            self.OnChar()
+
+    def on_key_press(self, obj, event):
+        key = self.GetInteractor().GetKeySym()
+        shift_pressed = self.GetInteractor().GetShiftKey()
+        ctrl_pressed = self.GetInteractor().GetControlKey()
+
+        step = calculate_arrow_key_step(shift_pressed, ctrl_pressed)
+
+        if self.parent:
+            horizontal_axis, vertical_axis, screen_right, screen_up = self.parent.get_screen_axes()
+            for i, checkbox in enumerate(self.parent.point_checkboxes):
+                if checkbox.isChecked():
+                    if key == "Up":
+                        self.parent.move_point_screen(i, screen_up, step)
+                    elif key == "Down":
+                        self.parent.move_point_screen(i, screen_up, -step)
+                    elif key == "Left":
+                        self.parent.move_point_screen(i, screen_right, -step)
+                    elif key == "Right":
+                        self.parent.move_point_screen(i, screen_right, step)
+
+        self.OnKeyPress()
+
+    def toggle_wireframe(self):
+        if not self.GetInteractor():
+            return
+        renderer = self.GetInteractor().GetRenderWindow().GetRenderers().GetFirstRenderer()
+        if not renderer:
+            return
+        actors = renderer.GetActors()
+        actors.InitTraversal()
+        actor = actors.GetNextItem()
+        while actor:
+            if not actor.GetUserTransform():
+                if actor.GetProperty().GetRepresentation() == vtk.VTK_SURFACE:
+                    actor.GetProperty().SetRepresentationToWireframe()
+                else:
+                    actor.GetProperty().SetRepresentationToSurface()
+            actor = actors.GetNextItem()
+
+
+class GlobalKeyEventFilter(QObject):
+    """Global event filter for WASD keyboard controls"""
+    def __init__(self, main_window, parent=None):
+        super().__init__(parent)
+        self.main_window = main_window
+
+    def eventFilter(self, obj, event):
+        """Route WASD key events to main window when not in input widgets"""
+        from PySide6.QtCore import QEvent, Qt
+        from PySide6.QtWidgets import QLineEdit, QTextEdit, QPlainTextEdit, QApplication
+
+        if event.type() == QEvent.KeyPress:
+            focus_widget = QApplication.focusWidget()
+            if isinstance(focus_widget, (QLineEdit, QTextEdit, QPlainTextEdit)):
+                return False
+            key = event.key()
+            if key in [Qt.Key_W, Qt.Key_A, Qt.Key_S, Qt.Key_D, Qt.Key_Q, Qt.Key_E,
+                      Qt.Key_R, Qt.Key_T, Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right]:
+                self.main_window.keyPressEvent(event)
+                return True
+
+        return False
+
+
+class CollisionMeshWorker(QThread):
+    """Background worker for CoACD collision mesh generation."""
+    progress = Signal(int, str)  # (percentage, stage_message)
+    finished = Signal(dict)      # result_info dict on success
+    error = Signal(str)          # error message on failure
+
+    def __init__(self, input_path, do_clean, fix_normals, remove_dupes,
+                 threshold, max_hulls, resolution, merge):
+        super().__init__()
+        self.input_path = input_path
+        self.do_clean = do_clean
+        self.fix_normals = fix_normals
+        self.remove_dupes = remove_dupes
+        self.threshold = threshold
+        self.max_hulls = max_hulls
+        self.resolution = resolution
+        self.merge = merge
+
+    def run(self):
+        import tempfile
+        try:
+            decompose_input = self.input_path
+            clean_tmp = None
+
+            # Stage 1: Clean (0% -> 15%)
+            if self.do_clean:
+                self.progress.emit(5, "Cleaning mesh...")
+                clean_tmp = tempfile.NamedTemporaryFile(suffix=".stl", delete=False)
+                clean_tmp.close()
+                mesh_clean(
+                    self.input_path, clean_tmp.name,
+                    fix_normals=self.fix_normals,
+                    remove_duplicates=self.remove_dupes,
+                )
+                decompose_input = clean_tmp.name
+                self.progress.emit(15, "Cleaning complete")
+
+            # Stage 2: Decompose (15% -> 90%)
+            self.progress.emit(20, "Decomposing (CoACD)... this may take a moment")
+            out_tmp = tempfile.NamedTemporaryFile(suffix=".stl", delete=False)
+            out_tmp.close()
+            num_hulls, result_info = mesh_decompose(
+                decompose_input, out_tmp.name,
+                threshold=self.threshold,
+                max_hulls=self.max_hulls,
+                resolution=self.resolution,
+                merge=self.merge,
+            )
+            self.progress.emit(90, "Decomposition complete")
+
+            # Stage 3: Finalize (90% -> 100%)
+            self.progress.emit(95, "Finalizing...")
+            result_info['output_path'] = out_tmp.name
+            result_info['merge'] = self.merge
+
+            # Clean up temp clean file
+            if clean_tmp and os.path.exists(clean_tmp.name):
+                os.remove(clean_tmp.name)
+
+            self.progress.emit(100, "Done")
+            self.finished.emit(result_info)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error.emit(str(e))
+
+
+class MainWindow(VTKViewerBase, QMainWindow):
+    def __init__(self):
+        QMainWindow.__init__(self)
+        self.setWindowTitle("URDF kitchen - MeshSourcer v0.1.0 -")
+        self.resize(1000, 700)  # Wider window, 680px height
+
+        self.camera_rotation = [0, 0, 0]  # [yaw, pitch, roll]
+        self.absolute_origin = [0, 0, 0]  # Absolute origin setting
+        self.initial_camera_position = [10, 0, 0]  # Initial camera position
+        self.initial_camera_focal_point = [0, 0, 0]  # Initial focal point
+        self.initial_camera_view_up = [0, 0, 1]  # Initial view up direction
+
+        self.num_points = 1  # Set number of points to 1
+        self.point_coords = [list(self.absolute_origin) for _ in range(self.num_points)]
+        self.point_actors = [None] * self.num_points
+        self.point_checkboxes = []
+        self.point_inputs = []
+
+        # Track loaded STL file path for save dialog defaults
+        self.current_stl_path = None
+
+        # Main widget and layout setup (horizontal split)
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        main_layout = QHBoxLayout(central_widget)
+
+        self.set_ui_style()
+
+        # Left side: 3D view
+        left_widget = QWidget()
+        left_layout = QVBoxLayout(left_widget)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+
+        # STL display area - Use QLabel instead of QVTKRenderWindowInteractor for M4 Mac compatibility
+        self.vtk_display = QLabel()
+        self.vtk_display.setMinimumSize(600, 600)
+        self.vtk_display.setStyleSheet("""
+            QLabel {
+                background-color: #1a1a1a;
+                border: 2px solid #555;
+            }
+            QLabel:focus {
+                border: 2px solid #00aaff;
+            }
+        """)
+        self.vtk_display.setAlignment(Qt.AlignCenter)
+        self.vtk_display.setText("3D View\n\n(Load STL file to display)\n\nKeyboard controls are enabled")
+        self.vtk_display.setScaledContents(False)
+        self.vtk_display.setMouseTracking(True)
+        self.vtk_display.setFocusPolicy(Qt.StrongFocus)
+
+        self.mouse_pressed = False
+        self.last_mouse_pos = None
+        self.vtk_display.installEventFilter(self)
+        
+
+
+
+        left_layout.addWidget(self.vtk_display)
+        main_layout.addWidget(left_widget, 70)
+
+        right_scroll = QScrollArea()
+        right_scroll.setWidgetResizable(True)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        right_scroll.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        right_scroll.setFixedWidth(420)
+
+        right_widget = QWidget()
+        right_layout = QVBoxLayout(right_widget)
+        right_layout.setSpacing(4)
+        right_layout.setContentsMargins(8, 8, 8, 8)
+        right_scroll.setWidget(right_widget)
+        main_layout.addWidget(right_scroll)
+
+        self.file_name_label = QLabel("File: No file loaded")
+        self.file_name_label.setWordWrap(True)
+        self.file_name_label.setMaximumWidth(380)
+        self.file_name_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Minimum)
+        right_layout.addWidget(self.file_name_label)
+
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(4)
+        self.load_button = QPushButton("Load Mesh")
+        self.load_button.setFocusPolicy(Qt.NoFocus)
+        self.load_button.clicked.connect(self.load_stl_file)
+        self.load_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(self.load_button)
+
+        self.return_mesh_button = QPushButton("Return Mesh")
+        self.return_mesh_button.setFocusPolicy(Qt.NoFocus)
+        self.return_mesh_button.clicked.connect(self.return_mesh_to_assembler)
+        self.return_mesh_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(self.return_mesh_button)
+        self.return_mesh_button.setVisible(False)  # Shown only when launched from Assembler (argv[3] set)
+
+        right_layout.addLayout(button_layout)
+
+        # Initialize collider state before setting up UI
+        self.collider_type = "box"
+        self.collider_params = {"box": [1.0, 1.0, 1.0], "sphere": [0.5], "cylinder": [0.5, 1.0], "capsule": [0.5, 1.0]}
+        self.collider_position = [0.0, 0.0, 0.0]
+        self.collider_rotation = [0.0, 0.0, 0.0]  # RPY in radians (internal)
+        self.collider_rotation_quaternion = np.array([1.0, 0.0, 0.0, 0.0])
+        self.collider_actor = None
+        self.collider_surface_actor = None
+        self.collider_type_initialized = {"box": False, "sphere": False, "cylinder": False, "capsule": False}
+        self.collider_show = False
+        self.collider_first_show = True
+
+        self.collider_blink_timer = QTimer()
+        self.collider_blink_timer.timeout.connect(self.toggle_collider_surface)
+        self.collider_blink_state = False
+
+        self.center_position_active = True
+        self.collider_position_active = False
+        self.collider_size_active = False
+        self.collider_radius_length_active = False
+        self.collider_rotation_active = False
+
+        # Collision mesh generator state
+        self.collision_mesh_actors = []  # VTK actors for collision hull overlay
+        self.collision_mesh_result = None  # Last decomposition result info
+        self.collision_mesh_generating = False  # Prevent double-clicks
+        # Hull selection / blink state
+        self._selected_collision_hulls = []  # up to 2 hull indices; anti-phase blink when 2 selected
+        self._collision_blink_timer = None
+        self._collision_blink_flag = False
+        self._click_press_pos = None  # distinguish click from drag on vtk_display
+        self._collision_hull_undo_stack = []  # list of hull_meshes snapshots for undo
+
+        right_layout.addSpacing(10)
+        self.setup_reorient_mesh_ui(right_layout)
+        right_layout.addSpacing(10)
+        self.setup_collider_ui(right_layout)
+
+        right_layout.addSpacing(10)
+        self.setup_collision_mesh_ui(right_layout)
+
+        right_layout.addSpacing(10)
+        self.setup_batch_converter_ui(right_layout)
+
+        right_layout.addStretch()
+
+        # Delay VTK setup until after window is shown
+        self.vtk_initialized = False
+        self.vtk_fully_ready = False  # VTK initialization complete flag
+        self.pending_file_to_load = None  # File to load after initialization
+        self.pending_collider_data = None  # Collider dict from Assembler (argv[2]) when launched from Inspector
+        self.return_file_path = None  # Path to write return JSON when Return Mesh clicked (argv[3])
+        self.return_node_name = None  # Node name for return (argv[4])
+        self.return_collider_index = 0  # Collider row index for return (argv[5])
+
+        self.model_bounds = None
+        self.stl_actor = None
+        self.current_rotation = 0
+
+        self.stl_center = list(self.absolute_origin)  # Initialize STL model center to absolute origin
+
+        # Wireframe mode state
+        self.wireframe_mode = False
+        self.original_stl_color = None  # Store original color
+        self._toggling_wireframe = False  # Lock for wireframe toggle
+
+        # Help text visibility toggle
+        self.help_visible = True  # Show help text by default
+
+        # Rendering lock to prevent re-entry
+        self._is_rendering = False
+        self._render_counter = 0  # Counter to force Qt pixmap updates
+        self._pending_render_timers = []  # Track pending QTimer instances
+
+        # Mouse drag state management (robust handling)
+        self.mouse_pressed = False
+        self.middle_mouse_pressed = False
+        self.last_mouse_pos = None
+
+        self.animation_timer = QTimer()
+        self.animation_timer.timeout.connect(self.animate_rotation)
+        self.target_rotation = 0
+        self.is_animating = False  # Flag to block input during animation
+        self.target_angle = 0  # Target rotation angle for precise stopping
+        self.rotation_axis = None  # Axis for current rotation
+
+        self.rotation_types = {'yaw': 0, 'pitch': 1, 'roll': 2}
+
+        # Set focus to vtk_display immediately after UI construction
+        QTimer.singleShot(0, lambda: self.vtk_display.setFocus(Qt.OtherFocusReason))
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Ensure focus is on vtk_display when window is shown
+        QTimer.singleShot(0, lambda: self.vtk_display.setFocus(Qt.OtherFocusReason))
+        if not self.vtk_initialized:
+            QTimer.singleShot(100, self._initialize_vtk_delayed)
+            self.vtk_initialized = True
+
+    def _initialize_vtk_delayed(self):
+        try:
+            self.setup_vtk()
+            QTimer.singleShot(100, self._vtk_setup_step2)
+        except Exception as e:
+            print(f"ERROR in VTK step 1: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _vtk_setup_step2(self):
+        try:
+            self.setup_camera()
+            QTimer.singleShot(100, self._vtk_setup_step3)
+        except Exception as e:
+            print(f"ERROR in VTK step 2: {e}")
+
+    def _vtk_setup_step3(self):
+        try:
+            self.axes_widget = None
+            self.add_axes()
+            for i in range(self.num_points):
+                self.show_point(i)
+            self.add_instruction_text()
+            QTimer.singleShot(100, self._vtk_setup_final)
+        except Exception as e:
+            print(f"ERROR in VTK step 3: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _vtk_setup_final(self):
+        try:
+            QTimer.singleShot(200, self.render_to_image)
+            QTimer.singleShot(300, lambda: self.vtk_display.setFocus())
+            # After VTK initialization, load pending file if any
+            QTimer.singleShot(400, self._load_pending_file)
+        except Exception as e:
+            print(f"ERROR in VTK final step: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _load_pending_file(self):
+        """Load pending file after VTK initialization is complete"""
+        self.vtk_fully_ready = True
+        if self.pending_file_to_load:
+            print(f"VTK ready. Loading pending file: {self.pending_file_to_load}")
+            try:
+                self.show_stl(self.pending_file_to_load)
+                # Update file name label and current path
+                self.file_name_label.setText(f"File: {self.pending_file_to_load}")
+                self.current_stl_path = self.pending_file_to_load
+                self.pending_file_to_load = None
+                # Auto-load collider XML from same directory (meshname_collider.xml)
+                base_name = os.path.splitext(self.current_stl_path)[0]
+                collider_xml_path = base_name + "_collider.xml"
+                if os.path.exists(collider_xml_path):
+                    self._load_collider_from_path(collider_xml_path)
+                # Auto-load collision mesh from same directory (meshname_collision.stl or _hull files)
+                self._auto_load_collision_mesh(self.current_stl_path)
+                # Apply collider from Assembler (argv[2]) when launched from Inspector with URDF/MJCF import
+                if self.pending_collider_data:
+                    self._apply_collider_from_dict(self.pending_collider_data)
+                    self.pending_collider_data = None
+                # Render to display the loaded file
+                self.render_to_image()
+            except Exception as e:
+                print(f"Error loading pending file: {e}")
+                import traceback
+                traceback.print_exc()
+
+    def _delayed_render(self):
+        try:
+            self.render_to_image()
+        except Exception as e:
+            print(f"_delayed_render: Render failed: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def render_to_image(self):
+        """Render VTK scene offscreen and display as image in QLabel"""
+        # Dynamically adjust RenderWindow size to match QLabel size
+        # This prevents text clipping and scale issues at different window sizes
+        label_width = self.vtk_display.width()
+        label_height = self.vtk_display.height()
+        if label_width > 0 and label_height > 0:
+            self.render_window.SetSize(label_width, label_height)
+
+        self.offscreen_renderer.update_display(self.vtk_display, restore_focus=True)
+        self._render_counter += 1
+
+    def _cancel_mouse_drag(self):
+        """Cancel mouse drag state - call on abnormal termination (Leave, WindowDeactivate, etc.)"""
+        self.mouse_pressed = False
+        self.middle_mouse_pressed = False
+        self.last_mouse_pos = None
+        try:
+            self.vtk_display.releaseMouse()
+        except:
+            pass
+
+    def set_ui_style(self):
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #2b2b2b;
+            }
+            QDoubleSpinBox {                                                                                                                                                                
+                min-height: 20px;
+                background-color: #3a3a3a;                                                                                                                                                  
+                color: #ffffff;                                                                                                                                                             
+                border: 1px solid #5a5a5a;                                                                                                                                                  
+                border-radius: 3px;                                                                                                                                                               
+            }     
+            QDoubleSpinBox::up-arrow {                                                                                                                                                      
+                width: 14px;                                                                                                                                                                
+                height: 14px;                                                                                                                                                               
+            }                                                                                                                                                                               
+            QDoubleSpinBox::down-arrow {                                                                                                                                                    
+                width: 14px;                                                                                                                                                                
+                height: 14px;                                                                                                                                                               
+            }      
+            QDoubleSpinBox::up-button {                                                                                                                                                     
+                width: 24px;                                                                                                                                                                
+            }                                                                                                                                                                               
+            QDoubleSpinBox::down-button {                                                                                                                                                   
+                width: 24px;                                                                                                                                                                
+            }         
+            QScrollArea {
+                background-color: #2b2b2b;
+                border: none;
+            }
+            QWidget {
+                background-color: #2b2b2b;
+            }
+            QLabel {
+                color: #ffffff;
+            }
+            QPushButton {
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                stop:0 #5a5a5a, stop:1 #3a3a3a);
+                color: #ffffff;
+                border: 1px solid #707070;
+                border-radius: 5px;
+                padding: 3px 8px;
+                min-height: 16px;
+            }
+            QPushButton:hover {
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                stop:0 #6a6a6a, stop:1 #4a4a4a);
+            }
+            QPushButton:pressed {
+                background-color: qlineargradient(x1:0, y1:0, x2:0, y2:1,
+                                                stop:0 #3a3a3a, stop:1 #5a5a5a);
+                padding-top: 6px;
+                padding-bottom: 4px;
+            }
+            QLineEdit {
+                background-color: #3a3a3a;
+                color: #ffffff;
+                border: 1px solid #5a5a5a;
+                border-radius: 3px;
+                padding: 2px;
+            }
+            QComboBox {
+                background-color: #3a3a3a;
+                color: #ffffff;
+                border: 1px solid #5a5a5a;
+                border-radius: 3px;
+                padding: 2px;
+            }
+            QComboBox::drop-down {
+                border: none;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 4px solid transparent;
+                border-right: 4px solid transparent;
+                border-top: 6px solid #ffffff;
+            }
+            QGroupBox {
+                color: #ffffff;
+                border: 1px solid #5a5a5a;
+                border-radius: 5px;
+                margin-top: 10px;
+                padding-top: 10px;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                subcontrol-position: top left;
+                padding: 0 5px;
+                color: #4a90e2;
+            }
+            QCheckBox {
+                color: #ffffff;
+            }
+            QCheckBox::indicator {
+                width: 13px;
+                height: 13px;
+            }
+            QCheckBox::indicator:unchecked {
+                border: 1px solid #5a5a5a;
+                background-color: #2b2b2b;
+            }
+            QCheckBox::indicator:checked {
+                border: 1px solid #5a5a5a;
+                background-color: #4a90e2;
+            }
+        """)
+
+    def setup_points_ui(self):
+        """Create and return the Center Position layout (no longer adds to parent layout)"""
+        points_layout = QGridLayout()
+        points_layout.setSpacing(4)  # Reduce spacing between grid cells
+        points_layout.setVerticalSpacing(5)  # Vertical spacing: 5px
+        points_layout.setContentsMargins(0, 0, 0, 0)  # Remove margins
+
+        for i in range(self.num_points):
+            # Checkbox and Target Marker label on the same row
+            checkbox = QCheckBox()
+            checkbox.setChecked(True)
+            checkbox.stateChanged.connect(lambda state, idx=i: self.on_center_position_checkbox_changed(idx, state))
+            self.point_checkboxes.append(checkbox)
+            points_layout.addWidget(checkbox, i*2, 0)
+
+            label = QLabel("Target Marker Position:")
+            points_layout.addWidget(label, i*2, 1, 1, 7)  # Span remaining columns
+
+            # Input fields on the next row
+            inputs = []
+            for j, axis in enumerate(['X', 'Y', 'Z']):
+                input_field = QLineEdit(str(self.point_coords[i][j]))
+                input_field.setMaximumWidth(90)  # Prevent horizontal expansion
+                # Only allow numbers and decimal point
+                input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
+                # Only focus when explicitly clicked, don't steal keyboard focus
+                input_field.setFocusPolicy(Qt.ClickFocus)
+                # Return focus to vtk_display when editing is done
+                input_field.editingFinished.connect(lambda idx=i: self.on_center_position_changed(idx))
+                input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
+                inputs.append(input_field)
+                points_layout.addWidget(QLabel(f"{axis}:"), i*2+1, j*2)
+                points_layout.addWidget(input_field, i*2+1, j*2+1)
+            self.point_inputs.append(inputs)
+
+        return points_layout
+
+    def setup_reorient_mesh_ui(self, layout):
+        """Setup Origin Marker UI group box"""
+        # Create group box for reorient mesh section
+        reorient_group = QGroupBox("Origin Coordinates")
+        reorient_layout = QVBoxLayout()
+        reorient_layout.setSpacing(4)  # Reduce vertical spacing
+        reorient_layout.setContentsMargins(8, 8, 8, 8)  # Reduce margins
+
+        # Volume display + Show mesh checkbox on the right
+        volume_row = QHBoxLayout()
+        volume_row.setSpacing(4)
+        self.volume_label = QLabel("Volume (m^3): 0.000000")
+        self.volume_label.setMaximumWidth(380)  # Prevent horizontal expansion
+        volume_row.addWidget(self.volume_label)
+        volume_row.addStretch()
+        self.mesh_show_checkbox = QCheckBox("Show")
+        self.mesh_show_checkbox.setChecked(True)
+        self.mesh_show_checkbox.setFocusPolicy(Qt.NoFocus)
+        self.mesh_show_checkbox.stateChanged.connect(self.on_mesh_show_changed)
+        volume_row.addWidget(self.mesh_show_checkbox)
+        reorient_layout.addLayout(volume_row)
+        
+        # Width and Height display (horizontal layout)
+        dimensions_layout = QHBoxLayout()
+        dimensions_layout.setSpacing(10)
+        self.width_label = QLabel("Width (m): 0.000000")
+        self.height_label = QLabel("Height (m): 0.000000")
+        dimensions_layout.addWidget(self.width_label)
+        dimensions_layout.addWidget(self.height_label)
+        dimensions_layout.addStretch()  # Push to the left
+        reorient_layout.addLayout(dimensions_layout)
+
+        # Center Position (from setup_points_ui)
+        points_layout = self.setup_points_ui()
+        reorient_layout.addLayout(points_layout)
+
+        # Add spacing before Clean Mesh checkbox
+        reorient_layout.addSpacing(2)
+
+        # Clean Mesh checkbox for save operation (right-aligned)
+        clean_mesh_layout = QHBoxLayout()
+        
+        # Scale buttons on the left
+        clean_mesh_layout.addWidget(QLabel("Scale :"))
+        clean_mesh_layout.addSpacing(8)
+        
+        scale_x1000_button = QPushButton("x1000")
+        scale_x1000_button.setFocusPolicy(Qt.NoFocus)
+        scale_x1000_button.clicked.connect(lambda: self.scale_mesh(1000.0))
+        scale_x1000_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        clean_mesh_layout.addWidget(scale_x1000_button)
+        
+        scale_x0001_button = QPushButton("x0.001")
+        scale_x0001_button.setFocusPolicy(Qt.NoFocus)
+        scale_x0001_button.clicked.connect(lambda: self.scale_mesh(0.001))
+        scale_x0001_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        clean_mesh_layout.addWidget(scale_x0001_button)
+        
+        clean_mesh_layout.addStretch()  # Push checkbox to the right
+        self.reorient_clean_mesh_checkbox = QCheckBox("Clean Mesh")
+        self.reorient_clean_mesh_checkbox.setFocusPolicy(Qt.NoFocus)
+        self.reorient_clean_mesh_checkbox.setChecked(False)
+        clean_mesh_layout.addWidget(self.reorient_clean_mesh_checkbox)
+        reorient_layout.addLayout(clean_mesh_layout)
+
+        # Add spacing after Clean Mesh checkbox
+        reorient_layout.addSpacing(2)
+
+        # Rotation inputs (degrees) - all in one row
+        rpy_row = QHBoxLayout()
+        rpy_row.setSpacing(4)
+        rpy_row.addWidget(QLabel("Rotation:"))
+        for name, attr in [("Roll:", "mesh_bake_roll"), (" Pitch:", "mesh_bake_pitch"), (" Yaw:", "mesh_bake_yaw")]:
+            lab = QLabel(name)
+            sp = QDoubleSpinBox()
+            sp.setRange(-360.0, 360.0)
+            sp.setDecimals(1)
+            sp.setSingleStep(5.0)
+            sp.setValue(0.0)
+            sp.setKeyboardTracking(False)
+            sp.setAlignment(Qt.AlignRight)
+            sp.setMaximumWidth(60)
+            sp.setStyleSheet("color: white; background-color: #3a3a3a;")
+            sp.valueChanged.connect(self.on_mesh_apply_to_view_clicked)
+            setattr(self, attr, sp)
+            rpy_row.addWidget(lab)
+            rpy_row.addWidget(sp)
+        rpy_row.addStretch()
+        reorient_layout.addLayout(rpy_row)
+
+        # Add spacing after R/P/Y
+        reorient_layout.addSpacing(2)
+
+        # Save, Reset Marker, and Set Front as X buttons (horizontal layout)
+        button_layout = QHBoxLayout()
+        button_layout.setSpacing(4)  # Reduce horizontal spacing
+
+        reset_button = QPushButton("Reset Marker")
+        reset_button.setFocusPolicy(Qt.NoFocus)
+        reset_button.clicked.connect(self.handle_set_reset)
+        reset_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(reset_button)
+
+        set_front_button = QPushButton("Set Front as X")
+        set_front_button.setFocusPolicy(Qt.NoFocus)
+        set_front_button.clicked.connect(self.handle_set_reset)
+        set_front_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(set_front_button)
+
+        self.export_stl_button = QPushButton("Save")
+        self.export_stl_button.setFocusPolicy(Qt.NoFocus)
+        self.export_stl_button.clicked.connect(self.export_stl_with_new_origin)
+        self.export_stl_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(self.export_stl_button)
+
+        reorient_layout.addLayout(button_layout)
+
+        self._make_group_collapsible(
+            reorient_group, reorient_layout,
+            "collapsed_origin_coordinates", default_collapsed=False,
+        )
+        layout.addWidget(reorient_group)
+
+    def _make_group_collapsible(self, group_box, inner_layout, settings_key, default_collapsed=True):
+        """Make a QGroupBox collapsible: click title to toggle, state persisted via QSettings."""
+        content_widget = QWidget()
+        content_widget.setLayout(inner_layout)
+
+        outer_layout = QVBoxLayout()
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+        outer_layout.addWidget(content_widget)
+        group_box.setLayout(outer_layout)
+
+        original_title = group_box.title()
+
+        # Checkable groupbox: title becomes clickable. Hide the indicator so only the arrow prefix shows.
+        group_box.setCheckable(True)
+        group_box.setStyleSheet(
+            "QGroupBox::indicator { width: 0px; height: 0px; margin: 0px; padding: 0px; }"
+        )
+
+        if not hasattr(self, "_collapsible_settings"):
+            self._collapsible_settings = QSettings("urdf_kitchen", "MeshSourcer")
+        settings = self._collapsible_settings
+        collapsed = settings.value(settings_key, default_collapsed, type=bool)
+
+        def apply_state(is_collapsed):
+            content_widget.setVisible(not is_collapsed)
+            arrow = "▶" if is_collapsed else "▼"
+            group_box.setTitle(f"{arrow} {original_title}")
+
+        group_box.blockSignals(True)
+        group_box.setChecked(not collapsed)
+        group_box.blockSignals(False)
+        apply_state(collapsed)
+
+        def on_toggled(checked):
+            is_collapsed = not checked
+            apply_state(is_collapsed)
+            settings.setValue(settings_key, is_collapsed)
+
+        group_box.toggled.connect(on_toggled)
+
+    def setup_collider_ui(self, layout):
+        """Setup collider design UI"""
+        # Create group box for collider section
+        collider_group = QGroupBox("Collider Design")
+        collider_layout = QVBoxLayout()
+        collider_layout.setSpacing(4)  # Reduce vertical spacing
+        collider_layout.setContentsMargins(8, 8, 8, 8)  # Reduce margins
+
+        # Show checkbox and Type selection
+        type_layout = QHBoxLayout()
+        type_layout.setSpacing(4)  # Reduce horizontal spacing
+        self.collider_show_checkbox = QCheckBox()
+        self.collider_show_checkbox.setChecked(False)  # Default: unchecked
+        self.collider_show_checkbox.stateChanged.connect(self.on_collider_show_changed)
+        type_layout.addWidget(self.collider_show_checkbox)
+        type_layout.addSpacing(12)
+        type_layout.addWidget(QLabel("Show Collider"))
+
+        type_layout.addSpacing(20)  # 20px spacing between Show Collider and Type:
+        type_layout.addWidget(QLabel("Type:"))
+        self.collider_type_combo = QComboBox()
+        self.collider_type_combo.addItems(["box", "sphere", "cylinder", "capsule"])
+        self.collider_type_combo.setMinimumWidth(100)  
+        self.collider_type_combo.setFocusPolicy(Qt.NoFocus)
+        self.collider_type_combo.currentTextChanged.connect(self.on_collider_type_changed)
+        type_layout.addWidget(self.collider_type_combo)
+
+        # Add spacer to push Load Collider button to the right
+        type_layout.addStretch()
+
+        # Load Collider button on the right end
+        load_collider_button = QPushButton("Load Collider")
+        load_collider_button.setFocusPolicy(Qt.NoFocus)
+        load_collider_button.clicked.connect(self.load_collider)
+        load_collider_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        type_layout.addWidget(load_collider_button)
+
+        collider_layout.addLayout(type_layout)
+
+        # Position inputs with checkbox (moved to be right after Show/Type)
+        position_layout = QGridLayout()
+        position_layout.setHorizontalSpacing(4)
+        self.collider_position_checkbox = QCheckBox()
+        self.collider_position_checkbox.setChecked(False)
+        self.collider_position_checkbox.stateChanged.connect(self.on_collider_position_checkbox_changed)
+        position_layout.addWidget(self.collider_position_checkbox, 0, 0)
+        position_label = QLabel("Position:")
+        position_label.setMinimumWidth(90)  # Align with Size: and Rotation:
+        position_layout.addWidget(position_label, 0, 1)
+        col = 2
+        self.collider_position_inputs = []
+        for i, axis in enumerate(['X', 'Y', 'Z']):
+            position_layout.addWidget(QLabel(f"{axis}:"), 0, col)
+            col += 1
+            input_field = QLineEdit("0.0")
+            input_field.setMaximumWidth(60)
+            input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
+            input_field.setFocusPolicy(Qt.ClickFocus)
+            input_field.editingFinished.connect(lambda idx=i: self.on_collider_position_input_changed(idx))
+            input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
+            position_layout.addWidget(input_field, 0, col)
+            self.collider_position_inputs.append(input_field)
+            col += 1
+            if i < 2:  # Add spacing between X-Y and Y-Z
+                position_layout.setColumnMinimumWidth(col, 6)
+                col += 1
+        collider_layout.addLayout(position_layout)
+
+        # Parameters section (dynamic based on type)
+        self.collider_params_layout = QGridLayout()
+        self.collider_params_layout.setHorizontalSpacing(4)  # Reduce spacing between label and input
+        self.collider_param_labels = []
+        self.collider_param_inputs = []
+        collider_layout.addLayout(self.collider_params_layout)
+
+        # Rotation inputs with checkbox
+        rotation_layout = QGridLayout()
+        rotation_layout.setHorizontalSpacing(4)
+        self.collider_rotation_checkbox = QCheckBox()
+        self.collider_rotation_checkbox.setChecked(False)
+        self.collider_rotation_checkbox.stateChanged.connect(self.on_collider_rotation_checkbox_changed)
+        rotation_layout.addWidget(self.collider_rotation_checkbox, 0, 0)
+        rot_label = QLabel("Rotation(deg):")
+        rot_label.setFixedWidth(95) 
+        rotation_layout.addWidget(rot_label, 0, 1)
+        col = 2
+        self.collider_rotation_inputs = []
+        for i, axis in enumerate(['Roll', 'Pitch', 'Yaw']):
+            rotation_layout.addWidget(QLabel(f"{axis}:"), 0, col)
+            col += 1
+            input_field = QLineEdit("0.0")
+            input_field.setMaximumWidth(50)
+            input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
+            input_field.setFocusPolicy(Qt.ClickFocus)
+            input_field.editingFinished.connect(lambda idx=i: self.on_collider_rotation_input_changed(idx))
+            input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
+            rotation_layout.addWidget(input_field, 0, col)
+            self.collider_rotation_inputs.append(input_field)
+            col += 1
+            if i < 2:  # Add spacing between Roll-Pitch and Pitch-Yaw
+                rotation_layout.setColumnMinimumWidth(col, 2)
+                col += 1
+        collider_layout.addLayout(rotation_layout)
+
+        # Add spacing before buttons
+        collider_layout.addSpacing(10)
+
+        # Buttons
+        button_layout = QHBoxLayout()
+
+        draft_button = QPushButton("Rough Fit")
+        draft_button.setFocusPolicy(Qt.NoFocus)
+        draft_button.clicked.connect(self.draft_collider)
+        draft_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(draft_button)
+
+        reset_button = QPushButton("Reset Collider")
+        reset_button.setFocusPolicy(Qt.NoFocus)
+        reset_button.clicked.connect(self.reset_and_fit_collider)
+        reset_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(reset_button)
+
+        export_collider_button = QPushButton("Export Collider")
+        export_collider_button.setFocusPolicy(Qt.NoFocus)
+        export_collider_button.clicked.connect(self.export_collider)
+        export_collider_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        button_layout.addWidget(export_collider_button)
+
+        collider_layout.addLayout(button_layout)
+
+        self._make_group_collapsible(
+            collider_group, collider_layout,
+            "collapsed_collider_design", default_collapsed=False,
+        )
+        layout.addWidget(collider_group)
+
+        # Initialize parameter inputs for default type (box)
+        self.update_collider_param_inputs()
+
+    def setup_collision_mesh_ui(self, layout):
+        """Setup Collision Mesh Generator UI (CoACD convex decomposition)"""
+        collision_group = QGroupBox("Collision Mesh Generator")
+        collision_layout = QVBoxLayout()
+        collision_layout.setSpacing(4)
+        collision_layout.setContentsMargins(8, 8, 8, 8)
+
+        if not COACD_AVAILABLE:
+            unavailable_label = QLabel("CoACD not installed. Run: pip install coacd>=1.0.7")
+            unavailable_label.setStyleSheet("color: #ff6666;")
+            unavailable_label.setWordWrap(True)
+            collision_layout.addWidget(unavailable_label)
+            # Keep the error message visible: don't collapse this case.
+            collision_group.setLayout(collision_layout)
+            layout.addWidget(collision_group)
+            return
+
+        # Clean options row
+        clean_layout = QHBoxLayout()
+        clean_layout.setSpacing(4)
+        self.collision_clean_checkbox = QCheckBox("Clean before decompose")
+        self.collision_clean_checkbox.setChecked(True)
+        self.collision_clean_checkbox.setFocusPolicy(Qt.NoFocus)
+        clean_layout.addWidget(self.collision_clean_checkbox)
+        clean_layout.addStretch()
+        collision_layout.addLayout(clean_layout)
+
+        clean_opts_layout = QHBoxLayout()
+        clean_opts_layout.setSpacing(4)
+        clean_opts_layout.addSpacing(20)
+        self.collision_fix_normals = QCheckBox("Fix normals")
+        self.collision_fix_normals.setChecked(True)
+        self.collision_fix_normals.setFocusPolicy(Qt.NoFocus)
+        clean_opts_layout.addWidget(self.collision_fix_normals)
+        clean_opts_layout.addSpacing(20)
+        self.collision_remove_dupes = QCheckBox("Remove duplicates")
+        self.collision_remove_dupes.setChecked(True)
+        self.collision_remove_dupes.setFocusPolicy(Qt.NoFocus)
+        clean_opts_layout.addWidget(self.collision_remove_dupes)
+        clean_opts_layout.addStretch()
+        collision_layout.addLayout(clean_opts_layout)
+
+        collision_layout.addSpacing(4)
+
+        # Decomposition parameters
+        params_grid = QGridLayout()
+        params_grid.setHorizontalSpacing(8)
+        params_grid.setVerticalSpacing(4)
+
+        params_grid.addWidget(QLabel("Threshold:"), 0, 0)
+        self.collision_threshold = QDoubleSpinBox()
+        self.collision_threshold.setRange(0.01, 1.0)
+        self.collision_threshold.setSingleStep(0.01)
+        self.collision_threshold.setValue(0.05)
+        self.collision_threshold.setDecimals(2)
+        self.collision_threshold.setMaximumWidth(70)
+        self.collision_threshold.setFocusPolicy(Qt.ClickFocus)
+        params_grid.addWidget(self.collision_threshold, 0, 1)
+
+        params_grid.addWidget(QLabel("Max hulls:"), 0, 2)
+        self.collision_max_hulls = QLineEdit("-1")
+        self.collision_max_hulls.setMaximumWidth(50)
+        self.collision_max_hulls.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d+$')))
+        self.collision_max_hulls.setFocusPolicy(Qt.ClickFocus)
+        params_grid.addWidget(self.collision_max_hulls, 0, 3)
+
+        params_grid.addWidget(QLabel("Resolution:"), 1, 0)
+        self.collision_resolution = QLineEdit("2000")
+        self.collision_resolution.setMaximumWidth(70)
+        self.collision_resolution.setValidator(QRegularExpressionValidator(QRegularExpression(r'^\d+$')))
+        self.collision_resolution.setFocusPolicy(Qt.ClickFocus)
+        params_grid.addWidget(self.collision_resolution, 1, 1)
+
+        collision_layout.addLayout(params_grid)
+
+        collision_layout.addSpacing(4)
+
+        # Merge mode radio buttons
+        mode_layout = QHBoxLayout()
+        mode_layout.setSpacing(8)
+        self.collision_mode_group = QButtonGroup(self)
+        self.collision_merged_radio = QRadioButton("Merged (single file)")
+        self.collision_merged_radio.setChecked(True)
+        self.collision_merged_radio.setFocusPolicy(Qt.NoFocus)
+        self.collision_merged_radio.setStyleSheet("QRadioButton { color: white; }")
+        self.collision_multihull_radio = QRadioButton("Multi-hull (per hull)")
+        self.collision_multihull_radio.setFocusPolicy(Qt.NoFocus)
+        self.collision_multihull_radio.setStyleSheet("QRadioButton { color: white; }")
+        self.collision_mode_group.addButton(self.collision_merged_radio)
+        self.collision_mode_group.addButton(self.collision_multihull_radio)
+        mode_layout.addWidget(self.collision_merged_radio)
+        mode_layout.addWidget(self.collision_multihull_radio)
+        mode_layout.addStretch()
+        collision_layout.addLayout(mode_layout)
+
+        collision_layout.addSpacing(6)
+
+        # Show overlay checkbox + buttons row
+        action_layout = QHBoxLayout()
+        action_layout.setSpacing(4)
+
+        self.collision_show_checkbox = QCheckBox("Show")
+        self.collision_show_checkbox.setChecked(True)
+        self.collision_show_checkbox.setFocusPolicy(Qt.NoFocus)
+        self.collision_show_checkbox.stateChanged.connect(self.on_collision_show_changed)
+        action_layout.addWidget(self.collision_show_checkbox)
+
+        action_layout.addSpacing(8)
+
+        generate_button = QPushButton("Generate")
+        generate_button.setFocusPolicy(Qt.NoFocus)
+        generate_button.clicked.connect(self.generate_collision_mesh)
+        generate_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        action_layout.addWidget(generate_button)
+
+        export_button = QPushButton("Export Collision Mesh")
+        export_button.setFocusPolicy(Qt.NoFocus)
+        export_button.clicked.connect(self.export_collision_mesh)
+        export_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        action_layout.addWidget(export_button)
+
+        collision_layout.addLayout(action_layout)
+
+        collision_layout.addSpacing(4)
+
+        # Progress bar
+        self.collision_progress_bar = QProgressBar()
+        self.collision_progress_bar.setRange(0, 100)
+        self.collision_progress_bar.setValue(0)
+        self.collision_progress_bar.setTextVisible(True)
+        self.collision_progress_bar.setFormat("%p%")
+        self.collision_progress_bar.setMaximumHeight(18)
+        self.collision_progress_bar.setStyleSheet("""
+            QProgressBar {
+                border: 1px solid #555;
+                border-radius: 3px;
+                background-color: #2a2a2a;
+                text-align: center;
+                color: #cccccc;
+            }
+            QProgressBar::chunk {
+                background-color: #00aaff;
+                border-radius: 2px;
+            }
+        """)
+        self.collision_progress_bar.setVisible(False)
+        collision_layout.addWidget(self.collision_progress_bar)
+
+        # Status label
+        self.collision_status_label = QLabel("Status: Ready")
+        self.collision_status_label.setWordWrap(True)
+        self.collision_status_label.setStyleSheet("color: #aaaaaa;")
+        collision_layout.addWidget(self.collision_status_label)
+
+        self._make_group_collapsible(
+            collision_group, collision_layout,
+            "collapsed_collision_mesh_generator", default_collapsed=True,
+        )
+        layout.addWidget(collision_group)
+
+    def generate_collision_mesh(self):
+        """Run CoACD convex decomposition on the currently loaded mesh (threaded)."""
+        if not COACD_AVAILABLE:
+            self.collision_status_label.setText("Status: CoACD not installed")
+            return
+        if not self.current_stl_path:
+            self.collision_status_label.setText("Status: No mesh loaded")
+            return
+        if self.collision_mesh_generating:
+            return
+
+        self.collision_mesh_generating = True
+
+        # Show progress bar and update status
+        self.collision_progress_bar.setVisible(True)
+        self.collision_progress_bar.setValue(0)
+        self.collision_status_label.setText("Status: Starting...")
+        self.collision_status_label.setStyleSheet("color: #ffcc00;")
+
+        # Read params from UI before launching thread
+        input_path = self.current_stl_path
+        threshold = self.collision_threshold.value()
+        max_hulls = int(self.collision_max_hulls.text() or "-1")
+        resolution = int(self.collision_resolution.text() or "2000")
+        merge = self.collision_merged_radio.isChecked()
+        do_clean = self.collision_clean_checkbox.isChecked()
+        fix_normals = self.collision_fix_normals.isChecked()
+        remove_dupes = self.collision_remove_dupes.isChecked()
+
+        # Create and start worker thread
+        self._collision_worker = CollisionMeshWorker(
+            input_path, do_clean, fix_normals, remove_dupes,
+            threshold, max_hulls, resolution, merge,
+        )
+        self._collision_worker.progress.connect(self._on_collision_progress)
+        self._collision_worker.finished.connect(self._on_collision_finished)
+        self._collision_worker.error.connect(self._on_collision_error)
+        self._collision_worker.start()
+
+    def _on_collision_progress(self, percentage, message):
+        """Handle progress updates from the worker thread."""
+        self.collision_progress_bar.setValue(percentage)
+        self.collision_status_label.setText(f"Status: {message}")
+
+    def _on_collision_finished(self, result_info):
+        """Handle successful completion from the worker thread."""
+        self.collision_mesh_result = result_info
+        # New decomposition invalidates any previous delete/undo history.
+        self._collision_hull_undo_stack.clear()
+
+        # Update 3D preview
+        if self.collision_show_checkbox.isChecked():
+            self.update_collision_mesh_display()
+
+        # Update status
+        in_f = result_info['input_faces']
+        out_f = result_info['output_faces']
+        num_hulls = result_info['num_hulls']
+        reduction = (1 - out_f / in_f) * 100 if in_f > 0 else 0
+        self.collision_status_label.setText(
+            f"Status: {num_hulls} hull(s), {in_f:,} -> {out_f:,} faces ({reduction:.0f}% reduction)"
+        )
+        self.collision_status_label.setStyleSheet("color: #66ff66;")
+        self.collision_progress_bar.setValue(100)
+
+        # Hide progress bar after a short delay
+        QTimer.singleShot(2000, lambda: self.collision_progress_bar.setVisible(False))
+        self.collision_mesh_generating = False
+
+    def _on_collision_error(self, error_msg):
+        """Handle error from the worker thread."""
+        self.collision_status_label.setText(f"Status: Error - {error_msg}")
+        self.collision_status_label.setStyleSheet("color: #ff6666;")
+        self.collision_progress_bar.setVisible(False)
+        self.collision_mesh_generating = False
+
+    def update_collision_mesh_display(self):
+        """Show/update collision hull overlay in the 3D view."""
+        # Remove old collision mesh actors
+        self.remove_collision_mesh_actors()
+
+        if not self.collision_mesh_result or not self.collision_show_checkbox.isChecked():
+            self.render_to_image()
+            return
+
+        hull_meshes = self.collision_mesh_result.get('hull_meshes', [])
+        if not hull_meshes:
+            return
+
+        # Color palette for distinguishing hulls
+        hull_colors = [
+            (1.0, 0.4, 0.0),  # Orange
+            (0.0, 1.0, 0.5),  # Green
+            (0.4, 0.6, 1.0),  # Blue
+            (1.0, 1.0, 0.0),  # Yellow
+            (1.0, 0.0, 0.6),  # Pink
+            (0.0, 1.0, 1.0),  # Cyan
+            (0.8, 0.4, 1.0),  # Purple
+            (1.0, 0.7, 0.3),  # Gold
+        ]
+
+        for i, hull_tm in enumerate(hull_meshes):
+            color = hull_colors[i % len(hull_colors)]
+
+            # Convert trimesh to VTK polydata
+            points = vtk.vtkPoints()
+            for v in hull_tm.vertices:
+                points.InsertNextPoint(v[0], v[1], v[2])
+
+            triangles = vtk.vtkCellArray()
+            for f in hull_tm.faces:
+                triangle = vtk.vtkTriangle()
+                triangle.GetPointIds().SetId(0, int(f[0]))
+                triangle.GetPointIds().SetId(1, int(f[1]))
+                triangle.GetPointIds().SetId(2, int(f[2]))
+                triangles.InsertNextCell(triangle)
+
+            polydata = vtk.vtkPolyData()
+            polydata.SetPoints(points)
+            polydata.SetPolys(triangles)
+
+            # Wireframe actor
+            mapper_wire = vtk.vtkPolyDataMapper()
+            mapper_wire.SetInputData(polydata)
+            actor_wire = vtk.vtkActor()
+            actor_wire.SetMapper(mapper_wire)
+            actor_wire.GetProperty().SetColor(*color)
+            actor_wire.GetProperty().SetRepresentationToWireframe()
+            actor_wire.GetProperty().SetLineWidth(1.5)
+            self.renderer.AddActor(actor_wire)
+            self.collision_mesh_actors.append(actor_wire)
+
+            # Semi-transparent surface actor
+            mapper_surf = vtk.vtkPolyDataMapper()
+            mapper_surf.SetInputData(polydata)
+            actor_surf = vtk.vtkActor()
+            actor_surf.SetMapper(mapper_surf)
+            actor_surf.GetProperty().SetColor(*color)
+            actor_surf.GetProperty().SetOpacity(0.15)
+            self.renderer.AddActor(actor_surf)
+            self.collision_mesh_actors.append(actor_surf)
+
+        self.render_to_image()
+
+    def remove_collision_mesh_actors(self):
+        """Remove all collision mesh overlay actors from renderer."""
+        # Stop blink if a hull was selected — actors are about to be removed.
+        if self._collision_blink_timer is not None:
+            self._collision_blink_timer.stop()
+        self._selected_collision_hulls = []
+        for actor in self.collision_mesh_actors:
+            self.renderer.RemoveActor(actor)
+        self.collision_mesh_actors = []
+
+    def _handle_vtk_click(self, x, y, shift=False):
+        """Pick a collision hull at (x, y) in vtk_display coords.
+        shift=True → toggle-add to selection (up to 2 hulls).
+        shift=False → replace selection with the picked hull, or clear if nothing hit.
+        """
+        if not self.collision_mesh_actors:
+            if not shift:
+                self._deselect_all_collision_hulls()
+            return
+        try:
+            height = self.render_window.GetSize()[1]
+        except Exception:
+            return
+        picker = vtk.vtkPropPicker()
+        picker.InitializePickList()
+        picker.SetPickFromList(1)
+        for actor in self.collision_mesh_actors:
+            picker.AddPickList(actor)
+        # Qt Y is top-origin; VTK Y is bottom-origin
+        picker.Pick(x, height - y, 0, self.renderer)
+        picked = picker.GetActor()
+        if picked is None:
+            if not shift:
+                self._deselect_all_collision_hulls()
+            return
+        hull_idx = None
+        for i, actor in enumerate(self.collision_mesh_actors):
+            if actor is picked:
+                hull_idx = i // 2  # pairs of (wireframe, surface)
+                break
+        if hull_idx is None:
+            if not shift:
+                self._deselect_all_collision_hulls()
+            return
+        if shift:
+            self._toggle_collision_hull_selection(hull_idx)
+        else:
+            self._set_single_collision_hull_selection(hull_idx)
+
+    def _set_single_collision_hull_selection(self, hull_idx):
+        """Replace current selection with a single hull and start blinking."""
+        if self._selected_collision_hulls == [hull_idx]:
+            return
+        # Restore previous colors by rebuilding overlay first
+        if self._selected_collision_hulls:
+            self._selected_collision_hulls = []
+            self.update_collision_mesh_display()
+        self._selected_collision_hulls = [hull_idx]
+        self._start_collision_blink()
+
+    def _toggle_collision_hull_selection(self, hull_idx):
+        """Shift-click: toggle a hull in the current selection (max 2)."""
+        if hull_idx in self._selected_collision_hulls:
+            # Deselect this one
+            self._selected_collision_hulls.remove(hull_idx)
+            # Rebuild overlay to restore colors before re-applying blink for the remaining one
+            remaining = list(self._selected_collision_hulls)
+            self._selected_collision_hulls = []
+            self.update_collision_mesh_display()
+            if remaining:
+                self._selected_collision_hulls = remaining
+                self._start_collision_blink()
+            else:
+                if self._collision_blink_timer is not None:
+                    self._collision_blink_timer.stop()
+            return
+        if len(self._selected_collision_hulls) >= 2:
+            return  # Cap at 2; user must deselect one first
+        self._selected_collision_hulls.append(hull_idx)
+        self._start_collision_blink()
+
+    def _deselect_all_collision_hulls(self):
+        """Cancel all selection and restore original palette colors."""
+        if not self._selected_collision_hulls:
+            return
+        if self._collision_blink_timer is not None:
+            self._collision_blink_timer.stop()
+        self._selected_collision_hulls = []
+        self.update_collision_mesh_display()
+
+    def _start_collision_blink(self):
+        """(Re)start the blink timer and apply immediately."""
+        self._collision_blink_flag = False
+        self._apply_collision_blink()
+        if self._collision_blink_timer is None:
+            self._collision_blink_timer = QTimer(self)
+            self._collision_blink_timer.timeout.connect(self._on_collision_blink_tick)
+        self._collision_blink_timer.start(250)
+
+    def _on_collision_blink_tick(self):
+        if not self._selected_collision_hulls:
+            return
+        self._collision_blink_flag = not self._collision_blink_flag
+        self._apply_collision_blink()
+
+    def _apply_collision_blink(self):
+        if not self._selected_collision_hulls:
+            return
+        red = (1.0, 0.15, 0.15)
+        blue = (0.15, 0.55, 1.0)
+        for i, idx in enumerate(self._selected_collision_hulls):
+            wire_idx = idx * 2
+            surf_idx = idx * 2 + 1
+            if surf_idx >= len(self.collision_mesh_actors):
+                continue
+            # Anti-phase: 2nd selected hull uses the opposite color
+            flag = self._collision_blink_flag if i == 0 else not self._collision_blink_flag
+            color = blue if flag else red
+            self.collision_mesh_actors[wire_idx].GetProperty().SetColor(*color)
+            self.collision_mesh_actors[wire_idx].GetProperty().SetLineWidth(3.0)
+            self.collision_mesh_actors[surf_idx].GetProperty().SetColor(*color)
+            self.collision_mesh_actors[surf_idx].GetProperty().SetOpacity(0.35)
+        self.render_to_image()
+
+    def _delete_selected_collision_hulls(self):
+        """Remove all currently selected hulls from the decomposition result."""
+        if not self._selected_collision_hulls or self.collision_mesh_result is None:
+            return
+        hulls = self.collision_mesh_result.get('hull_meshes', [])
+        # Snapshot for undo (shallow copy of list; hull refs unchanged)
+        self._collision_hull_undo_stack.append(list(hulls))
+        for idx in sorted(self._selected_collision_hulls, reverse=True):
+            if 0 <= idx < len(hulls):
+                hulls.pop(idx)
+        if self._collision_blink_timer is not None:
+            self._collision_blink_timer.stop()
+        self._selected_collision_hulls = []
+        self._refresh_collision_status_label()
+        self.update_collision_mesh_display()
+
+    def _merge_selected_collision_hulls(self):
+        """Merge the 2 selected hulls into a single convex hull spanning both point sets."""
+        if len(self._selected_collision_hulls) != 2 or self.collision_mesh_result is None:
+            return
+        hulls = self.collision_mesh_result.get('hull_meshes', [])
+        a, b = sorted(self._selected_collision_hulls)
+        if not (0 <= a < b < len(hulls)):
+            return
+        try:
+            import trimesh
+        except ImportError:
+            print("Merge failed: trimesh not available")
+            return
+        combined = np.vstack([np.asarray(hulls[a].vertices),
+                              np.asarray(hulls[b].vertices)])
+        try:
+            merged = trimesh.PointCloud(combined).convex_hull
+        except Exception as e:
+            print(f"Merge failed: {e}")
+            return
+        # Snapshot for undo before mutating
+        self._collision_hull_undo_stack.append(list(hulls))
+        # Remove b (higher index) first, then a, insert merged at a
+        hulls.pop(b)
+        hulls.pop(a)
+        hulls.insert(a, merged)
+        if self._collision_blink_timer is not None:
+            self._collision_blink_timer.stop()
+        self._selected_collision_hulls = []
+        self._refresh_collision_status_label()
+        self.update_collision_mesh_display()
+
+    def _undo_last_hull_action(self):
+        """Restore hull_meshes to the most recent snapshot."""
+        if not self._collision_hull_undo_stack or self.collision_mesh_result is None:
+            return
+        snapshot = self._collision_hull_undo_stack.pop()
+        # Replace list contents in place to preserve any external references
+        hulls = self.collision_mesh_result.get('hull_meshes', [])
+        hulls.clear()
+        hulls.extend(snapshot)
+        if self._collision_blink_timer is not None:
+            self._collision_blink_timer.stop()
+        self._selected_collision_hulls = []
+        self._refresh_collision_status_label()
+        self.update_collision_mesh_display()
+
+    def _refresh_collision_status_label(self):
+        """Recompute totals and refresh the collision status label."""
+        if self.collision_mesh_result is None:
+            return
+        try:
+            hulls = self.collision_mesh_result.get('hull_meshes', [])
+            total_v = sum(len(h.vertices) for h in hulls)
+            total_f = sum(len(h.faces) for h in hulls)
+            self.collision_mesh_result['num_hulls'] = len(hulls)
+            self.collision_mesh_result['total_vertices'] = total_v
+            self.collision_mesh_result['total_faces'] = total_f
+            if hasattr(self, 'collision_status_label'):
+                self.collision_status_label.setText(
+                    f"Status: {len(hulls)} hull(s), {total_v:,} → {total_f:,} faces"
+                )
+        except Exception:
+            pass
+
+    def _has_renderer(self):
+        """Check if the VTK renderer is available."""
+        return hasattr(self, 'renderer') and self.renderer is not None
+
+    def on_mesh_show_changed(self, state):
+        """Toggle STL mesh visibility in the 3D view."""
+        if not self._has_renderer():
+            return
+        if self.stl_actor is None:
+            return
+        self.stl_actor.SetVisibility(1 if state else 0)
+        self.render_to_image()
+
+    def on_collision_show_changed(self, state):
+        """Toggle collision mesh overlay visibility."""
+        if not self._has_renderer():
+            return
+        if state:
+            if self.collision_mesh_result:
+                self.update_collision_mesh_display()
+        else:
+            self.remove_collision_mesh_actors()
+            self.render_to_image()
+
+    def _auto_load_collision_mesh(self, mesh_path):
+        """Auto-detect and load previously exported collision mesh(es) for the given mesh."""
+        if not COACD_AVAILABLE:
+            return
+
+        base_name = os.path.splitext(mesh_path)[0]
+        ext = os.path.splitext(mesh_path)[1]
+
+        # Check for multi-hull files first (meshname_collision_hull_000.stl, ...)
+        import glob
+        hull_pattern = base_name + "_collision_hull_*" + ext
+        hull_files = sorted(glob.glob(hull_pattern))
+
+        if hull_files:
+            # Multi-hull mode: load each hull as a trimesh
+            hull_meshes = []
+            total_faces = 0
+            total_verts = 0
+            for hull_path in hull_files:
+                hull_tm = trimesh.load(hull_path, force="mesh")
+                hull_meshes.append(hull_tm)
+                total_faces += int(hull_tm.faces.shape[0])
+                total_verts += int(hull_tm.vertices.shape[0])
+
+            # Load original mesh stats for comparison
+            original_mesh = trimesh.load(mesh_path, force="mesh")
+            input_faces = int(original_mesh.faces.shape[0])
+
+            self.collision_mesh_result = {
+                'num_hulls': len(hull_meshes),
+                'input_faces': input_faces,
+                'input_verts': int(original_mesh.vertices.shape[0]),
+                'output_faces': total_faces,
+                'output_verts': total_verts,
+                'hull_meshes': hull_meshes,
+                'merge': False,
+            }
+            self._collision_hull_undo_stack.clear()
+
+            # Switch UI to multi-hull mode
+            self.collision_multihull_radio.setChecked(True)
+
+            reduction = (1 - total_faces / input_faces) * 100 if input_faces > 0 else 0
+            self.collision_status_label.setText(
+                f"Status: Loaded {len(hull_meshes)} hull(s), {input_faces:,} -> {total_faces:,} faces ({reduction:.0f}% reduction)"
+            )
+            self.collision_status_label.setStyleSheet("color: #66ccff;")
+            print(f"Auto-loaded {len(hull_meshes)} collision hull files for {os.path.basename(mesh_path)}")
+
+            if self.collision_show_checkbox.isChecked() and self._has_renderer():
+                self.update_collision_mesh_display()
+            return
+
+        # Check for single merged file (meshname_collision.stl)
+        merged_path = base_name + "_collision" + ext
+        if os.path.exists(merged_path):
+            merged_tm = trimesh.load(merged_path, force="mesh")
+            original_mesh = trimesh.load(mesh_path, force="mesh")
+            input_faces = int(original_mesh.faces.shape[0])
+            output_faces = int(merged_tm.faces.shape[0])
+
+            self.collision_mesh_result = {
+                'num_hulls': 1,
+                'input_faces': input_faces,
+                'input_verts': int(original_mesh.vertices.shape[0]),
+                'output_faces': output_faces,
+                'output_verts': int(merged_tm.vertices.shape[0]),
+                'hull_meshes': [merged_tm],
+                'output_path': merged_path,
+                'merge': True,
+            }
+            self._collision_hull_undo_stack.clear()
+
+            # Switch UI to merged mode
+            self.collision_merged_radio.setChecked(True)
+
+            reduction = (1 - output_faces / input_faces) * 100 if input_faces > 0 else 0
+            self.collision_status_label.setText(
+                f"Status: Loaded collision mesh, {input_faces:,} -> {output_faces:,} faces ({reduction:.0f}% reduction)"
+            )
+            self.collision_status_label.setStyleSheet("color: #66ccff;")
+            print(f"Auto-loaded collision mesh: {os.path.basename(merged_path)}")
+
+            if self.collision_show_checkbox.isChecked() and self._has_renderer():
+                self.update_collision_mesh_display()
+
+    def _ask_collision_export_format(self):
+        """Modal dialog: choose STL or OBJ. Returns 'stl' | 'obj' | None (cancelled)."""
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Export Collision Mesh")
+        v = QVBoxLayout(dlg)
+        v.addWidget(QLabel("Select output format:"))
+
+        row = QHBoxLayout()
+        group = QButtonGroup(dlg)
+        obj_radio = QRadioButton(".obj")
+        stl_radio = QRadioButton(".stl")
+        obj_radio.setStyleSheet("QRadioButton { color: white; }")
+        stl_radio.setStyleSheet("QRadioButton { color: white; }")
+        obj_radio.setChecked(True)  # Default: OBJ
+        group.addButton(obj_radio)
+        group.addButton(stl_radio)
+        row.addWidget(obj_radio)
+        row.addWidget(stl_radio)
+        row.addStretch()
+        v.addLayout(row)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dlg)
+        buttons.accepted.connect(dlg.accept)
+        buttons.rejected.connect(dlg.reject)
+        v.addWidget(buttons)
+
+        if dlg.exec() != QDialog.Accepted:
+            return None
+        return "obj" if obj_radio.isChecked() else "stl"
+
+    def export_collision_mesh(self):
+        """Export the generated collision mesh to file(s)."""
+        if not self.collision_mesh_result:
+            self.collision_status_label.setText("Status: Generate a collision mesh first")
+            self.collision_status_label.setStyleSheet("color: #ff6666;")
+            return
+
+        if not self.current_stl_path:
+            return
+
+        fmt = self._ask_collision_export_format()
+        if fmt is None:
+            return
+        ext = "." + fmt
+
+        base_name = os.path.splitext(self.current_stl_path)[0]
+        merge = self.collision_mesh_result.get('merge', True)
+        hull_meshes = self.collision_mesh_result.get('hull_meshes', [])
+
+        if not hull_meshes:
+            self.collision_status_label.setText("Status: No hulls to export")
+            self.collision_status_label.setStyleSheet("color: #ff6666;")
+            return
+
+        try:
+            import trimesh
+        except ImportError:
+            self.collision_status_label.setText("Status: trimesh not available")
+            self.collision_status_label.setStyleSheet("color: #ff6666;")
+            return
+
+        if merge:
+            default_path = base_name + "_collision" + ext
+            file_filter = f"{fmt.upper()} Files (*{ext})"
+            file_path, _ = QFileDialog.getSaveFileName(
+                self, "Export Collision Mesh", default_path, file_filter)
+            if not file_path:
+                return
+            if not file_path.lower().endswith(ext):
+                file_path += ext
+
+            # Combine current hull_meshes (reflects any deletes/merges by the user)
+            try:
+                if len(hull_meshes) == 1:
+                    combined = hull_meshes[0]
+                else:
+                    combined = trimesh.util.concatenate(hull_meshes)
+                combined.export(file_path)
+            except Exception as e:
+                self.collision_status_label.setText(f"Status: Export failed: {e}")
+                self.collision_status_label.setStyleSheet("color: #ff6666;")
+                print(f"Collision mesh export failed: {e}")
+                return
+
+            # Clean up the CoACD temp file if it still exists (no longer authoritative)
+            tmp_path = self.collision_mesh_result.get('output_path', '')
+            if tmp_path and os.path.exists(tmp_path) and tmp_path != file_path:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            self.collision_mesh_result['output_path'] = file_path
+            self.collision_status_label.setText(f"Status: Exported -> {os.path.basename(file_path)}")
+            self.collision_status_label.setStyleSheet("color: #66ff66;")
+            print(f"Collision mesh exported to: {file_path}")
+        else:
+            # Multi-hull: save each hull individually
+            default_dir = os.path.dirname(self.current_stl_path)
+            dir_path = QFileDialog.getExistingDirectory(
+                self, "Select Output Directory for Hull Files", default_dir)
+            if not dir_path:
+                return
+
+            mesh_base = os.path.splitext(os.path.basename(self.current_stl_path))[0]
+            for i, hull_tm in enumerate(hull_meshes):
+                hull_path = os.path.join(dir_path, f"{mesh_base}_collision_hull_{i:03d}{ext}")
+                hull_tm.export(hull_path)
+
+            num = len(hull_meshes)
+            self.collision_status_label.setText(f"Status: Exported {num} hull files -> {os.path.basename(dir_path)}/")
+            self.collision_status_label.setStyleSheet("color: #66ff66;")
+            print(f"Exported {num} collision hull files ({ext}) to: {dir_path}")
+
+    def setup_batch_converter_ui(self, layout):
+        """Setup Batch Mesh Converter UI group box"""
+        # Create group box for batch converter section
+        converter_group = QGroupBox("Batch Mesh Converter")
+        converter_layout = QVBoxLayout()
+        converter_layout.setSpacing(4)  # Reduce vertical spacing
+        converter_layout.setContentsMargins(8, 8, 8, 8)  # Remove bottom margin
+
+        # Radio button style for white text
+        radio_style = "QRadioButton { color: white; }"
+
+        # Input format selection (label and radio buttons on same line)
+        input_layout = QHBoxLayout()
+        input_layout.setSpacing(4)
+
+        input_label = QLabel("Input:")
+        input_layout.addWidget(input_label)
+
+        self.input_format_group = QButtonGroup()
+        self.input_stl_radio = QRadioButton(".stl")
+        self.input_dae_radio = QRadioButton(".dae")
+        self.input_obj_radio = QRadioButton(".obj")
+        self.input_step_radio = QRadioButton(".step")
+        self.input_stl_radio.setChecked(True)  # Default: .stl
+
+        # Apply white text style
+        self.input_stl_radio.setStyleSheet(radio_style)
+        self.input_dae_radio.setStyleSheet(radio_style)
+        self.input_obj_radio.setStyleSheet(radio_style)
+        self.input_step_radio.setStyleSheet(radio_style)
+
+        self.input_format_group.addButton(self.input_stl_radio, 0)
+        self.input_format_group.addButton(self.input_dae_radio, 1)
+        self.input_format_group.addButton(self.input_obj_radio, 2)
+        self.input_format_group.addButton(self.input_step_radio, 3)
+
+        input_layout.addWidget(self.input_stl_radio)
+        input_layout.addWidget(self.input_dae_radio)
+        input_layout.addWidget(self.input_obj_radio)
+        input_layout.addWidget(self.input_step_radio)
+        input_layout.addStretch()  # Push everything to the left
+
+        # Add Clean Mesh checkbox to the right side of Input line
+        self.clean_mesh_checkbox = QCheckBox("Clean Mesh")
+        self.clean_mesh_checkbox.setFocusPolicy(Qt.NoFocus)
+        self.clean_mesh_checkbox.setChecked(False)
+        input_layout.addWidget(self.clean_mesh_checkbox)
+
+        converter_layout.addLayout(input_layout)
+
+        # Output format selection (label and radio buttons on same line)
+        output_layout = QHBoxLayout()
+        output_layout.setSpacing(4)
+
+        output_label = QLabel("Output:")
+        output_layout.addWidget(output_label)
+
+        self.output_format_group = QButtonGroup()
+        self.output_stl_radio = QRadioButton(".stl")
+        self.output_dae_radio = QRadioButton(".dae")
+        self.output_obj_radio = QRadioButton(".obj")
+        self.output_dae_radio.setChecked(True)  # Default: .dae
+
+        # Apply white text style
+        self.output_stl_radio.setStyleSheet(radio_style)
+        self.output_dae_radio.setStyleSheet(radio_style)
+        self.output_obj_radio.setStyleSheet(radio_style)
+
+        self.output_format_group.addButton(self.output_stl_radio, 0)
+        self.output_format_group.addButton(self.output_dae_radio, 1)
+        self.output_format_group.addButton(self.output_obj_radio, 2)
+
+        output_layout.addWidget(self.output_stl_radio)
+        output_layout.addWidget(self.output_dae_radio)
+        output_layout.addWidget(self.output_obj_radio)
+        output_layout.addStretch()  # Push everything to the left
+        converter_layout.addLayout(output_layout)
+
+        # Convert button
+        convert_button = QPushButton("Select Directory and Convert")
+        convert_button.setFocusPolicy(Qt.NoFocus)
+        convert_button.clicked.connect(self.batch_convert_meshes)
+        convert_button.clicked.connect(lambda: QTimer.singleShot(100, lambda: self.vtk_display.setFocus()))
+        converter_layout.addWidget(convert_button)
+
+        self._make_group_collapsible(
+            converter_group, converter_layout,
+            "collapsed_batch_mesh_converter", default_collapsed=True,
+        )
+        layout.addWidget(converter_group)
+
+    def clean_polydata(self, polydata):
+        """Apply VTK cleaning filters to polydata"""
+        import vtk
+
+        if polydata is None:
+            return polydata
+
+        original_poly_count = polydata.GetNumberOfPolys()
+
+        # Step 1: Clean polydata - remove duplicate points and degenerate cells
+        clean_filter = vtk.vtkCleanPolyData()
+        clean_filter.SetInputData(polydata)
+        clean_filter.PointMergingOn()
+        clean_filter.ToleranceIsAbsoluteOn()
+        clean_filter.SetAbsoluteTolerance(1e-6)
+        clean_filter.Update()
+
+        # Step 2: Ensure triangles to keep OBJ writer stable (especially for DAE -> OBJ)
+        triangle_filter = vtk.vtkTriangleFilter()
+        triangle_filter.SetInputConnection(clean_filter.GetOutputPort())
+        triangle_filter.Update()
+
+        # Step 3: Compute and fix normals
+        normals_filter = vtk.vtkPolyDataNormals()
+        normals_filter.SetInputConnection(triangle_filter.GetOutputPort())
+        normals_filter.ComputePointNormalsOn()
+        normals_filter.ComputeCellNormalsOn()
+        normals_filter.ConsistencyOn()  # Make normals consistent
+        normals_filter.AutoOrientNormalsOn()  # Auto-orient normals outward
+        normals_filter.SplittingOff()  # Don't split vertices (smooth shading)
+        normals_filter.Update()
+
+        # Step 4: Re-triangulate after normals to ensure OBJ writer compatibility
+        post_triangle_filter = vtk.vtkTriangleFilter()
+        post_triangle_filter.SetInputConnection(normals_filter.GetOutputPort())
+        post_triangle_filter.Update()
+
+        cleaned = post_triangle_filter.GetOutput()
+        # Safety: if cleaning dropped all polys, fall back to original
+        if original_poly_count > 0 and cleaned.GetNumberOfPolys() == 0:
+            print("Warning: CleanMesh removed all polygons; using original mesh data.")
+            return polydata
+
+        return cleaned
+
+    def clean_polydata_conservative(self, polydata):
+        """Apply conservative VTK cleaning for OBJ files (preserves normals and vertices)"""
+        import vtk
+
+        if polydata is None:
+            return polydata
+
+        original_poly_count = polydata.GetNumberOfPolys()
+
+        # Step 1: Remove only degenerate cells (zero-area triangles)
+        # Use vtkCleanPolyData with PointMergingOff to preserve vertex structure
+        clean_filter = vtk.vtkCleanPolyData()
+        clean_filter.SetInputData(polydata)
+        clean_filter.PointMergingOff()  # Do NOT merge vertices - preserves OBJ vertex normals
+        clean_filter.ConvertLinesToPointsOff()
+        clean_filter.ConvertPolysToLinesOff()
+        clean_filter.ConvertStripsToPolysOff()
+        clean_filter.Update()
+
+        # Step 2: Ensure triangles for format compatibility
+        triangle_filter = vtk.vtkTriangleFilter()
+        triangle_filter.SetInputConnection(clean_filter.GetOutputPort())
+        triangle_filter.PassVertsOff()
+        triangle_filter.PassLinesOff()
+        triangle_filter.Update()
+
+        cleaned = triangle_filter.GetOutput()
+
+        # Safety check: if cleaning removed too many polygons, use original
+        if original_poly_count > 0:
+            new_poly_count = cleaned.GetNumberOfPolys()
+            # If more than 10% of faces were removed, something went wrong
+            if new_poly_count < original_poly_count * 0.9:
+                print(f"Warning: Conservative clean removed too many faces ({original_poly_count} -> {new_poly_count}), using original mesh.")
+                return polydata
+
+        return cleaned
+
+    def save_obj_with_trimesh(self, polydata, file_path):
+        """Save OBJ using trimesh (more robust for cleaned DAE meshes)."""
+        try:
+            import trimesh
+            import numpy as np
+            import vtk
+        except ImportError:
+            return False
+
+        if polydata is None:
+            return False
+
+        # Ensure triangles
+        tri_filter = vtk.vtkTriangleFilter()
+        tri_filter.SetInputData(polydata)
+        tri_filter.Update()
+        tri_poly = tri_filter.GetOutput()
+
+        num_points = tri_poly.GetNumberOfPoints()
+        num_cells = tri_poly.GetNumberOfCells()
+        if num_points == 0 or num_cells == 0:
+            return False
+
+        vertices = np.zeros((num_points, 3))
+        for i in range(num_points):
+            vertices[i] = tri_poly.GetPoint(i)
+
+        faces = []
+        for i in range(num_cells):
+            cell = tri_poly.GetCell(i)
+            if cell.GetNumberOfPoints() == 3:
+                faces.append([
+                    cell.GetPointId(0),
+                    cell.GetPointId(1),
+                    cell.GetPointId(2)
+                ])
+
+        if not faces:
+            return False
+
+        faces = np.array(faces, dtype=np.int64)
+        mesh = trimesh.Trimesh(vertices=vertices, faces=faces, process=False)
+        mesh.export(file_path)
+        return True
+
+    def convert_dae_to_obj_with_trimesh_clean(self, dae_path, obj_path):
+        """Clean and convert DAE to OBJ using trimesh directly (avoid VTK cleanup issues)."""
+        try:
+            import trimesh
+        except ImportError:
+            return False
+
+        try:
+            mesh = trimesh.load(str(dae_path), force='mesh')
+            # Handle Scene fallback
+            if isinstance(mesh, trimesh.Scene):
+                if len(mesh.geometry) == 0:
+                    return False
+                mesh = trimesh.util.concatenate([g for g in mesh.geometry.values()])
+
+            if mesh is None:
+                return False
+
+            # Clean operations
+            mesh.remove_degenerate_faces()
+            mesh.remove_duplicate_faces()
+            mesh.remove_unreferenced_vertices()
+            try:
+                mesh.merge_vertices(epsilon=1e-6)
+            except Exception:
+                pass
+            try:
+                mesh.process(validate=True)
+            except Exception:
+                pass
+
+            mesh.export(str(obj_path))
+            return True
+        except Exception:
+            return False
+
+    def convert_step_to_stl(self, step_path, stl_path, mesh_size=None):
+        """Convert STEP file to STL using gmsh
+
+        Args:
+            step_path: Path to input STEP file
+            stl_path: Path to output STL file
+            mesh_size: Mesh element size (None = auto)
+
+        Returns:
+            bool: True if successful
+        """
+        try:
+            import gmsh
+        except ImportError:
+            print("Error: gmsh not installed. Run: pip install gmsh")
+            return False
+
+        try:
+            gmsh.initialize()
+            gmsh.option.setNumber("General.Terminal", 0)  # Suppress output
+
+            # Import STEP file
+            gmsh.model.occ.importShapes(str(step_path))
+            gmsh.model.occ.synchronize()
+
+            # Apply unit scale (mm to meters) if STEP_UNIT_SCALE != 1.0
+            if STEP_UNIT_SCALE != 1.0:
+                entities = gmsh.model.getEntities()
+                if entities:
+                    # Get all entities and apply affine transformation (scale)
+                    dimTags = gmsh.model.getEntities()
+                    gmsh.model.occ.dilate(
+                        dimTags,
+                        0, 0, 0,  # Center of scaling (origin)
+                        STEP_UNIT_SCALE, STEP_UNIT_SCALE, STEP_UNIT_SCALE  # Scale factors
+                    )
+                    gmsh.model.occ.synchronize()
+
+            # Auto mesh size based on bounding box if not specified
+            if mesh_size is None:
+                bounds = gmsh.model.getBoundingBox(-1, -1)
+                bbox_size = max(bounds[3] - bounds[0], bounds[4] - bounds[1], bounds[5] - bounds[2])
+                mesh_size = bbox_size / (50.0 * STEP_MESH_REFINEMENT)  # Adjustable via STEP_MESH_REFINEMENT
+
+            gmsh.option.setNumber("Mesh.CharacteristicLengthMin", mesh_size * 0.3)
+            gmsh.option.setNumber("Mesh.CharacteristicLengthMax", mesh_size)
+
+            # Better curve discretization for smoother surfaces
+            gmsh.option.setNumber("Mesh.MeshSizeFromCurvature", 32)  # Elements per 2*pi
+            gmsh.option.setNumber("Mesh.MinimumCurveNodes", 6)
+
+            # Generate 2D mesh (surface mesh for STL)
+            gmsh.model.mesh.generate(2)
+
+            # Export to binary STL
+            gmsh.option.setNumber("Mesh.Binary", 1)
+            gmsh.write(str(stl_path))
+            gmsh.finalize()
+            return True
+
+        except Exception as e:
+            print(f"STEP conversion error: {e}")
+            try:
+                gmsh.finalize()
+            except:
+                pass
+            return False
+
+    def batch_convert_meshes(self):
+        """Batch convert mesh files from input format to output format"""
+        input_ext = None
+        if self.input_stl_radio.isChecked():
+            input_ext = ".stl"
+        elif self.input_dae_radio.isChecked():
+            input_ext = ".dae"
+        elif self.input_obj_radio.isChecked():
+            input_ext = ".obj"
+        elif self.input_step_radio.isChecked():
+            input_ext = ".step"
+
+        output_ext = None
+        if self.output_stl_radio.isChecked():
+            output_ext = ".stl"
+        elif self.output_dae_radio.isChecked():
+            output_ext = ".dae"
+        elif self.output_obj_radio.isChecked():
+            output_ext = ".obj"
+
+        clean_mesh_enabled = self.clean_mesh_checkbox.isChecked()
+
+        # STEP input always needs conversion
+        if input_ext == output_ext and not clean_mesh_enabled and input_ext != ".step":
+            print(f"Input and output formats are the same ({input_ext}). No conversion needed.")
+            print("Tip: Enable 'Clean Mesh' to clean files without changing format.")
+            return
+
+        directory = QFileDialog.getExistingDirectory(self, "Select Directory for Batch Conversion")
+        if not directory:
+            return
+
+        from pathlib import Path
+
+        # For STEP files, include .stp and case variations (.STEP, .STP)
+        if input_ext == ".step":
+            input_files = (list(Path(directory).glob("*.step")) +
+                          list(Path(directory).glob("*.STEP")) +
+                          list(Path(directory).glob("*.stp")) +
+                          list(Path(directory).glob("*.STP")))
+        else:
+            input_files = list(Path(directory).glob(f"*{input_ext}"))
+
+        if not input_files:
+            ext_msg = ".step/.stp" if input_ext == ".step" else input_ext
+            print(f"No {ext_msg} files found in {directory}")
+            return
+
+        ext_msg = ".step/.stp" if input_ext == ".step" else input_ext
+        print(f"Found {len(input_files)} {ext_msg} file(s) in {directory}")
+
+        existing_files = []
+        for input_file in input_files:
+            output_file = input_file.with_suffix(output_ext)
+            if output_file.exists():
+                existing_files.append(output_file.name)
+
+        overwrite = True
+        if existing_files:
+            from PySide6.QtWidgets import QMessageBox
+            reply = QMessageBox.question(
+                self,
+                "Overwrite Existing Files?",
+                f"{len(existing_files)} file(s) already exist:\n{', '.join(existing_files[:5])}"
+                + (f"\n...and {len(existing_files) - 5} more" if len(existing_files) > 5 else "")
+                + "\n\nDo you want to overwrite all existing files?",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            overwrite = (reply == QMessageBox.Yes)
+            if not overwrite:
+                print("Conversion cancelled by user.")
+                return
+
+        success_count = 0
+        error_count = 0
+        success_files = []
+        error_files = []
+
+        from urdf_kitchen_utils import load_mesh_to_polydata, save_polydata_to_mesh
+
+        for input_file in input_files:
+            output_file = input_file.with_suffix(output_ext)
+            try:
+                # STEP input: convert to STL first, then to target format
+                if input_ext == ".step":
+                    # Create temp STL path (use _temp suffix before .stl for gmsh compatibility)
+                    temp_stl = input_file.parent / f"{input_file.stem}_temp.stl"
+
+                    # Convert STEP to STL using gmsh
+                    if not self.convert_step_to_stl(str(input_file), str(temp_stl)):
+                        print(f"Error converting STEP: {input_file.name}")
+                        error_files.append(input_file.name)
+                        error_count += 1
+                        continue
+
+                    # If output is STL, just rename temp file
+                    if output_ext == ".stl":
+                        import shutil
+                        shutil.move(str(temp_stl), str(output_file))
+                        print(f"Converted: {input_file.name} → {output_file.name}")
+                        success_files.append(input_file.name)
+                        success_count += 1
+                        continue
+
+                    # Load the temp STL and convert to target format
+                    polydata, _, color = load_mesh_to_polydata(str(temp_stl))
+
+                    # Clean up temp file
+                    try:
+                        temp_stl.unlink()
+                    except:
+                        pass
+
+                    if polydata:
+                        if clean_mesh_enabled:
+                            polydata = self.clean_polydata(polydata)
+
+                        save_polydata_to_mesh(str(output_file), polydata, mesh_color=color)
+                        print(f"Converted: {input_file.name} → {output_file.name}")
+                        success_files.append(input_file.name)
+                        success_count += 1
+                    else:
+                        print(f"Error loading converted STL: {input_file.name}")
+                        error_files.append(input_file.name)
+                        error_count += 1
+                    continue
+
+                # Normal mesh formats: STL, DAE, OBJ
+                polydata, _, color = load_mesh_to_polydata(str(input_file))
+                if polydata:
+                    if clean_mesh_enabled:
+                        # DAE -> OBJ with Clean Mesh: use trimesh direct path for stability
+                        if input_ext == ".dae" and output_ext == ".obj":
+                            if self.convert_dae_to_obj_with_trimesh_clean(input_file, output_file):
+                                action = "Cleaned"
+                                print(f"{action}: {input_file.name} → {output_file.name}")
+                                success_files.append(input_file.name)
+                                success_count += 1
+                                continue
+                        # Use conservative cleaning for OBJ input to preserve vertex normals
+                        if input_ext == ".obj":
+                            polydata = self.clean_polydata_conservative(polydata)
+                        else:
+                            polydata = self.clean_polydata(polydata)
+
+                    # For cleaned DAE -> OBJ, use trimesh export to avoid VTK OBJ writer issues
+                    saved = False
+                    if output_ext == ".obj" and clean_mesh_enabled:
+                        saved = self.save_obj_with_trimesh(polydata, str(output_file))
+                    if not saved:
+                        save_polydata_to_mesh(str(output_file), polydata, mesh_color=color)
+
+                    action = "Cleaned" if (input_ext == output_ext and clean_mesh_enabled) else "Converted"
+                    print(f"{action}: {input_file.name} → {output_file.name}")
+                    success_files.append(input_file.name)
+                    success_count += 1
+                else:
+                    print(f"Error loading: {input_file.name}")
+                    error_files.append(input_file.name)
+                    error_count += 1
+            except Exception as e:
+                print(f"Error converting {input_file.name}: {e}")
+                error_files.append(input_file.name)
+                error_count += 1
+
+        from PySide6.QtWidgets import QMessageBox
+
+        operation = "Batch Cleaning" if (input_ext == output_ext and clean_mesh_enabled) else "Batch Conversion"
+        result_msg = f"{operation} Complete\n\n"
+        result_msg += f"Total files: {len(input_files)}\n"
+        result_msg += f"✓ Success: {success_count} file(s)\n"
+        result_msg += f"✗ Errors: {error_count} file(s)\n"
+        if clean_mesh_enabled:
+            result_msg += "\n[Mesh cleaning applied: normals fixed, duplicates removed]\n"
+
+        if success_count > 0 and success_count <= 5:
+            result_msg += f"\nConverted files:\n"
+            result_msg += "\n".join([f"  • {f}" for f in success_files])
+        elif success_count > 5:
+            result_msg += f"\nConverted files (first 5):\n"
+            result_msg += "\n".join([f"  • {f}" for f in success_files[:5]])
+            result_msg += f"\n  ... and {success_count - 5} more"
+
+        if error_count > 0 and error_count <= 5:
+            result_msg += f"\n\nFailed files:\n"
+            result_msg += "\n".join([f"  • {f}" for f in error_files])
+        elif error_count > 5:
+            result_msg += f"\n\nFailed files (first 5):\n"
+            result_msg += "\n".join([f"  • {f}" for f in error_files[:5]])
+            result_msg += f"\n  ... and {error_count - 5} more"
+
+        op_name = "Cleaning" if (input_ext == output_ext and clean_mesh_enabled) else "Conversion"
+        if error_count == 0:
+            icon = QMessageBox.Information
+            title = f"{op_name} Successful"
+        elif success_count == 0:
+            icon = QMessageBox.Critical
+            title = f"{op_name} Failed"
+        else:
+            icon = QMessageBox.Warning
+            title = f"{op_name} Completed with Errors"
+
+        QMessageBox(icon, title, result_msg, QMessageBox.Ok, self).exec()
+
+        print(f"\nBatch {op_name.lower()} complete:")
+        print(f"  Success: {success_count} file(s)")
+        print(f"  Errors: {error_count} file(s)")
+
+    def update_collider_param_inputs(self):
+        """Update parameter input fields based on selected collider type"""
+        # Clear existing parameter inputs by removing all items from layout
+        while self.collider_params_layout.count():
+            item = self.collider_params_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        # Clear lists
+        self.collider_param_labels.clear()
+        self.collider_param_inputs.clear()
+        if not hasattr(self, 'collider_param_checkboxes'):
+            self.collider_param_checkboxes = []
+        else:
+            self.collider_param_checkboxes.clear()
+
+        # Add new parameter inputs based on type
+        collider_type = self.collider_type
+        params = self.collider_params[collider_type]
+
+        col = 0
+
+        # Add one checkbox at the beginning for all types
+        checkbox = QCheckBox()
+        # Set checkbox state based on current state variable
+        if collider_type == "box":
+            checkbox.setChecked(self.collider_size_active)
+            checkbox.stateChanged.connect(self.on_collider_size_checkbox_changed)
+        elif collider_type in ["sphere", "cylinder", "capsule"]:
+            checkbox.setChecked(self.collider_radius_length_active)
+            checkbox.stateChanged.connect(self.on_collider_radius_length_checkbox_changed)
+        self.collider_param_checkboxes.append(checkbox)
+        self.collider_params_layout.addWidget(checkbox, 0, col)
+        col += 1
+        # Add 30px spacing after checkbox
+        self.collider_params_layout.setColumnMinimumWidth(col, 12)
+        col += 1
+
+        # Add parameter labels and inputs
+        if collider_type == "box":
+            # Size: [space] X:[input] [space] Y:[input] [space] Z:[input]
+            # (Same structure as Position row)
+            size_label = QLabel("Size:")
+            size_label.setMinimumWidth(90)  # Align with Position: and Rotation:
+            self.collider_param_labels.append(size_label)
+            self.collider_params_layout.addWidget(size_label, 0, col)
+            col += 1
+            for i, axis in enumerate(['X', 'Y', 'Z']):
+                self.collider_params_layout.addWidget(QLabel(f"{axis}:"), 0, col)
+                col += 1
+                input_field = QLineEdit(str(params[i]))
+                input_field.setMaximumWidth(60)
+                input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
+                input_field.setFocusPolicy(Qt.ClickFocus)
+                input_field.editingFinished.connect(lambda idx=i: self.on_collider_param_input_changed(idx))
+                input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
+                self.collider_params_layout.addWidget(input_field, 0, col)
+                self.collider_param_inputs.append(input_field)
+                col += 1
+                if i < 2:  # Add spacing between X-Y and Y-Z
+                    self.collider_params_layout.setColumnMinimumWidth(col, 6)
+                    col += 1
+        else:
+            # For sphere, cylinder, capsule
+            if collider_type == "sphere":
+                labels = ["Radius:"]
+            elif collider_type in ["cylinder", "capsule"]:
+                labels = ["Radius:", "Length:"]
+            else:
+                labels = []
+
+            for i, (label_text, param_value) in enumerate(zip(labels, params)):
+                label = QLabel(label_text)
+                if i == 0:
+                    label.setMinimumWidth(90)  # Align with Position: and Rotation:
+                self.collider_param_labels.append(label)
+                self.collider_params_layout.addWidget(label, 0, col)
+                col += 1
+
+                input_field = QLineEdit(str(param_value))
+                input_field.setMaximumWidth(60)  # Prevent horizontal expansion
+                # Only allow numbers and decimal point
+                input_field.setValidator(QRegularExpressionValidator(QRegularExpression(r'^-?\d*\.?\d*$')))
+                input_field.setFocusPolicy(Qt.ClickFocus)
+                input_field.editingFinished.connect(lambda idx=i: self.on_collider_param_input_changed(idx))
+                input_field.editingFinished.connect(lambda: self.vtk_display.setFocus())
+                self.collider_param_inputs.append(input_field)
+                self.collider_params_layout.addWidget(input_field, 0, col)
+                col += 1
+
+        # Add stretch at the end to absorb extra space and prevent layout collapse on resize
+        self.collider_params_layout.setColumnStretch(col, 1)
+
+    def on_collider_type_changed(self, new_type):
+        """Handle collider type change"""
+        old_type = self.collider_type
+        self.collider_type = new_type
+
+        # Auto-uncheck hidden checkboxes when switching between box and other types
+        # Note: Switching within sphere/cylinder/capsule preserves the checkbox state
+        # If switching from box to sphere/cylinder/capsule, uncheck Size
+        if old_type == "box" and new_type in ["sphere", "cylinder", "capsule"]:
+            if self.collider_size_active:
+                self.collider_size_active = False
+        # If switching from sphere/cylinder/capsule to box, uncheck Radius/Length
+        elif old_type in ["sphere", "cylinder", "capsule"] and new_type == "box":
+            if self.collider_radius_length_active:
+                self.collider_radius_length_active = False
+        # Switching within sphere/cylinder/capsule: checkbox state is preserved (no action needed)
+
+        self.update_collider_param_inputs()
+
+        # Only update 3D display if Show is ON
+        if self.collider_show:
+            # Auto-draft on first selection of this type
+            if not self.collider_type_initialized[new_type]:
+                self.collider_type_initialized[new_type] = True
+                # Only auto-draft if mesh is loaded
+                if self.model_bounds:
+                    self.draft_collider()
+                else:
+                    # Even without mesh, display collider with default params
+                    self.update_collider_display()
+            else:
+                # Update display with existing values
+                self.update_collider_display()
+
+    def on_center_position_checkbox_changed(self, index, state):
+        """Handle Center Position checkbox change"""
+        if state == 2:  # Checked
+            # Set this active, others inactive (mutual exclusivity)
+            self.center_position_active = True
+            self.collider_size_active = False
+            self.collider_position_active = False
+            self.collider_radius_length_active = False
+            self.collider_rotation_active = False
+
+            # Uncheck other checkboxes
+            if hasattr(self, 'collider_position_checkbox'):
+                self.collider_position_checkbox.blockSignals(True)
+                self.collider_position_checkbox.setChecked(False)
+                self.collider_position_checkbox.blockSignals(False)
+            if hasattr(self, 'collider_rotation_checkbox'):
+                self.collider_rotation_checkbox.blockSignals(True)
+                self.collider_rotation_checkbox.setChecked(False)
+                self.collider_rotation_checkbox.blockSignals(False)
+            # Uncheck parameter checkboxes (size/radius/length)
+            if hasattr(self, 'collider_param_checkboxes'):
+                for cb in self.collider_param_checkboxes:
+                    if cb:
+                        cb.blockSignals(True)
+                        cb.setChecked(False)
+                        cb.blockSignals(False)
+        else:  # Unchecked
+            self.center_position_active = False
+
+    def on_center_position_changed(self, index):
+        """Handle Center Position input change"""
+        try:
+            for j in range(3):
+                value = float(self.point_inputs[index][j].text())
+                # Round to 8 decimal places (9th digit is rounded)
+                value = round(value, 8)
+                self.point_coords[index][j] = value
+            self.update_point_display(index)
+            self.render_to_image()
+        except ValueError:
+            print(f"Invalid center position value")
+
+    def on_collider_show_changed(self, state):
+        """Handle collider show checkbox change"""
+        # state is an int: 2=Checked, 0=Unchecked
+        self.collider_show = (state == 2)
+
+        if self.collider_show:
+            # Show ON: Force mesh to wireframe, show collider
+            if self.stl_actor:
+                # Force wireframe mode
+                if not self.wireframe_mode:
+                    self.toggle_wireframe()
+                    self.render_to_image()  # Render immediately to apply wireframe
+
+            # Update instruction text for collider editing mode
+            if hasattr(self, 'text_actor_bottom'):
+                self.text_actor_bottom.SetInput(self.collider_instruction_text)
+
+            # First time Show is clicked - auto draft
+            if self.collider_first_show:
+                self.collider_first_show = False
+                if self.model_bounds:
+                    # Draft collider based on mesh bounds
+                    self.draft_collider()
+                else:
+                    # No mesh loaded, just display with default params
+                    self.update_collider_display()
+            else:
+                # Not first time, just update display
+                self.update_collider_display()
+        else:
+            # Show OFF: Force mesh to surface mode, hide collider
+            if self.stl_actor:
+                # Force surface mode
+                if self.wireframe_mode:
+                    self.toggle_wireframe()
+                    self.render_to_image()  # Render immediately to apply surface mode
+
+            # Restore default instruction text
+            if hasattr(self, 'text_actor_bottom'):
+                self.text_actor_bottom.SetInput(self.default_instruction_text)
+
+            # Hide collider
+            if self.collider_actor:
+                self.renderer.RemoveActor(self.collider_actor)
+                self.collider_actor = None
+            if self.collider_surface_actor:
+                self.renderer.RemoveActor(self.collider_surface_actor)
+                self.collider_surface_actor = None
+            if self.collider_blink_timer.isActive():
+                self.collider_blink_timer.stop()
+            self.render_to_image()
+
+    def on_collider_param_input_changed(self, index):
+        """Handle collider parameter input change"""
+        try:
+            value = float(self.collider_param_inputs[index].text())
+            self.collider_params[self.collider_type][index] = value
+            # Format to 4 decimal places with rounding
+            self.collider_param_inputs[index].setText(f"{value:.4f}")
+            if self.collider_show:
+                self.update_collider_display()
+        except ValueError:
+            print(f"Invalid parameter value at index {index}")
+
+    def on_collider_position_checkbox_changed(self, state):
+        """Handle collider position checkbox change"""
+        if state == 2:  # Checked
+            # Set this active, others inactive (mutual exclusivity)
+            self.center_position_active = False
+            self.collider_size_active = False
+            self.collider_position_active = True
+            self.collider_radius_length_active = False
+            self.collider_rotation_active = False
+
+            # Uncheck other checkboxes
+            for cb in self.point_checkboxes:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
+            if hasattr(self, 'collider_rotation_checkbox'):
+                self.collider_rotation_checkbox.blockSignals(True)
+                self.collider_rotation_checkbox.setChecked(False)
+                self.collider_rotation_checkbox.blockSignals(False)
+            # Uncheck parameter checkboxes (size/radius/length)
+            if hasattr(self, 'collider_param_checkboxes'):
+                for cb in self.collider_param_checkboxes:
+                    if cb:
+                        cb.blockSignals(True)
+                        cb.setChecked(False)
+                        cb.blockSignals(False)
+        else:  # Unchecked
+            self.collider_position_active = False
+
+    def on_collider_position_input_changed(self, index):
+        """Handle collider position input change"""
+        try:
+            value = float(self.collider_position_inputs[index].text())
+            self.collider_position[index] = value
+            # Format to 4 decimal places with rounding
+            self.collider_position_inputs[index].setText(f"{value:.4f}")
+            if self.collider_show:
+                self.update_collider_display()
+        except ValueError:
+            print(f"Invalid position value at index {index}")
+
+    def on_collider_rotation_checkbox_changed(self, state):
+        """Handle collider rotation checkbox change"""
+        if state == 2:  # Checked
+            # Set this active, others inactive (mutual exclusivity)
+            self.center_position_active = False
+            self.collider_size_active = False
+            self.collider_position_active = False
+            self.collider_radius_length_active = False
+            self.collider_rotation_active = True
+
+            # Uncheck other checkboxes
+            for cb in self.point_checkboxes:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
+            if hasattr(self, 'collider_position_checkbox'):
+                self.collider_position_checkbox.blockSignals(True)
+                self.collider_position_checkbox.setChecked(False)
+                self.collider_position_checkbox.blockSignals(False)
+            # Uncheck parameter checkboxes (size/radius/length)
+            if hasattr(self, 'collider_param_checkboxes'):
+                for cb in self.collider_param_checkboxes:
+                    if cb:
+                        cb.blockSignals(True)
+                        cb.setChecked(False)
+                        cb.blockSignals(False)
+        else:  # Unchecked
+            self.collider_rotation_active = False
+
+    def on_collider_rotation_input_changed(self, index):
+        """Handle collider rotation input change"""
+        try:
+            import math
+            value_deg = float(self.collider_rotation_inputs[index].text())
+            # Store internally in radians
+            self.collider_rotation[index] = math.radians(value_deg)
+            # Format to 2 decimal places (degrees for UI)
+            self.collider_rotation_inputs[index].setText(f"{value_deg:.2f}")
+
+            # Update quaternion from Euler angles (VTK expects degrees for euler_to_quaternion)
+            roll_deg = math.degrees(self.collider_rotation[0])
+            pitch_deg = math.degrees(self.collider_rotation[1])
+            yaw_deg = math.degrees(self.collider_rotation[2])
+            self.collider_rotation_quaternion = euler_to_quaternion(
+                roll_deg,
+                pitch_deg,
+                yaw_deg
+            )
+
+            if self.collider_show:
+                self.update_collider_display()
+        except ValueError:
+            print(f"Invalid rotation value at index {index}")
+
+    def on_collider_size_checkbox_changed(self, state):
+        """Handle collider size checkbox change (for box)"""
+        if state == 2:  # Checked
+            # Set this active, others inactive (mutual exclusivity)
+            self.center_position_active = False
+            self.collider_size_active = True
+            self.collider_position_active = False
+            self.collider_radius_length_active = False
+            self.collider_rotation_active = False
+
+            # Uncheck other checkboxes
+            for cb in self.point_checkboxes:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
+            if hasattr(self, 'collider_position_checkbox'):
+                self.collider_position_checkbox.blockSignals(True)
+                self.collider_position_checkbox.setChecked(False)
+                self.collider_position_checkbox.blockSignals(False)
+            if hasattr(self, 'collider_rotation_checkbox'):
+                self.collider_rotation_checkbox.blockSignals(True)
+                self.collider_rotation_checkbox.setChecked(False)
+                self.collider_rotation_checkbox.blockSignals(False)
+        else:  # Unchecked
+            self.collider_size_active = False
+
+    def on_collider_radius_length_checkbox_changed(self, state):
+        """Handle collider radius/length checkbox change (shared for sphere/cylinder/capsule)"""
+        if state == 2:  # Checked
+            # Set this active, others inactive (mutual exclusivity)
+            self.center_position_active = False
+            self.collider_size_active = False
+            self.collider_position_active = False
+            self.collider_radius_length_active = True
+            self.collider_rotation_active = False
+
+            # Uncheck other checkboxes
+            for cb in self.point_checkboxes:
+                cb.blockSignals(True)
+                cb.setChecked(False)
+                cb.blockSignals(False)
+            if hasattr(self, 'collider_position_checkbox'):
+                self.collider_position_checkbox.blockSignals(True)
+                self.collider_position_checkbox.setChecked(False)
+                self.collider_position_checkbox.blockSignals(False)
+            if hasattr(self, 'collider_rotation_checkbox'):
+                self.collider_rotation_checkbox.blockSignals(True)
+                self.collider_rotation_checkbox.setChecked(False)
+                self.collider_rotation_checkbox.blockSignals(False)
+        else:  # Unchecked
+            self.collider_radius_length_active = False
+
+    def set_point(self, index):
+        try:
+            x = float(self.point_inputs[index][0].text())
+            y = float(self.point_inputs[index][1].text())
+            z = float(self.point_inputs[index][2].text())
+            self.point_coords[index] = [x, y, z]
+
+            if self.point_checkboxes[index].isChecked():
+                self.show_point(index)
+            else:
+                self.update_point_display(index)
+
+            print(f"Point {index+1} set to: ({x}, {y}, {z})")
+        except ValueError:
+            print(
+                f"Invalid input for Point {index+1}. Please enter valid numbers for coordinates.")
+
+    def reset_point_to_origin(self, index):
+        self.point_coords[index] = list(self.absolute_origin)
+        self.update_point_display(index)
+        if self.point_checkboxes[index].isChecked():
+            self.show_point(index)
+        print(f"Point {index+1} reset to origin {self.absolute_origin}")
+
+    def reset_points(self):
+        for i in range(self.num_points):
+            if self.point_checkboxes[i].isChecked():
+                self.point_coords[i] = list(self.absolute_origin)
+                self.update_point_display(i)
+                print(f"Point {i+1} reset to origin {self.absolute_origin}")
+
+    def reset_camera(self):
+        self.camera_controller.reset_camera(position=[10, 0, 0], view_up=[0, 0, 1])
+        self.camera_rotation = [0, 0, 0]
+        self.current_rotation = 0
+        # Reset rotation animation state
+        if hasattr(self, 'animation_timer') and self.animation_timer.isActive():
+            self.animation_timer.stop()
+        self.is_animating = False
+        if hasattr(self, 'animated_rotation') and self.animated_rotation:
+            self.animated_rotation.is_animating = False
+            self.animated_rotation.current_frame = 0
+            self.animated_rotation.target_angle = 0
+            self.animated_rotation.rotation_type = None
+
+        if hasattr(self, 'axes_widget') and self.axes_widget is not None:
+            self.renderer.RemoveViewProp(self.axes_widget.GetOrientationMarker())
+        self.axes_widget = None
+
+        if hasattr(self, 'point_actors') and self.point_actors is not None:
+            self.update_all_points_size()
+
+        print("Camera reset to default position")
+        print("View direction: Looking from +X towards origin")
+        print("Up direction: +Z")
+        print("Right direction: +Y")
+
+    def update_point_position(self, index, x, y):
+        renderer = self.renderer
+        camera = renderer.GetActiveCamera()
+
+        # Convert screen coordinates to world coordinates
+        coordinate = vtk.vtkCoordinate()
+        coordinate.SetCoordinateSystemToDisplay()
+        coordinate.SetValue(x, y, 0)
+        world_pos = coordinate.GetComputedWorldValue(renderer)
+
+        # Keep z-coordinate based on camera direction at current point
+        camera_pos = np.array(camera.GetPosition())
+        focal_point = np.array(camera.GetFocalPoint())
+        view_direction = focal_point - camera_pos
+        view_direction /= np.linalg.norm(view_direction)
+
+        current_z = self.point_coords[index][2]
+        t = (current_z - camera_pos[2]) / view_direction[2]
+        new_pos = camera_pos + t * view_direction
+
+        self.point_coords[index] = [new_pos[0], new_pos[1], current_z]
+        self.update_point_display(index)
+
+        print(
+            f"Point {index+1} moved to: ({new_pos[0]:.4f}, {new_pos[1]:.4f}, {current_z:.4f})")
+
+    def update_point_display(self, index):
+        if self.point_actors[index]:
+            self.point_actors[index].SetPosition(self.point_coords[index])
+
+        for i, coord in enumerate(self.point_coords[index]):
+            self.point_inputs[index][i].setText(f"{coord:.8f}")
+
+    def update_properties(self):
+        # Priority: Mass > Volume > Inertia > Density
+        priority_order = ['mass', 'volume', 'inertia', 'density']
+        values = {}
+
+        # Get values of checked properties
+        for prop in priority_order:
+            checkbox = getattr(self, f"{prop}_checkbox")
+            input_field = getattr(self, f"{prop}_input")
+            if checkbox.isChecked():
+                try:
+                    values[prop] = float(input_field.text())
+                except ValueError:
+                    print(f"Invalid input for {prop}")
+                    return
+
+        # Calculate values
+        if 'mass' in values and 'volume' in values:
+            values['density'] = values['mass'] / values['volume']
+        elif 'mass' in values and 'density' in values:
+            values['volume'] = values['mass'] / values['density']
+        elif 'volume' in values and 'density' in values:
+            values['mass'] = values['volume'] * values['density']
+
+        # Inertia calculation removed (use calculate_inertia_with_trimesh for precise calculation)
+        # Simplified cube assumption calculation is not used
+
+        # Apply results to input fields
+        for prop in priority_order:
+            input_field = getattr(self, f"{prop}_input")
+            if prop in values:
+                input_field.setText(f"{values[prop]:.12f}")
+
+    def update_all_points_size(self, obj=None, event=None):
+        for index, actor in enumerate(self.point_actors):
+            if actor:
+                self.renderer.RemoveActor(actor)
+                self.point_actors[index] = create_crosshair_marker(
+                    coords=[0, 0, 0],
+                    radius_scale=self.calculate_sphere_radius()
+                )
+                self.point_actors[index].SetPosition(self.point_coords[index])
+                self.renderer.AddActor(self.point_actors[index])
+
+    def calculate_sphere_radius(self):
+        return AdaptiveMarkerSize.calculate_sphere_radius(self.renderer)
+
+    def add_axes(self):
+        if not hasattr(self, 'axis_actors'):
+            self.axis_actors = []
+
+        for actor in self.renderer.GetActors():
+            if actor != self.stl_actor and actor not in self.point_actors:
+                self.renderer.RemoveActor(actor)
+
+        self.axis_actors = []
+        axis_length = 5
+        colors = [(1, 0, 0), (0, 1, 0), (0, 0, 1)]
+        for i, color in enumerate(colors):
+            for direction in [1, -1]:
+                line_source = vtk.vtkLineSource()
+                line_source.SetPoint1(*self.absolute_origin)
+                end_point = np.array(self.absolute_origin)
+                end_point[i] += axis_length * direction
+                line_source.SetPoint2(*end_point)
+
+                mapper = vtk.vtkPolyDataMapper()
+                mapper.SetInputConnection(line_source.GetOutputPort())
+
+                actor = vtk.vtkActor()
+                actor.SetMapper(mapper)
+                actor.GetProperty().SetColor(color)
+                actor.GetProperty().SetLineWidth(2)
+
+                self.renderer.AddActor(actor)
+                self.axis_actors.append(actor)
+
+    def add_instruction_text(self):
+        """Display operation instructions on screen"""
+        if not hasattr(self, 'text_actors'):
+            self.text_actors = []
+
+        # Top-left text
+        text_actor_top = vtk.vtkTextActor()
+        text_actor_top.SetInput(
+            "[W/S]: Up/Down Rotate\n"
+            "[A/D]: Left/Right Rotate\n"
+            "[Q/E]: Roll\n"
+            "[R]: Reset Camera\n"
+            "[T]: Wireframe\n\n"
+            "[Drag]: Rotate\n"
+            "[Shift + Drag]: Move View\n"
+        )
+        text_actor_top.GetTextProperty().SetFontSize(14)
+        text_actor_top.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # Light blue
+        text_actor_top.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
+        text_actor_top.SetPosition(0.03, 0.97)  # Position at top-left
+        text_actor_top.GetTextProperty().SetJustificationToLeft()
+        text_actor_top.GetTextProperty().SetVerticalJustificationToTop()
+        self.renderer.AddActor(text_actor_top)
+        self.text_actors.append(text_actor_top)
+
+        # Bottom-left text
+        self.text_actor_bottom = vtk.vtkTextActor()
+        # Default instruction text (for point editing mode)
+        self.default_instruction_text = (
+            "[Arrows] : Move Point 10mm\n"
+            " +[Shift]: Move Point 1mm\n"
+            "  +[Ctrl]: Move Point 0.1mm\n\n"
+        )
+        # Collider editing instruction text
+        self.collider_instruction_text = (
+            "[Tab]    : Switch Mode: Position / Size / Rotation\n"
+            "[Arrows] : Edit Collider, 10mm increments\n"
+            " +[Shift]: 1mm increments\n"
+            "  +[Ctrl]: 0.1mm increments\n"
+        )
+        self.text_actor_bottom.SetInput(self.default_instruction_text)
+        self.text_actor_bottom.GetTextProperty().SetFontSize(14)
+        self.text_actor_bottom.GetTextProperty().SetColor(0.3, 0.8, 1.0)  # Light blue
+        self.text_actor_bottom.GetPositionCoordinate().SetCoordinateSystemToNormalizedViewport()
+        self.text_actor_bottom.SetPosition(0.03, 0.03)  # Position at bottom-left
+        self.text_actor_bottom.GetTextProperty().SetJustificationToLeft()
+        self.text_actor_bottom.GetTextProperty().SetVerticalJustificationToBottom()
+        self.renderer.AddActor(self.text_actor_bottom)
+        self.text_actors.append(self.text_actor_bottom)
+
+    def update_instruction_text_layout(self):
+        """Update instruction text visibility (font size is fixed)"""
+        if not hasattr(self, 'text_actors') or len(self.text_actors) < 2:
+            return
+
+        # Update visibility based on help_visible flag (font size remains fixed)
+        for actor in self.text_actors:
+            actor.SetVisibility(1 if self.help_visible else 0)
+
+    def load_stl_file(self):
+        print("Opening file dialog...")
+        # Use common utility function for file filter
+        file_filter = get_mesh_file_filter(TRIMESH_AVAILABLE)
+
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Open 3D Model File", "", file_filter)
+        if file_path:
+            print(f"Loading STL file: {file_path}")
+            self.file_name_label.setText(f"File: {file_path}")
+            # Save the loaded STL file path for save dialog defaults
+            self.current_stl_path = file_path
+
+            try:
+                self.show_stl(file_path)
+                # Auto-load collider XML from same directory (meshname_collider.xml)
+                base_name = os.path.splitext(file_path)[0]
+                collider_xml_path = base_name + "_collider.xml"
+                if os.path.exists(collider_xml_path):
+                    self._load_collider_from_path(collider_xml_path)
+                # Auto-load collision mesh from same directory (meshname_collision.stl or _hull files)
+                self._auto_load_collision_mesh(file_path)
+                # Initialize camera same as R key after loading (for accurate 90-degree rotation with WASD)
+                self.reset_camera()
+
+                # Reset all Center Position points to origin
+                for i in range(self.num_points):
+                    self.point_coords[i] = [0.0, 0.0, 0.0]
+                    # Update input fields to show 0.00000000
+                    for j in range(3):
+                        self.point_inputs[i][j].setText("0.00000000")
+                    # Update point display
+                    if self.point_actors[i]:
+                        self.update_point_display(i)
+
+                # Render to show updated points
+                self.render_to_image()
+
+                # Set focus to vtk_display after loading STL
+                self.vtk_display.setFocus()
+            except Exception as e:
+                print(f"Error loading STL: {e}")
+                import traceback
+                traceback.print_exc()
+        else:
+            print("File dialog cancelled")
+
+    def show_stl(self, file_path):
+        if hasattr(self, 'stl_actor') and self.stl_actor:
+            self.renderer.RemoveActor(self.stl_actor)
+
+        # Use common utility function to load mesh
+        poly_data, volume, extracted_color = load_mesh_to_polydata(file_path)
+
+        # Apply additional filters
+        remover = vtk.vtkDecimatePro()
+        remover.SetInputData(poly_data)
+        remover.SetTargetReduction(0.0)
+        remover.PreserveTopologyOn()
+        remover.Update()
+
+        triangulate = vtk.vtkTriangleFilter()
+        triangulate.SetInputConnection(remover.GetOutputPort())
+        triangulate.Update()
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(triangulate.GetOutputPort())
+        self.stl_actor = vtk.vtkActor()
+        self.stl_actor.SetMapper(mapper)
+        ################# introduce a mesh transform (preview only) ####################
+        self.mesh_transform = vtk.vtkTransform()
+        self.mesh_transform.Identity()
+        self.stl_actor.SetUserTransform(self.mesh_transform)
+        ################################################################################
+
+        self.model_bounds = triangulate.GetOutput().GetBounds()
+        self.renderer.AddActor(self.stl_actor)
+
+        # Calculate width (X-axis) and height (Z-axis)
+        width = self.model_bounds[1] - self.model_bounds[0]
+        height = self.model_bounds[5] - self.model_bounds[4]
+
+        self.volume_label.setText(f"Volume (m^3): {volume:.6f}")
+        self.width_label.setText(f"Width (m): {width:.6f}")
+        self.height_label.setText(f"Height (m): {height:.6f}")
+
+        self.fit_camera_to_model()
+
+        print(f"Model loaded: {file_path}")
+        print(f"Bounds: [{self.model_bounds[0]:.4f}, {self.model_bounds[1]:.4f}], [{self.model_bounds[2]:.4f}, {self.model_bounds[3]:.4f}], [{self.model_bounds[4]:.4f}, {self.model_bounds[5]:.4f}]")
+
+        # Render is handled by caller (e.g., load_stl_file)
+
+    def scale_mesh(self, scale_factor):
+        """Scale the mesh by the given factor"""
+        if not self.stl_actor:
+            print("No mesh loaded to scale")
+            return
+        
+        # Get current mesh data
+        current_mapper = self.stl_actor.GetMapper()
+        current_data = current_mapper.GetInput()
+        
+        # Create transform for scaling
+        transform = vtk.vtkTransform()
+        transform.Scale(scale_factor, scale_factor, scale_factor)
+        
+        # Apply transform to mesh
+        transform_filter = vtk.vtkTransformPolyDataFilter()
+        transform_filter.SetInputData(current_data)
+        transform_filter.SetTransform(transform)
+        transform_filter.Update()
+        
+        # Update mapper with scaled mesh
+        new_mapper = vtk.vtkPolyDataMapper()
+        new_mapper.SetInputConnection(transform_filter.GetOutputPort())
+        self.stl_actor.SetMapper(new_mapper)
+        
+        # Update bounds
+        scaled_data = transform_filter.GetOutput()
+        self.model_bounds = scaled_data.GetBounds()
+        
+        # Calculate new volume
+        mass_properties = vtk.vtkMassProperties()
+        mass_properties.SetInputData(scaled_data)
+        mass_properties.Update()
+        volume = mass_properties.GetVolume()
+        
+        # Calculate width (X-axis) and height (Z-axis)
+        width = self.model_bounds[1] - self.model_bounds[0]
+        height = self.model_bounds[5] - self.model_bounds[4]
+        
+        # Update labels
+        self.volume_label.setText(f"Volume (m^3): {volume:.6f}")
+        self.width_label.setText(f"Width (m): {width:.6f}")
+        self.height_label.setText(f"Height (m): {height:.6f}")
+        
+        # Update camera to fit new size
+        self.fit_camera_to_model()
+        
+        # Render the updated view
+        self.render_to_image()
+        
+        print(f"Mesh scaled by factor: {scale_factor}")
+        print(f"New bounds: [{self.model_bounds[0]:.4f}, {self.model_bounds[1]:.4f}], [{self.model_bounds[2]:.4f}, {self.model_bounds[3]:.4f}], [{self.model_bounds[4]:.4f}, {self.model_bounds[5]:.4f}]")
+
+    def show_absolute_origin(self):
+        sphere = vtk.vtkSphereSource()
+        sphere.SetCenter(0, 0, 0)
+        sphere.SetRadius(0.0005)
+        sphere.Update()
+
+        mapper = vtk.vtkPolyDataMapper()
+        mapper.SetInputConnection(sphere.GetOutputPort())
+
+        actor = vtk.vtkActor()
+        actor.SetMapper(mapper)
+        actor.GetProperty().SetColor(1, 1, 0)
+
+        self.renderer.AddActor(actor)
+
+    def show_point(self, index):
+        if self.point_actors[index] is None:
+            self.point_actors[index] = create_crosshair_marker(
+                coords=self.point_coords[index],
+                radius_scale=self.calculate_sphere_radius()
+            )
+            self.renderer.AddActor(self.point_actors[index])
+        self.point_actors[index].VisibilityOn()
+        self.update_point_display(index)
+
+    def rotate_camera(self, angle, rotation_type):
+        # Don't start new animation if one is already running
+        if self.is_animating:
+            return
+
+        if self.animated_rotation.start_rotation(angle, rotation_type):
+            self.target_rotation = (self.current_rotation + angle) % 360
+            self.target_angle = angle  # Store target angle for precise completion
+            self.is_animating = True  # Block further input
+            self.animation_timer.start(1000 // 60)
+            self.camera_rotation[self.rotation_types[rotation_type]] += angle
+            self.camera_rotation[self.rotation_types[rotation_type]] %= 360
+
+    def animate_rotation(self):
+        # Delegate to utility class for rotation
+        animation_continues = self.animated_rotation.animate_frame()
+
+        # Render using offscreen rendering
+        self.render_to_image()
+
+        # Stop animation when utility class indicates completion
+        if not animation_continues:
+            self.animation_timer.stop()
+            self.current_rotation = self.target_rotation
+            self.is_animating = False  # Allow new input
+
+    def quaternion_from_axis_angle(self, axis, angle_deg):
+        """Create quaternion from axis and angle (in degrees)"""
+        angle_rad = np.radians(angle_deg)
+        axis = np.array(axis)
+        axis = axis / np.linalg.norm(axis)  # Normalize
+        w = np.cos(angle_rad / 2.0)
+        x, y, z = axis * np.sin(angle_rad / 2.0)
+        return np.array([w, x, y, z])
+
+    def quaternion_multiply(self, q1, q2):
+        """Multiply two quaternions"""
+        w1, x1, y1, z1 = q1
+        w2, x2, y2, z2 = q2
+        w = w1*w2 - x1*x2 - y1*y2 - z1*z2
+        x = w1*x2 + x1*w2 + y1*z2 - z1*y2
+        y = w1*y2 - x1*z2 + y1*w2 + z1*x2
+        z = w1*z2 + x1*y2 - y1*x2 + z1*w2
+        return np.array([w, x, y, z])
+
+    def quaternion_to_euler(self, q):
+        """Convert quaternion to Euler angles (roll, pitch, yaw) in degrees"""
+        w, x, y, z = q
+
+        # Roll (x-axis rotation)
+        sinr_cosp = 2 * (w * x + y * z)
+        cosr_cosp = 1 - 2 * (x * x + y * y)
+        roll = np.arctan2(sinr_cosp, cosr_cosp)
+
+        # Pitch (y-axis rotation)
+        sinp = 2 * (w * y - z * x)
+        if abs(sinp) >= 1:
+            pitch = np.copysign(np.pi / 2, sinp)
+        else:
+            pitch = np.arcsin(sinp)
+
+        # Yaw (z-axis rotation)
+        siny_cosp = 2 * (w * z + x * y)
+        cosy_cosp = 1 - 2 * (y * y + z * z)
+        yaw = np.arctan2(siny_cosp, cosy_cosp)
+
+        return np.degrees([roll, pitch, yaw])
+
+    # euler_to_quaternion() and quaternion_to_matrix() are now imported from urdf_kitchen_utils
+
+    def create_collider_actor(self):
+        """Create VTK actor for the collider wireframe (lines only)"""
+        collider_type = self.collider_type
+        params = self.collider_params[collider_type]
+
+        # Create assembly to hold all parts of the collider
+        assembly = vtk.vtkAssembly()
+
+        if collider_type == "box":
+            # Box collider
+            box = vtk.vtkCubeSource()
+            box.SetXLength(params[0])
+            box.SetYLength(params[1])
+            box.SetZLength(params[2])
+            box.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(box.GetOutputPort())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToWireframe()
+            actor.GetProperty().SetLineWidth(2)
+            assembly.AddPart(actor)
+
+        elif collider_type == "sphere":
+            # Sphere collider
+            sphere = vtk.vtkSphereSource()
+            sphere.SetRadius(params[0])
+            sphere.SetThetaResolution(20)
+            sphere.SetPhiResolution(20)
+            sphere.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(sphere.GetOutputPort())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToWireframe()
+            actor.GetProperty().SetLineWidth(2)
+            assembly.AddPart(actor)
+
+        elif collider_type == "cylinder":
+            # Cylinder collider
+            cylinder = vtk.vtkCylinderSource()
+            cylinder.SetRadius(params[0])
+            cylinder.SetHeight(params[1])
+            cylinder.SetResolution(20)
+            cylinder.Update()
+
+            # Rotate to align with Z-axis (VTK cylinder is along Y by default)
+            transform = vtk.vtkTransform()
+            transform.RotateX(90)
+
+            transform_filter = vtk.vtkTransformPolyDataFilter()
+            transform_filter.SetInputConnection(cylinder.GetOutputPort())
+            transform_filter.SetTransform(transform)
+            transform_filter.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(transform_filter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToWireframe()
+            actor.GetProperty().SetLineWidth(2)
+            assembly.AddPart(actor)
+
+        elif collider_type == "capsule":
+            # Capsule collider (cylinder + 2 hemispheres)
+            radius = params[0]
+            length = params[1]
+
+            # Cylinder part
+            cylinder = vtk.vtkCylinderSource()
+            cylinder.SetRadius(radius)
+            cylinder.SetHeight(length)
+            cylinder.SetResolution(20)
+            cylinder.Update()
+
+            # Rotate to align with Z-axis
+            transform = vtk.vtkTransform()
+            transform.RotateX(90)
+
+            transform_filter = vtk.vtkTransformPolyDataFilter()
+            transform_filter.SetInputConnection(cylinder.GetOutputPort())
+            transform_filter.SetTransform(transform)
+            transform_filter.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(transform_filter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToWireframe()
+            actor.GetProperty().SetLineWidth(2)
+            assembly.AddPart(actor)
+
+            # Top hemisphere
+            top_sphere = vtk.vtkSphereSource()
+            top_sphere.SetRadius(radius)
+            top_sphere.SetThetaResolution(20)
+            top_sphere.SetPhiResolution(20)
+            top_sphere.SetStartPhi(0)
+            top_sphere.SetEndPhi(90)
+            top_sphere.Update()
+
+            mapper_top = vtk.vtkPolyDataMapper()
+            mapper_top.SetInputConnection(top_sphere.GetOutputPort())
+
+            actor_top = vtk.vtkActor()
+            actor_top.SetMapper(mapper_top)
+            actor_top.SetPosition(0, 0, length / 2)
+            actor_top.GetProperty().SetColor(0.0, 0.8, 1.0)
+            actor_top.GetProperty().SetRepresentationToWireframe()
+            actor_top.GetProperty().SetLineWidth(2)
+            assembly.AddPart(actor_top)
+
+            # Bottom hemisphere
+            bottom_sphere = vtk.vtkSphereSource()
+            bottom_sphere.SetRadius(radius)
+            bottom_sphere.SetThetaResolution(20)
+            bottom_sphere.SetPhiResolution(20)
+            bottom_sphere.SetStartPhi(90)
+            bottom_sphere.SetEndPhi(180)
+            bottom_sphere.Update()
+
+            mapper_bottom = vtk.vtkPolyDataMapper()
+            mapper_bottom.SetInputConnection(bottom_sphere.GetOutputPort())
+
+            actor_bottom = vtk.vtkActor()
+            actor_bottom.SetMapper(mapper_bottom)
+            actor_bottom.SetPosition(0, 0, -length / 2)
+            actor_bottom.GetProperty().SetColor(0.0, 0.8, 1.0)
+            actor_bottom.GetProperty().SetRepresentationToWireframe()
+            actor_bottom.GetProperty().SetLineWidth(2)
+            assembly.AddPart(actor_bottom)
+
+        # Apply position
+        assembly.SetPosition(self.collider_position)
+
+        # Apply rotation using quaternion
+        transform = vtk.vtkTransform()
+        transform.PostMultiply()
+
+        # Move to origin
+        transform.Translate(*[-x for x in self.collider_position])
+
+        # Apply rotation from quaternion
+        rot_matrix = quaternion_to_matrix(self.collider_rotation_quaternion)
+        vtk_matrix = vtk.vtkMatrix4x4()
+        for i in range(3):
+            for j in range(3):
+                vtk_matrix.SetElement(i, j, rot_matrix[i, j])
+        transform.Concatenate(vtk_matrix)
+
+        # Move back to position
+        transform.Translate(*self.collider_position)
+
+        assembly.SetUserTransform(transform)
+
+        return assembly
+
+    def create_collider_surface_actor(self):
+        """Create VTK actor for the collider surface (transparent, for blinking effect)"""
+        collider_type = self.collider_type
+        params = self.collider_params[collider_type]
+
+        # Create assembly to hold all parts of the collider surface
+        assembly = vtk.vtkAssembly()
+
+        if collider_type == "box":
+            # Box collider
+            box = vtk.vtkCubeSource()
+            box.SetXLength(params[0])
+            box.SetYLength(params[1])
+            box.SetZLength(params[2])
+            box.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(box.GetOutputPort())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToSurface()
+            actor.GetProperty().SetOpacity(0.5)  # 50% transparency
+            assembly.AddPart(actor)
+
+        elif collider_type == "sphere":
+            # Sphere collider
+            sphere = vtk.vtkSphereSource()
+            sphere.SetRadius(params[0])
+            sphere.SetThetaResolution(20)
+            sphere.SetPhiResolution(20)
+            sphere.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputConnection(sphere.GetOutputPort())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToSurface()
+            actor.GetProperty().SetOpacity(0.5)  # 50% transparency
+            assembly.AddPart(actor)
+
+        elif collider_type == "cylinder":
+            # Cylinder collider
+            cylinder = vtk.vtkCylinderSource()
+            cylinder.SetRadius(params[0])
+            cylinder.SetHeight(params[1])
+            cylinder.SetResolution(20)
+            cylinder.Update()
+
+            # Rotate to align with Z-axis (VTK cylinder is along Y by default)
+            transform = vtk.vtkTransform()
+            transform.RotateX(90)
+
+            transform_filter = vtk.vtkTransformPolyDataFilter()
+            transform_filter.SetInputConnection(cylinder.GetOutputPort())
+            transform_filter.SetTransform(transform)
+            transform_filter.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(transform_filter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToSurface()
+            actor.GetProperty().SetOpacity(0.5)  # 50% transparency
+            assembly.AddPart(actor)
+
+        elif collider_type == "capsule":
+            # Capsule collider (cylinder + 2 hemispheres)
+            radius = params[0]
+            length = params[1]
+
+            # Cylinder part
+            cylinder = vtk.vtkCylinderSource()
+            cylinder.SetRadius(radius)
+            cylinder.SetHeight(length)
+            cylinder.SetResolution(20)
+            cylinder.Update()
+
+            # Rotate to align with Z-axis
+            transform = vtk.vtkTransform()
+            transform.RotateX(90)
+
+            transform_filter = vtk.vtkTransformPolyDataFilter()
+            transform_filter.SetInputConnection(cylinder.GetOutputPort())
+            transform_filter.SetTransform(transform)
+            transform_filter.Update()
+
+            mapper = vtk.vtkPolyDataMapper()
+            mapper.SetInputData(transform_filter.GetOutput())
+
+            actor = vtk.vtkActor()
+            actor.SetMapper(mapper)
+            actor.GetProperty().SetColor(0.0, 0.8, 1.0)  # Light blue
+            actor.GetProperty().SetRepresentationToSurface()
+            actor.GetProperty().SetOpacity(0.5)  # 50% transparency
+            assembly.AddPart(actor)
+
+            # Top hemisphere
+            top_sphere = vtk.vtkSphereSource()
+            top_sphere.SetRadius(radius)
+            top_sphere.SetThetaResolution(20)
+            top_sphere.SetPhiResolution(20)
+            top_sphere.SetStartPhi(0)
+            top_sphere.SetEndPhi(90)
+            top_sphere.Update()
+
+            mapper_top = vtk.vtkPolyDataMapper()
+            mapper_top.SetInputConnection(top_sphere.GetOutputPort())
+
+            actor_top = vtk.vtkActor()
+            actor_top.SetMapper(mapper_top)
+            actor_top.SetPosition(0, 0, length / 2)
+            actor_top.GetProperty().SetColor(0.0, 0.8, 1.0)
+            actor_top.GetProperty().SetRepresentationToSurface()
+            actor_top.GetProperty().SetOpacity(0.5)  # 50% transparency
+            assembly.AddPart(actor_top)
+
+            # Bottom hemisphere
+            bottom_sphere = vtk.vtkSphereSource()
+            bottom_sphere.SetRadius(radius)
+            bottom_sphere.SetThetaResolution(20)
+            bottom_sphere.SetPhiResolution(20)
+            bottom_sphere.SetStartPhi(90)
+            bottom_sphere.SetEndPhi(180)
+            bottom_sphere.Update()
+
+            mapper_bottom = vtk.vtkPolyDataMapper()
+            mapper_bottom.SetInputConnection(bottom_sphere.GetOutputPort())
+
+            actor_bottom = vtk.vtkActor()
+            actor_bottom.SetMapper(mapper_bottom)
+            actor_bottom.SetPosition(0, 0, -length / 2)
+            actor_bottom.GetProperty().SetColor(0.0, 0.8, 1.0)
+            actor_bottom.GetProperty().SetRepresentationToSurface()
+            actor_bottom.GetProperty().SetOpacity(0.5)  # 50% transparency
+            assembly.AddPart(actor_bottom)
+
+        # Apply position
+        assembly.SetPosition(self.collider_position)
+
+        # Apply rotation using quaternion
+        transform = vtk.vtkTransform()
+        transform.PostMultiply()
+
+        # Move to origin
+        transform.Translate(*[-x for x in self.collider_position])
+
+        # Apply rotation from quaternion
+        rot_matrix = quaternion_to_matrix(self.collider_rotation_quaternion)
+        vtk_matrix = vtk.vtkMatrix4x4()
+        for i in range(3):
+            for j in range(3):
+                vtk_matrix.SetElement(i, j, rot_matrix[i, j])
+        transform.Concatenate(vtk_matrix)
+
+        # Move back to position
+        transform.Translate(*self.collider_position)
+
+        assembly.SetUserTransform(transform)
+
+        return assembly
+
+    def update_collider_display(self):
+        """Update collider display in the 3D view"""
+        # Remove old collider actors if exist
+        if self.collider_actor:
+            self.renderer.RemoveActor(self.collider_actor)
+            self.collider_actor = None
+        if self.collider_surface_actor:
+            self.renderer.RemoveActor(self.collider_surface_actor)
+            self.collider_surface_actor = None
+
+        # Stop blinking timer (no longer needed)
+        if self.collider_blink_timer.isActive():
+            self.collider_blink_timer.stop()
+
+        # Create and add new wireframe actor (always visible)
+        self.collider_actor = self.create_collider_actor()
+        self.renderer.AddActor(self.collider_actor)
+
+        # Create and add new surface actor (always visible with 50% transparency)
+        self.collider_surface_actor = self.create_collider_surface_actor()
+        self.renderer.AddActor(self.collider_surface_actor)
+
+        # Render the updated scene
+        self.render_to_image()
+
+    def toggle_collider_surface(self):
+        """Toggle collider surface visibility (deprecated - no longer used)"""
+        # This method is no longer used since blinking is disabled
+        pass
+
+    def reset_and_fit_collider(self):
+        """Reset collider to default state (all zeros) and then fit to mesh"""
+        if not self.model_bounds:
+            print("No mesh loaded. Please load a mesh first.")
+            return
+
+        # Reset position to origin
+        self.collider_position = [0.0, 0.0, 0.0]
+
+        # Reset rotation to zero (identity quaternion) - radians internal
+        self.collider_rotation = [0.0, 0.0, 0.0]
+        self.collider_rotation_quaternion = np.array([1.0, 0.0, 0.0, 0.0])
+
+        # Reset parameters to default values
+        self.collider_params = {
+            "box": [1.0, 1.0, 1.0],
+            "sphere": [0.5],
+            "cylinder": [0.5, 1.0],
+            "capsule": [0.5, 1.0]
+        }
+
+        # Update UI with reset values (degrees for display)
+        for i in range(3):
+            self.collider_position_inputs[i].setText("0.0000")
+            self.collider_rotation_inputs[i].setText("0.00")
+
+        # Now perform Rough Fit with reset rotation (identity)
+        self.draft_collider()
+
+    def draft_collider(self):
+        """Draft a collider from mesh bounding box based on selected type"""
+        if not self.model_bounds:
+            print("No mesh loaded. Please load a mesh first.")
+            return
+
+        # Auto-enable ShowCollider when RoughFit is pressed
+        if not self.collider_show:
+            self.collider_show_checkbox.setChecked(True)
+            print("ShowCollider automatically enabled")
+
+        # Calculate bounding box dimensions (world space, round to 4 decimal places)
+        size_x = round(self.model_bounds[1] - self.model_bounds[0], 4)
+        size_y = round(self.model_bounds[3] - self.model_bounds[2], 4)
+        size_z = round(self.model_bounds[5] - self.model_bounds[4], 4)
+
+        # Calculate center position (round to 4 decimal places)
+        center_x = round((self.model_bounds[0] + self.model_bounds[1]) / 2, 4)
+        center_y = round((self.model_bounds[2] + self.model_bounds[3]) / 2, 4)
+        center_z = round((self.model_bounds[4] + self.model_bounds[5]) / 2, 4)
+
+        # Set position (keep existing rotation)
+        self.collider_position = [center_x, center_y, center_z]
+
+        # Calculate parameters based on current collider type
+        collider_type = self.collider_type
+
+        if collider_type == "box":
+            # Box: use full bounding box dimensions
+            self.collider_params["box"] = [size_x, size_y, size_z]
+            print(f"Drafted box collider: size=({size_x:.4f}, {size_y:.4f}, {size_z:.4f}), center=({center_x:.4f}, {center_y:.4f}, {center_z:.4f})")
+
+        elif collider_type == "sphere":
+            # Sphere: radius that fits inside mesh bounding box (use smallest dimension)
+            radius = round(min(size_x, size_y, size_z) / 2, 4)
+            self.collider_params["sphere"] = [radius]
+            print(f"Drafted sphere collider: radius={radius:.4f}, center=({center_x:.4f}, {center_y:.4f}, {center_z:.4f})")
+
+        elif collider_type in ["cylinder", "capsule"]:
+            # For cylinder/capsule, consider rotation to find which world axis aligns with collider's Z-axis
+            rot_matrix = quaternion_to_matrix(self.collider_rotation_quaternion)
+            collider_z_axis = rot_matrix[:, 2]  # Third column is Z-axis direction in world space
+
+            # Find which world axis is most aligned with collider's Z-axis
+            world_axes = [np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, 0, 1])]
+            mesh_sizes = [size_x, size_y, size_z]
+
+            # Calculate dot products to find most aligned axis
+            alignments = [abs(np.dot(collider_z_axis, axis)) for axis in world_axes]
+            primary_axis_idx = np.argmax(alignments)
+
+            # Length comes from the most aligned axis
+            primary_size = mesh_sizes[primary_axis_idx]
+
+            # Radius comes from the smaller of the two perpendicular axes
+            perpendicular_sizes = [mesh_sizes[i] for i in range(3) if i != primary_axis_idx]
+            perpendicular_size = min(perpendicular_sizes)
+
+            if collider_type == "cylinder":
+                # Cylinder: radius from perpendicular plane, height from aligned axis
+                radius = round(perpendicular_size / 2, 4)
+                height = round(primary_size, 4)
+                self.collider_params["cylinder"] = [radius, height]
+                print(f"Drafted cylinder collider: radius={radius:.4f}, length={height:.4f}, center=({center_x:.4f}, {center_y:.4f}, {center_z:.4f})")
+
+            else:  # capsule
+                # Capsule: radius from perpendicular plane, length from aligned axis minus hemispheres
+                radius = round(perpendicular_size / 2, 4)
+                length = round(primary_size - (2 * radius), 4)
+                if length < 0:
+                    length = 0.0  # Ensure non-negative length
+                self.collider_params["capsule"] = [radius, length]
+                print(f"Drafted capsule collider: radius={radius:.4f}, length={length:.4f} (cylinder only), center=({center_x:.4f}, {center_y:.4f}, {center_z:.4f})")
+
+        # Update UI (position and parameters only, keep existing rotation)
+        self.update_collider_param_inputs()
+        for i, value in enumerate([center_x, center_y, center_z]):
+            self.collider_position_inputs[i].setText(f"{value:.4f}")
+
+        # Update display
+        self.update_collider_display()
+
+    def export_collider(self):
+        """Export collider to XML file"""
+        if not self.current_stl_path:
+            print("No mesh loaded. Please load a mesh first.")
+            return
+
+        # Generate default file path (mesh_filename + _collider.xml)
+        import os
+        base_name = os.path.splitext(self.current_stl_path)[0]
+        default_path = base_name + "_collider.xml"
+
+        # Ask user for save location
+        file_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Collider", default_path, "XML Files (*.xml)")
+        if not file_path:
+            return
+
+        try:
+            # Create XML content
+            import xml.etree.ElementTree as ET
+            from xml.dom import minidom
+
+            root = ET.Element("urdf_kitchen_collider")
+            root.set("version", "1.0")
+
+            # Add mesh reference
+            mesh_elem = ET.SubElement(root, "mesh_file")
+            mesh_elem.text = os.path.basename(self.current_stl_path)
+
+            # Add collider info
+            collider_elem = ET.SubElement(root, "collider")
+            collider_elem.set("type", self.collider_type)
+
+            # Add parameters (4 decimal places for size/radius/length)
+            params_elem = ET.SubElement(collider_elem, "geometry")
+            params = self.collider_params[self.collider_type]
+
+            if self.collider_type == "box":
+                params_elem.set("size_x", f"{round(params[0], 4):.4f}")
+                params_elem.set("size_y", f"{round(params[1], 4):.4f}")
+                params_elem.set("size_z", f"{round(params[2], 4):.4f}")
+            elif self.collider_type == "sphere":
+                params_elem.set("radius", f"{round(params[0], 4):.4f}")
+            elif self.collider_type in ["cylinder", "capsule"]:
+                params_elem.set("radius", f"{round(params[0], 4):.4f}")
+                params_elem.set("length", f"{round(params[1], 4):.4f}")
+
+            # Add position (4 decimal places)
+            position_elem = ET.SubElement(collider_elem, "position")
+            position_elem.set("x", f"{round(self.collider_position[0], 4):.4f}")
+            position_elem.set("y", f"{round(self.collider_position[1], 4):.4f}")
+            position_elem.set("z", f"{round(self.collider_position[2], 4):.4f}")
+
+            # Add rotation (radians, 6 decimal places)
+            rotation_elem = ET.SubElement(collider_elem, "rotation")
+            rotation_elem.set("roll", f"{self.collider_rotation[0]:.6f}")
+            rotation_elem.set("pitch", f"{self.collider_rotation[1]:.6f}")
+            rotation_elem.set("yaw", f"{self.collider_rotation[2]:.6f}")
+
+            # Pretty print XML
+            xml_str = ET.tostring(root, encoding='unicode')
+            dom = minidom.parseString(xml_str)
+            pretty_xml = dom.toprettyxml(indent="  ")
+
+            # Write to file
+            with open(file_path, 'w') as f:
+                f.write(pretty_xml)
+
+            print(f"Collider exported to: {file_path}")
+
+        except Exception as e:
+            print(f"Error exporting collider: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _apply_collider_from_dict(self, collider_data):
+        """Apply collider from Assembler collider_data dict (from argv[2] when no collider XML exists).
+        Sets type, geometry, position, rotation, and Show Collider ON.
+        Skips the first-show auto-draft (Rough Fit) so Assembler's values are preserved.
+        """
+        if not collider_data or not isinstance(collider_data, dict):
+            return
+        # Skip first-show auto-draft: when Show Collider is checked for the first time,
+        # on_collider_show_changed normally calls draft_collider() which overwrites with defaults.
+        self.collider_first_show = False
+        data = collider_data.get('data', collider_data) if 'data' in collider_data else collider_data
+        collider_type = data.get('type', 'box')
+        if collider_type not in ["box", "sphere", "cylinder", "capsule"]:
+            return
+        import math
+        # Set type
+        index = self.collider_type_combo.findText(collider_type)
+        if index >= 0:
+            self.collider_type_combo.setCurrentIndex(index)
+        self.collider_type = collider_type
+        # Set geometry
+        geometry = data.get('geometry', {})
+        if collider_type == "box":
+            sx = float(geometry.get('size_x', 1.0))
+            sy = float(geometry.get('size_y', 1.0))
+            sz = float(geometry.get('size_z', 1.0))
+            self.collider_params[collider_type] = [sx, sy, sz]
+        elif collider_type == "sphere":
+            r = float(geometry.get('radius', 0.5))
+            self.collider_params[collider_type] = [r]
+        elif collider_type in ["cylinder", "capsule"]:
+            r = float(geometry.get('radius', 0.5))
+            L = float(geometry.get('length', 1.0))
+            self.collider_params[collider_type] = [r, L]
+        # Position (top-level or in data)
+        pos = collider_data.get('position', data.get('position', [0.0, 0.0, 0.0]))
+        self.collider_position = [float(pos[0]), float(pos[1]), float(pos[2])]
+        for i, v in enumerate(self.collider_position):
+            if i < len(self.collider_position_inputs):
+                self.collider_position_inputs[i].setText(f"{v:.4f}")
+        # Rotation: Assembler uses degrees
+        rot_deg = collider_data.get('rotation', data.get('rotation', [0.0, 0.0, 0.0]))
+        rot_rad = [math.radians(float(rot_deg[0])), math.radians(float(rot_deg[1])), math.radians(float(rot_deg[2]))]
+        self.collider_rotation = rot_rad
+        for i, v in enumerate(rot_deg):
+            if i < len(self.collider_rotation_inputs):
+                self.collider_rotation_inputs[i].setText(f"{float(v):.2f}")
+        self.collider_rotation_quaternion = euler_to_quaternion(float(rot_deg[0]), float(rot_deg[1]), float(rot_deg[2]))
+        self.update_collider_param_inputs()
+        self.collider_show_checkbox.setChecked(True)
+        self.update_collider_display()
+        print(f"Applied collider from Assembler: type={collider_type}")
+
+    def _load_collider_from_path(self, file_path):
+        """Load collider from XML file path (no dialog). Used when launched from Assembler."""
+        if not file_path or not os.path.exists(file_path):
+            return
+        try:
+            import xml.etree.ElementTree as ET
+
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+            if root.tag != "urdf_kitchen_collider":
+                return
+            collider_elem = root.find("collider")
+            if collider_elem is None:
+                return
+            collider_type = collider_elem.get("type")
+            if collider_type not in ["box", "sphere", "cylinder", "capsule"]:
+                return
+            index = self.collider_type_combo.findText(collider_type)
+            if index >= 0:
+                self.collider_type_combo.setCurrentIndex(index)
+            geometry_elem = collider_elem.find("geometry")
+            if geometry_elem is not None:
+                if collider_type == "box":
+                    size_x = float(geometry_elem.get("size_x", "1.0"))
+                    size_y = float(geometry_elem.get("size_y", "1.0"))
+                    size_z = float(geometry_elem.get("size_z", "1.0"))
+                    self.collider_params[collider_type] = [size_x, size_y, size_z]
+                elif collider_type == "sphere":
+                    radius = float(geometry_elem.get("radius", "0.5"))
+                    self.collider_params[collider_type] = [radius]
+                elif collider_type in ["cylinder", "capsule"]:
+                    radius = float(geometry_elem.get("radius", "0.5"))
+                    length = float(geometry_elem.get("length", "1.0"))
+                    self.collider_params[collider_type] = [radius, length]
+            position_elem = collider_elem.find("position")
+            if position_elem is not None:
+                x = float(position_elem.get("x", "0.0"))
+                y = float(position_elem.get("y", "0.0"))
+                z = float(position_elem.get("z", "0.0"))
+                self.collider_position = [x, y, z]
+                self.collider_position_inputs[0].setText(f"{x:.4f}")
+                self.collider_position_inputs[1].setText(f"{y:.4f}")
+                self.collider_position_inputs[2].setText(f"{z:.4f}")
+            rotation_elem = collider_elem.find("rotation")
+            if rotation_elem is not None:
+                import math
+                roll_rad = float(rotation_elem.get("roll", "0.0"))
+                pitch_rad = float(rotation_elem.get("pitch", "0.0"))
+                yaw_rad = float(rotation_elem.get("yaw", "0.0"))
+                if any(abs(v) > 3.5 for v in [roll_rad, pitch_rad, yaw_rad]):
+                    roll_rad = math.radians(roll_rad)
+                    pitch_rad = math.radians(pitch_rad)
+                    yaw_rad = math.radians(yaw_rad)
+                self.collider_rotation = [roll_rad, pitch_rad, yaw_rad]
+                roll_deg = math.degrees(roll_rad)
+                pitch_deg = math.degrees(pitch_rad)
+                yaw_deg = math.degrees(yaw_rad)
+                self.collider_rotation_inputs[0].setText(f"{roll_deg:.2f}")
+                self.collider_rotation_inputs[1].setText(f"{pitch_deg:.2f}")
+                self.collider_rotation_inputs[2].setText(f"{yaw_deg:.2f}")
+                self.collider_rotation_quaternion = euler_to_quaternion(
+                    roll_deg, pitch_deg, yaw_deg)
+            self.update_collider_param_inputs()
+            self.update_collider_display()
+            print(f"Auto-loaded collider from: {file_path}")
+        except Exception as e:
+            print(f"Error loading collider from {file_path}: {e}")
+
+    def load_collider(self):
+        """Load collider from XML file"""
+        # Ask user for file location
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Collider", "", "XML Files (*.xml)")
+        if not file_path:
+            return
+
+        try:
+            import xml.etree.ElementTree as ET
+
+            # Parse XML file
+            tree = ET.parse(file_path)
+            root = tree.getroot()
+
+            # Verify it's a urdf_kitchen_collider file
+            if root.tag != "urdf_kitchen_collider":
+                print(f"Error: Not a valid urdf_kitchen_collider file")
+                return
+
+            # Get collider element
+            collider_elem = root.find("collider")
+            if collider_elem is None:
+                print(f"Error: No collider element found")
+                return
+
+            # Get collider type
+            collider_type = collider_elem.get("type")
+            if collider_type not in ["box", "sphere", "cylinder", "capsule"]:
+                print(f"Error: Unknown collider type: {collider_type}")
+                return
+
+            # Set collider type in combo box
+            index = self.collider_type_combo.findText(collider_type)
+            if index >= 0:
+                self.collider_type_combo.setCurrentIndex(index)
+
+            # Get geometry parameters
+            geometry_elem = collider_elem.find("geometry")
+            if geometry_elem is not None:
+                if collider_type == "box":
+                    size_x = float(geometry_elem.get("size_x", "1.0"))
+                    size_y = float(geometry_elem.get("size_y", "1.0"))
+                    size_z = float(geometry_elem.get("size_z", "1.0"))
+                    self.collider_params[collider_type] = [size_x, size_y, size_z]
+                elif collider_type == "sphere":
+                    radius = float(geometry_elem.get("radius", "0.5"))
+                    self.collider_params[collider_type] = [radius]
+                elif collider_type in ["cylinder", "capsule"]:
+                    radius = float(geometry_elem.get("radius", "0.5"))
+                    length = float(geometry_elem.get("length", "1.0"))
+                    self.collider_params[collider_type] = [radius, length]
+
+            # Get position
+            position_elem = collider_elem.find("position")
+            if position_elem is not None:
+                x = float(position_elem.get("x", "0.0"))
+                y = float(position_elem.get("y", "0.0"))
+                z = float(position_elem.get("z", "0.0"))
+                self.collider_position = [x, y, z]
+
+                # Update position input fields
+                self.collider_position_inputs[0].setText(f"{x:.4f}")
+                self.collider_position_inputs[1].setText(f"{y:.4f}")
+                self.collider_position_inputs[2].setText(f"{z:.4f}")
+
+            # Get rotation (radians in file)
+            rotation_elem = collider_elem.find("rotation")
+            if rotation_elem is not None:
+                import math
+                roll_rad = float(rotation_elem.get("roll", "0.0"))
+                pitch_rad = float(rotation_elem.get("pitch", "0.0"))
+                yaw_rad = float(rotation_elem.get("yaw", "0.0"))
+                # Backward compatibility: if values look like degrees, convert to radians
+                if any(abs(v) > 3.5 for v in [roll_rad, pitch_rad, yaw_rad]):
+                    roll_rad = math.radians(roll_rad)
+                    pitch_rad = math.radians(pitch_rad)
+                    yaw_rad = math.radians(yaw_rad)
+                self.collider_rotation = [roll_rad, pitch_rad, yaw_rad]
+
+                # Update rotation input fields (degrees for UI)
+                roll_deg = math.degrees(roll_rad)
+                pitch_deg = math.degrees(pitch_rad)
+                yaw_deg = math.degrees(yaw_rad)
+                self.collider_rotation_inputs[0].setText(f"{roll_deg:.2f}")
+                self.collider_rotation_inputs[1].setText(f"{pitch_deg:.2f}")
+                self.collider_rotation_inputs[2].setText(f"{yaw_deg:.2f}")
+
+                # Convert RPY to quaternion for internal use (degrees for helper)
+                self.collider_rotation_quaternion = euler_to_quaternion(
+                    roll_deg,
+                    pitch_deg,
+                    yaw_deg
+                )
+
+            # Update parameter input fields
+            self.update_collider_param_inputs()
+
+            # Update collider visualization
+            self.update_collider_display()
+
+            print(f"Collider loaded from: {file_path}")
+            print(f"  Type: {collider_type}")
+            print(f"  Position: {self.collider_position}")
+            print(f"  Rotation (rad): {self.collider_rotation}")
+
+        except Exception as e:
+            print(f"Error loading collider: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def return_mesh_to_assembler(self):
+        """Write mesh and collider data to return file for Assembler to pick up."""
+        if not self.return_file_path or not self.return_node_name:
+            print("Return Mesh: Not launched from Assembler (no return path)")
+            return
+        if not self.current_stl_path:
+            print("Return Mesh: No mesh loaded")
+            return
+        import json
+        import math
+        # Build collider dict in Assembler format
+        geom = {}
+        if self.collider_type == "box":
+            geom = {
+                'size_x': self.collider_params['box'][0],
+                'size_y': self.collider_params['box'][1],
+                'size_z': self.collider_params['box'][2]
+            }
+        elif self.collider_type == "sphere":
+            geom = {'radius': self.collider_params['sphere'][0]}
+        elif self.collider_type in ["cylinder", "capsule"]:
+            geom = {
+                'radius': self.collider_params[self.collider_type][0],
+                'length': self.collider_params[self.collider_type][1]
+            }
+        rot_deg = [math.degrees(self.collider_rotation[0]), math.degrees(self.collider_rotation[1]), math.degrees(self.collider_rotation[2])]
+        collider_dict = {
+            'type': 'primitive',
+            'enabled': True,
+            'data': {
+                'type': self.collider_type,
+                'geometry': geom,
+                'position': list(self.collider_position),
+                'rotation': rot_deg
+            },
+            'position': list(self.collider_position),
+            'rotation': rot_deg
+        }
+        payload = {
+            'node_name': self.return_node_name,
+            'mesh_path': self.current_stl_path,
+            'collider_index': self.return_collider_index,
+            'collider': collider_dict
+        }
+        try:
+            with open(self.return_file_path, 'w') as f:
+                json.dump(payload, f, indent=2)
+            print(f"Returned mesh and collider to Assembler: {self.return_file_path}")
+        except Exception as e:
+            print(f"Error writing return file: {e}")
+
+    def fit_camera_to_model(self):
+        if not self.model_bounds:
+            return
+
+        camera = self.renderer.GetActiveCamera()
+        center = [(self.model_bounds[i] + self.model_bounds[i+1]) / 2 for i in range(0, 6, 2)]
+
+        size = max([
+            self.model_bounds[1] - self.model_bounds[0],
+            self.model_bounds[3] - self.model_bounds[2],
+            self.model_bounds[5] - self.model_bounds[4]
+        ])
+        size *= 1.4
+
+        camera.SetPosition(center[0] + size, center[1], center[2])
+        camera.SetFocalPoint(*center)
+        camera.SetViewUp(0, 0, 1)
+
+        viewport = self.renderer.GetViewport()
+        aspect_ratio = (viewport[2] - viewport[0]) / (viewport[3] - viewport[1])
+
+        if aspect_ratio > 1:
+            camera.SetParallelScale(size / 2)
+        else:
+            camera.SetParallelScale(size / (2 * aspect_ratio))
+
+        self.renderer.ResetCameraClippingRange()
+
+    def keyPressEvent(self, event):
+        if event.isAutoRepeat():
+            return
+
+        key = event.key()
+        modifiers = event.modifiers()
+        shift_pressed = modifiers & Qt.ShiftModifier
+        ctrl_pressed = modifiers & Qt.ControlModifier
+
+        # Delete key: remove currently selected collision hull segment(s)
+        if key in (Qt.Key_Delete, Qt.Key_Backspace) and self._selected_collision_hulls:
+            self._delete_selected_collision_hulls()
+            event.accept()
+            return
+
+        # Ctrl+M / Cmd+M: merge the 2 selected hulls into one convex hull
+        if key == Qt.Key_M and (modifiers & Qt.ControlModifier or modifiers & Qt.MetaModifier):
+            if len(self._selected_collision_hulls) == 2:
+                self._merge_selected_collision_hulls()
+                event.accept()
+                return
+
+        # Ctrl+Z / Cmd+Z: undo last collision hull action (delete or merge)
+        # On macOS, Cmd maps to ControlModifier by default; also accept MetaModifier for safety.
+        if key == Qt.Key_Z and (modifiers & Qt.ControlModifier or modifiers & Qt.MetaModifier):
+            if self._collision_hull_undo_stack:
+                self._undo_last_hull_action()
+                event.accept()
+                return
+
+        # Tab key: cycle through Position, Size/Radius, Rotation checkboxes
+        if key == Qt.Key_Tab:
+            event.accept()
+
+            # Only work if ShowCollider is checked
+            if self.collider_show:
+                # Determine available options based on collider type
+                if self.collider_type == "box":
+                    # Box: Position → Size → Rotation → Position...
+                    available_options = ['position', 'size', 'rotation']
+                else:  # sphere, cylinder, capsule
+                    # Others: Position → Radius&Length → Rotation → Position...
+                    available_options = ['position', 'radius_length', 'rotation']
+
+                # Find current active option
+                current_active = None
+                if self.collider_position_active:
+                    current_active = 'position'
+                elif self.collider_size_active:
+                    current_active = 'size'
+                elif self.collider_radius_length_active:
+                    current_active = 'radius_length'
+                elif self.collider_rotation_active:
+                    current_active = 'rotation'
+
+                # If no checkbox is active, activate Position first
+                if current_active is None:
+                    self.collider_position_checkbox.setChecked(True)
+                # If any checkbox is active, cycle to the next one
+                elif current_active in available_options:
+                    current_index = available_options.index(current_active)
+                    next_index = (current_index + 1) % len(available_options)
+                    next_option = available_options[next_index]
+
+                    # Activate the next checkbox (this will trigger the mutual exclusivity logic)
+                    if next_option == 'position':
+                        self.collider_position_checkbox.setChecked(True)
+                    elif next_option == 'size':
+                        # Find the size checkbox in collider_param_checkboxes
+                        if hasattr(self, 'collider_param_checkboxes') and self.collider_param_checkboxes[0]:
+                            self.collider_param_checkboxes[0].setChecked(True)
+                    elif next_option == 'radius_length':
+                        # Find the radius/length checkbox in collider_param_checkboxes
+                        if hasattr(self, 'collider_param_checkboxes') and self.collider_param_checkboxes[0]:
+                            self.collider_param_checkboxes[0].setChecked(True)
+                    elif next_option == 'rotation':
+                        self.collider_rotation_checkbox.setChecked(True)
+
+            return
+
+        # Block WASDQER keys during animation
+        if self.is_animating and key in [Qt.Key_W, Qt.Key_A, Qt.Key_S, Qt.Key_D, Qt.Key_Q, Qt.Key_E, Qt.Key_R]:
+            return
+
+        if key == Qt.Key_W:
+            print("[W] Rotate 90° up (pitch)")
+            self.rotate_camera(-90, 'pitch')
+        elif key == Qt.Key_S:
+            print("[S] Rotate 90° down (pitch)")
+            self.rotate_camera(90, 'pitch')
+        elif key == Qt.Key_A:
+            print("[A] Rotate 90° left (yaw)")
+            self.rotate_camera(90, 'yaw')
+        elif key == Qt.Key_D:
+            print("[D] Rotate 90° right (yaw)")
+            self.rotate_camera(-90, 'yaw')
+        elif key == Qt.Key_Q:
+            print("[Q] Rotate 90° counterclockwise (roll)")
+            self.rotate_camera(90, 'roll')
+        elif key == Qt.Key_E:
+            print("[E] Rotate 90° clockwise (roll)")
+            self.rotate_camera(-90, 'roll')
+        elif key == Qt.Key_R:
+            print("[R] Reset camera")
+            self.reset_camera()
+            self.render_to_image()
+        elif key == Qt.Key_T:
+            # Prevent rapid toggle - ignore if already toggling
+            if self._toggling_wireframe:
+                return
+
+            self._toggling_wireframe = True
+
+            # Cancel any pending render timers from previous toggle
+            for timer in self._pending_render_timers:
+                if timer.isActive():
+                    timer.stop()
+            self._pending_render_timers.clear()
+
+            self.toggle_wireframe()
+
+            # Single render is sufficient - excessive renders cause flickering
+            self.render_to_image()
+
+            # Release lock quickly to allow next toggle
+            QTimer.singleShot(100, lambda: setattr(self, '_toggling_wireframe', False))
+
+        elif key == Qt.Key_H:
+            # Toggle help text visibility
+            self.help_visible = not self.help_visible
+            self.update_instruction_text_layout()
+            self.render_to_image()
+
+        elif key in [Qt.Key_Up, Qt.Key_Down, Qt.Key_Left, Qt.Key_Right]:
+            step = calculate_arrow_key_step(shift_pressed, ctrl_pressed)
+            handled = False
+
+            # Priority 1: Collider Rotation (left/right only, roll direction from camera view)
+            if self.collider_rotation_active and key in [Qt.Key_Left, Qt.Key_Right]:
+                # Step sizes: 10 degrees (default), 1 degree (shift), 0.1 degree (shift+ctrl)
+                angle_step = 10.0  # Default: 10 degrees
+                if shift_pressed and not ctrl_pressed:
+                    angle_step = 1.0  # Shift: 1 degree
+                elif shift_pressed and ctrl_pressed:
+                    angle_step = 0.1  # Shift+Ctrl: 0.1 degree
+
+                # Get camera view direction (axis of rotation)
+                camera = self.renderer.GetActiveCamera()
+                camera_pos = np.array(camera.GetPosition())
+                focal_point = np.array(camera.GetFocalPoint())
+                view_direction = focal_point - camera_pos
+                view_direction = view_direction / np.linalg.norm(view_direction)  # Normalize
+
+                # Determine rotation direction
+                if key == Qt.Key_Left:
+                    angle_step = -angle_step  # Counter-clockwise from camera view
+
+                # Create rotation quaternion around camera view direction
+                delta_quat = self.quaternion_from_axis_angle(view_direction, angle_step)
+
+                # Apply rotation to current quaternion
+                self.collider_rotation_quaternion = self.quaternion_multiply(
+                    delta_quat, self.collider_rotation_quaternion)
+
+                # Normalize quaternion to prevent drift
+                self.collider_rotation_quaternion /= np.linalg.norm(self.collider_rotation_quaternion)
+
+                # Update UI with Euler angles (for reference)
+                euler = quaternion_to_euler(self.collider_rotation_quaternion)
+                for i in range(3):
+                    self.collider_rotation[i] = euler[i]
+                    self.collider_rotation_inputs[i].setText(f"{euler[i]:.2f}")
+
+                if self.collider_show:
+                    self.update_collider_display()
+                handled = True
+
+            # Priority 2: Collider Size (for box, camera-relative)
+            elif self.collider_size_active:
+                param_step = 0.01 if not shift_pressed else 0.001
+                if ctrl_pressed and shift_pressed:
+                    param_step = 0.0001
+
+                # Get camera screen axes
+                horizontal_axis, vertical_axis, screen_right, screen_up = self.get_screen_axes()
+
+                # Determine which box axis is closest to screen_right and screen_up
+                axes = [np.array([1, 0, 0]), np.array([0, 1, 0]), np.array([0, 0, 1])]  # X, Y, Z
+
+                # Find axis most aligned with screen_right (for left/right keys)
+                right_dots = [abs(np.dot(screen_right, axis)) for axis in axes]
+                right_axis_idx = np.argmax(right_dots)
+
+                # Find axis most aligned with screen_up (for up/down keys)
+                up_dots = [abs(np.dot(screen_up, axis)) for axis in axes]
+                up_axis_idx = np.argmax(up_dots)
+
+                # Left/Right: change size along screen_right direction
+                if key in [Qt.Key_Left, Qt.Key_Right]:
+                    current_size = self.collider_params[self.collider_type][right_axis_idx]
+                    if key == Qt.Key_Left:
+                        current_size -= param_step
+                    elif key == Qt.Key_Right:
+                        current_size += param_step
+                    current_size = max(0.001, current_size)
+                    self.collider_params[self.collider_type][right_axis_idx] = current_size
+                    self.collider_param_inputs[right_axis_idx].setText(f"{current_size:.4f}")
+                    handled = True
+
+                # Up/Down: change size along screen_up direction
+                if key in [Qt.Key_Up, Qt.Key_Down]:
+                    current_size = self.collider_params[self.collider_type][up_axis_idx]
+                    if key == Qt.Key_Up:
+                        current_size += param_step
+                    elif key == Qt.Key_Down:
+                        current_size -= param_step
+                    current_size = max(0.001, current_size)
+                    self.collider_params[self.collider_type][up_axis_idx] = current_size
+                    self.collider_param_inputs[up_axis_idx].setText(f"{current_size:.4f}")
+                    handled = True
+
+                if handled and self.collider_show:
+                    self.update_collider_display()
+
+            # Priority 3: Collider Radius/Length (shared checkbox)
+            elif self.collider_radius_length_active:
+                param_step = 0.01 if not shift_pressed else 0.001
+                if ctrl_pressed and shift_pressed:
+                    param_step = 0.0001
+
+                # Radius: left/right
+                if key in [Qt.Key_Left, Qt.Key_Right]:
+                    radius_idx = 0
+                    current_radius = self.collider_params[self.collider_type][radius_idx]
+                    if key == Qt.Key_Left:
+                        current_radius -= param_step
+                    elif key == Qt.Key_Right:
+                        current_radius += param_step
+                    current_radius = max(0.001, current_radius)  # Minimum radius
+                    self.collider_params[self.collider_type][radius_idx] = current_radius
+                    self.collider_param_inputs[radius_idx].setText(f"{current_radius:.4f}")
+                    if self.collider_show:
+                        self.update_collider_display()
+                    handled = True
+
+                # Length: up/down (only for cylinder/capsule)
+                if self.collider_type in ["cylinder", "capsule"] and key in [Qt.Key_Up, Qt.Key_Down]:
+                    length_idx = 1
+                    current_length = self.collider_params[self.collider_type][length_idx]
+                    if key == Qt.Key_Up:
+                        current_length += param_step
+                    elif key == Qt.Key_Down:
+                        current_length -= param_step
+                    current_length = max(0.001, current_length)  # Minimum length
+                    self.collider_params[self.collider_type][length_idx] = current_length
+                    self.collider_param_inputs[length_idx].setText(f"{current_length:.4f}")
+                    if self.collider_show:
+                        self.update_collider_display()
+                    handled = True
+
+            # Priority 4: Collider Position
+            elif self.collider_position_active:
+                horizontal_axis, vertical_axis, screen_right, screen_up = self.get_screen_axes()
+
+                if key == Qt.Key_Up:
+                    self.collider_position[0] += screen_up[0] * step
+                    self.collider_position[1] += screen_up[1] * step
+                    self.collider_position[2] += screen_up[2] * step
+                elif key == Qt.Key_Down:
+                    self.collider_position[0] -= screen_up[0] * step
+                    self.collider_position[1] -= screen_up[1] * step
+                    self.collider_position[2] -= screen_up[2] * step
+                elif key == Qt.Key_Left:
+                    self.collider_position[0] -= screen_right[0] * step
+                    self.collider_position[1] -= screen_right[1] * step
+                    self.collider_position[2] -= screen_right[2] * step
+                elif key == Qt.Key_Right:
+                    self.collider_position[0] += screen_right[0] * step
+                    self.collider_position[1] += screen_right[1] * step
+                    self.collider_position[2] += screen_right[2] * step
+
+                # Update UI
+                for i in range(3):
+                    self.collider_position_inputs[i].setText(f"{self.collider_position[i]:.4f}")
+                if self.collider_show:
+                    self.update_collider_display()
+                handled = True
+
+            # Priority 5: Center Position (default behavior)
+            if not handled:
+                horizontal_axis, vertical_axis, screen_right, screen_up = self.get_screen_axes()
+
+                for i, checkbox in enumerate(self.point_checkboxes):
+                    if checkbox.isChecked():
+                        if key == Qt.Key_Up:
+                            self.move_point_screen(i, screen_up, step)
+                        elif key == Qt.Key_Down:
+                            self.move_point_screen(i, screen_up, -step)
+                        elif key == Qt.Key_Left:
+                            self.move_point_screen(i, screen_right, -step)
+                        elif key == Qt.Key_Right:
+                            self.move_point_screen(i, screen_right, step)
+                        self.render_to_image()
+                        handled = True
+
+        super().keyPressEvent(event)
+
+    def toggle_wireframe(self):
+        if not self.stl_actor:
+            return
+
+        property = self.stl_actor.GetProperty()
+
+        if not self.wireframe_mode:
+            if self.original_stl_color is None:
+                self.original_stl_color = property.GetColor()
+
+            property.SetRepresentationToWireframe()
+            property.SetColor(1.0, 1.0, 1.0)  # White wireframe
+            property.SetLineWidth(1.0)  # Thin 1-pixel lines
+            property.SetOpacity(1.0)
+            # Keep background consistent - don't change it
+            # self.renderer.SetBackground(0.0, 0.0, 0.0)  # Black background
+            self.wireframe_mode = True
+        else:
+            property.SetRepresentationToSurface()
+            if self.original_stl_color is not None:
+                property.SetColor(self.original_stl_color)
+            else:
+                property.SetColor(0.8, 0.8, 0.8)
+            property.SetOpacity(1.0)
+            # Keep background consistent - don't change it
+            # self.renderer.SetBackground(0.2, 0.2, 0.2)  # Gray background
+            self.wireframe_mode = False
+
+        self.stl_actor.Modified()
+        self.renderer.Modified()
+        self.render_window.Modified()
+
+    def eventFilter(self, obj, event):
+        """Handle mouse events on vtk_display with robust state management"""
+        from PySide6.QtCore import QEvent, Qt as QtCore
+        from PySide6.QtGui import QMouseEvent
+        try:
+            from PySide6.QtGui import QNativeGestureEvent
+        except ImportError:
+            QNativeGestureEvent = None
+
+        if obj == self.vtk_display:
+            # Fallback cancellation - release drag on abnormal events
+            # NOTE: Leave events occur frequently on Mac even with grabMouse(), so we ignore them
+            # Only cancel on WindowDeactivate (user switches to another app)
+            if event.type() == QEvent.WindowDeactivate:
+                if self.mouse_pressed or self.middle_mouse_pressed:
+                    self._cancel_mouse_drag()
+                    return True
+
+            # Double click cancels drag (prevents stuck state)
+            if event.type() == QEvent.MouseButtonDblClick:
+                if self.mouse_pressed or self.middle_mouse_pressed:
+                    self._cancel_mouse_drag()
+                return True
+
+            if event.type() == QEvent.MouseButtonPress:
+                if isinstance(event, QMouseEvent):
+                    # Handle left button for drag rotation
+                    if event.button() == QtCore.LeftButton:
+                        # Set focus to vtk_display to enable keyboard controls
+                        self.vtk_display.setFocus()
+                        self.mouse_pressed = True
+                        self.last_mouse_pos = event.position().toPoint()
+                        # Remember press position to distinguish click from drag on release
+                        self._click_press_pos = event.position().toPoint()
+                        # CRITICAL: Grab mouse to receive events even outside widget
+                        self.vtk_display.grabMouse()
+                        return True
+                    # Handle middle button (wheel button) for pan
+                    elif event.button() == QtCore.MiddleButton:
+                        self.vtk_display.setFocus()
+                        self.middle_mouse_pressed = True
+                        self.last_mouse_pos = event.position().toPoint()
+                        self.vtk_display.grabMouse()
+                        return True
+
+            elif event.type() == QEvent.MouseButtonRelease:
+                if isinstance(event, QMouseEvent):
+                    # Release on left button stops rotation
+                    if event.button() == QtCore.LeftButton:
+                        # Detect click (no significant movement) for hull selection
+                        click_pos = self._click_press_pos
+                        self._click_press_pos = None
+                        if click_pos is not None:
+                            release_pos = event.position().toPoint()
+                            dx = release_pos.x() - click_pos.x()
+                            dy = release_pos.y() - click_pos.y()
+                            if abs(dx) <= 3 and abs(dy) <= 3:
+                                shift = bool(event.modifiers() & Qt.ShiftModifier)
+                                self._handle_vtk_click(click_pos.x(), click_pos.y(), shift=shift)
+                        self.mouse_pressed = False
+                        self.last_mouse_pos = None
+                        # CRITICAL: Release mouse grab
+                        self.vtk_display.releaseMouse()
+                        return True
+                    # Release on middle button stops pan
+                    elif event.button() == QtCore.MiddleButton:
+                        self.middle_mouse_pressed = False
+                        self.last_mouse_pos = None
+                        self.vtk_display.releaseMouse()
+                        return True
+
+            elif event.type() == QEvent.MouseMove:
+                if isinstance(event, QMouseEvent):
+                    # Handle left button drag
+                    if self.mouse_pressed and self.last_mouse_pos:
+                        current_pos = event.position().toPoint()
+                        dx = current_pos.x() - self.last_mouse_pos.x()
+                        dy = current_pos.y() - self.last_mouse_pos.y()
+
+                        # Check if Shift is pressed for pan, otherwise rotate
+                        if event.modifiers() & Qt.ShiftModifier:
+                            # Pan (move camera)
+                            self.pan_camera(dx, dy)
+                        else:
+                            # Rotate camera
+                            self.rotate_camera_mouse(dx, dy)
+
+                        self.last_mouse_pos = current_pos
+                        return True
+                    # Handle middle button drag (always pan)
+                    elif self.middle_mouse_pressed and self.last_mouse_pos:
+                        current_pos = event.position().toPoint()
+                        dx = current_pos.x() - self.last_mouse_pos.x()
+                        dy = current_pos.y() - self.last_mouse_pos.y()
+
+                        # Middle button always pans
+                        self.pan_camera(dx, dy)
+
+                        self.last_mouse_pos = current_pos
+                        return True
+
+            elif event.type() == QEvent.Wheel:
+                # Handle trackpad/mouse wheel - ZOOM ONLY
+                delta_y = event.angleDelta().y()
+
+                # Only handle vertical scroll for zoom
+                # Ignore horizontal scroll to prevent unwanted rotation
+                if delta_y != 0:
+                    # Get mouse position for zoom center
+                    mouse_pos = event.position() if hasattr(event, 'position') else event.pos()
+                    self.zoom_camera(delta_y, mouse_pos)
+
+                return True
+
+            elif event.type() == QEvent.NativeGesture:
+                # Handle Mac trackpad gestures (pinch zoom, rotate)
+                if QNativeGestureEvent and isinstance(event, QNativeGestureEvent):
+                    try:
+                        gesture_type = event.gestureType()
+
+                        # Pinch to zoom
+                        if hasattr(QtCore, 'ZoomNativeGesture') and gesture_type == QtCore.ZoomNativeGesture:
+                            zoom_value = event.value()
+                            # Scale zoom value appropriately
+                            self.zoom_camera(zoom_value * 500)
+                            return True
+
+                        # Rotate gesture
+                        elif hasattr(QtCore, 'RotateNativeGesture') and gesture_type == QtCore.RotateNativeGesture:
+                            rotation_angle = event.value()
+                            # Apply rotation around view direction
+                            self.rotate_camera_mouse(rotation_angle * 2, 0)
+                            return True
+                    except:
+                        pass
+
+            elif event.type() == QEvent.KeyPress:
+                # Forward key press events to main window's keyPressEvent
+                self.keyPressEvent(event)
+                return True
+
+        return super().eventFilter(obj, event)
+
+    def pan_camera(self, dx, dy):
+        """Pan camera based on mouse drag with Shift"""
+        self.camera_controller.pan(dx, dy, pan_speed_factor=CAMERA_PAN_SPEED_FACTOR)
+        self.render_to_image()
+
+    def zoom_camera(self, delta, mouse_pos=None):
+        """Zoom camera based on mouse wheel, centered on mouse position"""
+        # If mouse position not provided, use simple zoom from CameraController
+        if mouse_pos is None:
+            self.camera_controller.zoom(delta, zoom_factor=CAMERA_ZOOM_FACTOR)
+            self.render_to_image()
+            return
+
+        # Mouse-centered zoom implementation
+        camera = self.renderer.GetActiveCamera()
+        current_scale = camera.GetParallelScale()
+
+        if delta > 0:
+            new_scale = current_scale * CAMERA_ZOOM_IN_SCALE
+            zoom_factor = CAMERA_ZOOM_IN_SCALE
+        else:
+            new_scale = current_scale * CAMERA_ZOOM_OUT_SCALE
+            zoom_factor = CAMERA_ZOOM_OUT_SCALE
+
+        # Get display size
+        display_width = self.vtk_display.width()
+        display_height = self.vtk_display.height()
+
+        # Convert mouse position to normalized coordinates
+        mouse_x = mouse_pos.x()
+        mouse_y = mouse_pos.y()
+
+        # Calculate offset from center
+        center_x = display_width / 2.0
+        center_y = display_height / 2.0
+        offset_x = (mouse_x - center_x) / display_width
+        offset_y = (center_y - mouse_y) / display_height  # Y is inverted
+
+        # Get camera orientation vectors
+        focal_point = camera.GetFocalPoint()
+        position = camera.GetPosition()
+        view_up = camera.GetViewUp()
+
+        # Calculate right and up vectors (camera coordinate system)
+        view_dir = np.array([focal_point[i] - position[i] for i in range(3)])
+        view_dir = view_dir / np.linalg.norm(view_dir)
+        up_vec = np.array(view_up)
+        right_vec = np.cross(view_dir, up_vec)
+        right_vec = right_vec / np.linalg.norm(right_vec)
+
+        # Recalculate up vector to ensure orthogonality
+        up_vec = np.cross(right_vec, view_dir)
+        up_vec = up_vec / np.linalg.norm(up_vec)
+
+        # Calculate pan offset based on current scale and mouse offset
+        pan_scale = current_scale * MOUSE_ZOOM_PAN_SCALE
+        pan_offset_x = offset_x * pan_scale * (1.0 - zoom_factor)
+        pan_offset_y = offset_y * pan_scale * (1.0 - zoom_factor)
+
+        # Move focal point and position towards mouse cursor
+        new_focal = [
+            focal_point[0] + right_vec[0] * pan_offset_x + up_vec[0] * pan_offset_y,
+            focal_point[1] + right_vec[1] * pan_offset_x + up_vec[1] * pan_offset_y,
+            focal_point[2] + right_vec[2] * pan_offset_x + up_vec[2] * pan_offset_y
+        ]
+
+        new_position = [
+            position[0] + right_vec[0] * pan_offset_x + up_vec[0] * pan_offset_y,
+            position[1] + right_vec[1] * pan_offset_x + up_vec[1] * pan_offset_y,
+            position[2] + right_vec[2] * pan_offset_x + up_vec[2] * pan_offset_y
+        ]
+
+        camera.SetFocalPoint(new_focal)
+        camera.SetPosition(new_position)
+
+        camera.SetParallelScale(new_scale)
+        self.renderer.ResetCameraClippingRange()
+        self.render_to_image()
+
+    def move_point_screen(self, point_index, screen_axis, distance):
+        """Move a point along a screen axis by a given distance"""
+        if point_index >= len(self.point_coords):
+            return
+
+        # Get current point coordinates
+        current = np.array(self.point_coords[point_index])
+
+        # Move along the screen axis
+        new_coords = current + np.array(screen_axis) * distance
+
+        # Update point coordinates
+        self.point_coords[point_index] = new_coords.tolist()
+
+        # Update display
+        self.update_point_display(point_index)
+
+        # If point is visible, update its position
+        if self.point_checkboxes[point_index].isChecked():
+            self.show_point(point_index)
+
+        print(f"Point {point_index+1} moved to: ({new_coords[0]:.6f}, {new_coords[1]:.6f}, {new_coords[2]:.6f})")
+
+    def closeEvent(self, event):
+        """Override QMainWindow's closeEvent to properly cleanup VTK resources"""
+        print("Window is closing...")
+        try:
+            if hasattr(self, 'render_window') and self.render_window:
+                self.render_window.Finalize()
+            # No vtk_widget to close in offscreen mode
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
+        event.accept()
+
+    def resizeEvent(self, event):
+        """Handle window resize to update text layout and re-render"""
+        super().resizeEvent(event)
+        # Debounce resize events to avoid excessive re-rendering
+        # Update text layout and trigger re-render after a short delay
+        if hasattr(self, 'vtk_fully_ready') and self.vtk_fully_ready:
+            QTimer.singleShot(0, self._handle_resize)
+
+    def _handle_resize(self):
+        """Internal handler for resize event (debounced)"""
+        try:
+            # Update instruction text font size based on new window size
+            self.update_instruction_text_layout()
+            # Re-render with new RenderWindow size
+            self.render_to_image()
+        except Exception as e:
+            pass  # Silently ignore resize errors during initialization
+
+    def get_screen_axes(self):
+        return self.camera_controller.get_screen_axes()
+
+    def export_stl_with_new_origin(self):
+        if not self.stl_actor or not any(self.point_actors):
+            print("3D model or points are not set.")
+            return
+
+        # Use the loaded file path as default (same directory and filename)
+        default_path = self.current_stl_path if self.current_stl_path else ""
+
+        # Use common utility function for file filter
+        file_filter = get_mesh_file_filter(TRIMESH_AVAILABLE)
+
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Save 3D Model File", default_path, file_filter)
+        if not file_path:
+            return
+
+        try:
+            import os
+            poly_data = self.stl_actor.GetMapper().GetInput()
+            origin_index = next(i for i, actor in enumerate(self.point_actors) if actor and actor.GetVisibility())
+            origin_point = self.point_coords[origin_index]
+
+            # Get rotation values from spinboxes
+            roll = self.mesh_bake_roll.value() if hasattr(self, 'mesh_bake_roll') else 0.0
+            pitch = self.mesh_bake_pitch.value() if hasattr(self, 'mesh_bake_pitch') else 0.0
+            yaw = self.mesh_bake_yaw.value() if hasattr(self, 'mesh_bake_yaw') else 0.0
+
+            transform = vtk.vtkTransform()
+            # Apply rotation first (around origin), then translate
+            transform.RotateX(roll)
+            transform.RotateY(pitch)
+            transform.RotateZ(yaw)
+            transform.Translate(-origin_point[0], -origin_point[1], -origin_point[2])
+
+            transform_filter = vtk.vtkTransformPolyDataFilter()
+            transform_filter.SetInputData(poly_data)
+            transform_filter.SetTransform(transform)
+            transform_filter.Update()
+
+            # Get transformed polydata
+            output_polydata = transform_filter.GetOutput()
+
+            # Apply cleaning if checkbox is checked
+            if self.reorient_clean_mesh_checkbox.isChecked():
+                # Use conservative cleaning for OBJ input to preserve vertex normals
+                import os
+                input_ext = os.path.splitext(self.current_stl_path)[1].lower() if self.current_stl_path else ""
+                if input_ext == ".obj":
+                    output_polydata = self.clean_polydata_conservative(output_polydata)
+                    print("Mesh cleaning applied (conservative mode for OBJ)")
+                else:
+                    output_polydata = self.clean_polydata(output_polydata)
+                    print("Mesh cleaning applied (normals fixed, duplicates removed)")
+
+            # Use common utility function to save mesh
+            save_polydata_to_mesh(file_path, output_polydata)
+
+            print(f"Mesh file has been saved: {file_path}")
+            # Update current path for next save
+            self.current_stl_path = file_path
+
+        except Exception as e:
+            print(f"An error occurred: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def handle_set_front_as_x(self):
+        button_text = self.sender().text()
+        if button_text == "Set Front as X":
+            self.transform_stl_to_camera_view()
+
+    def handle_set_reset(self):
+        sender = self.sender()
+        button_text = sender.text()
+
+        if button_text == "Set Front as X":
+            self.handle_set_front_as_x()
+            # Update display after transforming STL to camera view
+            self.render_to_image()
+        else:
+            for i, checkbox in enumerate(self.point_checkboxes):
+                if checkbox.isChecked():
+                    self.reset_point_to_origin(i)
+            self.update_all_points_size()
+            # Update display after resetting markers
+            self.render_to_image()
+
+    def update_axes_widget(self, new_x, new_y, new_z):
+        if hasattr(self, 'axes_widget') and self.axes_widget is not None:
+            self.renderer.RemoveViewProp(self.axes_widget.GetOrientationMarker())
+        self.axes_widget = None
+
+    def transform_stl_to_camera_view(self):
+        if not self.stl_actor:
+            print("No STL model is loaded.")
+            return
+
+        camera = self.renderer.GetActiveCamera()
+        camera_pos = np.array(camera.GetPosition())
+        focal_point = np.array(camera.GetFocalPoint())
+        camera_up = np.array(camera.GetViewUp())
+
+        z_axis = camera_up
+        z_axis = z_axis / np.linalg.norm(z_axis)
+
+        view_dir = camera_pos - focal_point
+        x_axis = view_dir / np.linalg.norm(view_dir)
+
+        y_axis = np.cross(z_axis, x_axis)
+        y_axis = y_axis / np.linalg.norm(y_axis)
+
+        poly_data = self.stl_actor.GetMapper().GetInput()
+        points = poly_data.GetPoints()
+        n_points = points.GetNumberOfPoints()
+
+        new_points = vtk.vtkPoints()
+        for i in range(n_points):
+            point = np.array(points.GetPoint(i))
+            new_x = np.dot(point, x_axis)
+            new_y = np.dot(point, y_axis)
+            new_z = np.dot(point, z_axis)
+            new_points.InsertNextPoint(new_x, new_y, new_z)
+
+        new_poly_data = vtk.vtkPolyData()
+        new_poly_data.SetPoints(new_points)
+        new_poly_data.SetPolys(poly_data.GetPolys())
+
+        new_mapper = vtk.vtkPolyDataMapper()
+        new_mapper.SetInputData(new_poly_data)
+        self.stl_actor.SetMapper(new_mapper)
+
+        self.update_axes_widget(x_axis, y_axis, z_axis)
+        self.reset_camera()
+
+    ############################ Transformation helpers ############################
+    def on_mesh_apply_to_view_clicked(self): # This sets the actor transform using your spinboxes.
+        if not hasattr(self, "mesh_transform"):
+            return
+
+        r = self.mesh_bake_roll.value()
+        p = self.mesh_bake_pitch.value()
+        y = self.mesh_bake_yaw.value()
+
+        self.mesh_transform.Identity()
+        self.mesh_transform.RotateX(r)
+        self.mesh_transform.RotateY(p)
+        self.mesh_transform.RotateZ(y)
+
+        #self.vtk_display.GetRenderWindow().Render()
+        self.render_to_image()
+
+
+# signal_handler moved to urdf_kitchen_utils.py
+# Now using setup_signal_handlers()
+
+
+if __name__ == "__main__":
+    # M4 Mac (Apple Silicon) detection and setup (using utils)
+    if IS_APPLE_SILICON:
+        setup_qt_environment_for_apple_silicon()
+
+    # Set Qt attributes BEFORE creating QApplication
+    QApplication.setAttribute(Qt.AA_ShareOpenGLContexts)
+
+    # Create QApplication
+    app = QApplication(sys.argv)
+
+    # Set up Ctrl+C signal handler (using utils function)
+    setup_signal_handlers(verbose=False)
+
+    try:
+        window = MainWindow()
+
+        # Install global event filter for WASD keyboard controls
+        global_filter = GlobalKeyEventFilter(window)
+        app.installEventFilter(global_filter)
+
+        # Move window to center of screen
+        screen = QApplication.primaryScreen()
+        if screen:
+            screen_geometry = screen.geometry()
+            window_geometry = window.frameGeometry()
+            center_point = screen_geometry.center()
+            window_geometry.moveCenter(center_point)
+            window.move(window_geometry.topLeft())
+
+        # If file is specified via command line argument, bring window to front
+        if len(sys.argv) > 1:
+            file_path = sys.argv[1]
+            if os.path.exists(file_path):
+                print(f"File specified from command line: {file_path}")
+                print("Will load after VTK initialization completes...")
+                window.pending_file_to_load = file_path
+                # Set window to stay on top temporarily when launched from Assembler
+                window.setWindowFlags(window.windowFlags() | Qt.WindowStaysOnTopHint)
+            else:
+                print(f"Warning: File not found: {file_path}")
+
+        # argv[2]: Collider JSON from Assembler (when no collider XML, e.g. URDF/MJCF import)
+        if len(sys.argv) > 2:
+            try:
+                import json
+                collider_json = sys.argv[2]
+                if collider_json and collider_json.strip().startswith('{'):
+                    parsed = json.loads(collider_json)
+                    window.pending_collider_data = parsed.get('data', parsed)
+            except Exception as e:
+                print(f"Warning: Could not parse collider argv[2]: {e}")
+
+        # argv[3-5]: Return Mesh support (launched from Assembler Inspector)
+        if len(sys.argv) > 3:
+            window.return_file_path = sys.argv[3]
+            window.return_node_name = sys.argv[4] if len(sys.argv) > 4 else ""
+            try:
+                window.return_collider_index = int(sys.argv[5]) if len(sys.argv) > 5 else 0
+            except ValueError:
+                window.return_collider_index = 0
+            if window.return_file_path and window.return_node_name:
+                window.return_mesh_button.setVisible(True)
+
+        # Show window
+        window.show()
+        window.raise_()
+        window.activateWindow()
+
+    except Exception as e:
+        print(f"Error creating window: {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)
+
+    # Signal processing timer (using utils function)
+    timer = setup_signal_processing_timer(app)
+
+    sys.exit(app.exec())

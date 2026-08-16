@@ -1,0 +1,9 @@
+<?xml version="1.0" ?>
+<urdf_kitchen_collider version="1.0">
+  <mesh_file>l_elbow.stl</mesh_file>
+  <collider type="box">
+    <geometry size_x="0.0410" size_y="0.0301" size_z="0.0201"/>
+    <position x="-0.0070" y="0.0005" z="-0.0145"/>
+    <rotation roll="0.000000" pitch="0.000000" yaw="0.000000"/>
+  </collider>
+</urdf_kitchen_collider>
