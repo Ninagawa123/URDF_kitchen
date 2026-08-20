@@ -194,7 +194,7 @@ Please report issues as you find them.
 ## Tutorial
 
 The tutorial is available here:  
-https://github.com/Ninagawa123/URDF_kitchen/blob/beta2/Tutorial_EN.md
+https://github.com/Ninagawa123/URDF_kitchen/blob/main/Tutorial_EN.md
 
 Although written for a previous version, the workflow is summarized in the following article, too.  
 
