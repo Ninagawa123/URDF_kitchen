@@ -4293,15 +4293,268 @@ def search_stl_files_in_directory(meshes_dir, missing_stl_files, links_data):
 # MAIN IMPORT FUNCTIONS
 # ============================================================================
 
+def _collapse_urdf_backlash(links_data, joints_data, verbose=True):
+    """Collapse urdf_kitchen-emitted backlash intermediate links into child metadata.
+
+    Detects links whose name ends with ``_backlash`` that sit between a parent link and
+    a real child link (linked by exactly one incoming and one outgoing revolute joint
+    on the same axis). Removes both the intermediate link and the incoming joint, rewires
+    the outgoing joint's parent to the original parent, and records the backlash
+    parameters (``deg`` = degrees(max(|lower|, |upper|)), ``damping``) on the actual
+    child link_data under the key ``_pending_backlash``.
+
+    Args:
+        links_data: dict {link_name: link_data}
+        joints_data: list[dict]; each dict has 'parent'/'child'/'type'/'axis'/'limit'/'dynamics'
+        verbose: print diagnostic info
+
+    Returns:
+        list[str]: names of child links that received a pending backlash entry.
+    """
+    if not links_data or not joints_data:
+        return []
+    # Build parent->joints and child->joints indexes.
+    joints_by_parent = {}
+    joints_by_child = {}
+    for j in joints_data:
+        joints_by_parent.setdefault(j.get('parent'), []).append(j)
+        joints_by_child.setdefault(j.get('child'), []).append(j)
+
+    collapsed_children = []
+    to_remove_joints = []
+    to_remove_links = []
+
+    for link_name in list(links_data.keys()):
+        if not link_name or not link_name.endswith('_backlash'):
+            continue
+        incoming = joints_by_child.get(link_name, [])
+        outgoing = joints_by_parent.get(link_name, [])
+        if len(incoming) != 1 or len(outgoing) != 1:
+            if verbose:
+                print(f"[backlash-collapse] skip '{link_name}': incoming={len(incoming)}, outgoing={len(outgoing)}")
+            continue
+        j_backlash = incoming[0]
+        j_real = outgoing[0]
+        if j_backlash.get('type') != 'revolute' or j_real.get('type') != 'revolute':
+            if verbose:
+                print(f"[backlash-collapse] skip '{link_name}': joints are not both revolute")
+            continue
+
+        # Extract backlash parameters from the incoming (backlash) joint.
+        limit = j_backlash.get('limit', {}) or {}
+        lower = float(limit.get('lower', 0.0))
+        upper = float(limit.get('upper', 0.0))
+        deg = math.degrees(max(abs(lower), abs(upper)))
+        dynamics = j_backlash.get('dynamics', {}) or {}
+        damping = float(dynamics.get('damping', 0.0))
+        # URDF <dynamics friction=...> maps back to frictionloss; URDF has no armature.
+        frictionloss = float(dynamics.get('friction', 0.0))
+        armature = 0.0
+
+        real_child = j_real.get('child')
+        if real_child is None or real_child not in links_data:
+            if verbose:
+                print(f"[backlash-collapse] skip '{link_name}': downstream child '{real_child}' missing")
+            continue
+
+        # Store pending info on the real child link_data.
+        links_data[real_child]['_pending_backlash'] = {
+            'deg': deg,
+            'damping': damping,
+            'frictionloss': frictionloss,
+            'armature': armature,
+        }
+        # Rewire outgoing joint to skip the backlash link.
+        j_real['parent'] = j_backlash.get('parent')
+        # Move the origin (port position + rpy) from the backlash joint onto the
+        # outgoing joint so the parent port location is preserved after collapse.
+        if 'origin_xyz' in j_backlash:
+            j_real['origin_xyz'] = list(j_backlash['origin_xyz'])
+        if 'origin_rpy' in j_backlash:
+            j_real['origin_rpy'] = list(j_backlash['origin_rpy'])
+        if 'origin_quat' in j_backlash:
+            j_real['origin_quat'] = list(j_backlash['origin_quat'])
+        to_remove_joints.append(j_backlash)
+        to_remove_links.append(link_name)
+        collapsed_children.append(real_child)
+        if verbose:
+            print(
+                f"[backlash-collapse] absorbed '{link_name}' into '{real_child}' "
+                f"(deg={deg:.6f}, damping={damping:.6f})"
+            )
+
+    for j in to_remove_joints:
+        try:
+            joints_data.remove(j)
+        except ValueError:
+            pass
+    for lname in to_remove_links:
+        links_data.pop(lname, None)
+
+    return collapsed_children
+
+
+def _collapse_mjcf_backlash(bodies_data, bodies_data_list, joints_data, verbose=True):
+    """MJCF variant of _collapse_urdf_backlash.
+
+    In addition to rewiring joints, also transfers pos/quat/rpy from the ``_backlash``
+    body onto the real child body so the child ends up at the correct pose after the
+    intermediate body is removed. Detected bodies must have a name ending in
+    ``_backlash`` and exactly one incoming + one outgoing revolute joint pair.
+
+    Returns the list of real child body names that received a pending backlash record.
+    """
+    if not bodies_data or not joints_data:
+        return []
+    joints_by_parent = {}
+    joints_by_child = {}
+    for j in joints_data:
+        joints_by_parent.setdefault(j.get('parent'), []).append(j)
+        joints_by_child.setdefault(j.get('child'), []).append(j)
+
+    collapsed_children = []
+    to_remove_joints = []
+    to_remove_bodies = []
+
+    for body_name in list(bodies_data.keys()):
+        if not body_name or not body_name.endswith('_backlash'):
+            continue
+        incoming = joints_by_child.get(body_name, [])
+        outgoing = joints_by_parent.get(body_name, [])
+        if len(incoming) != 1 or len(outgoing) != 1:
+            if verbose:
+                print(f"[backlash-collapse:mjcf] skip '{body_name}': incoming={len(incoming)}, outgoing={len(outgoing)}")
+            continue
+        j_backlash = incoming[0]
+        j_real = outgoing[0]
+        if j_backlash.get('type') != 'revolute' or j_real.get('type') != 'revolute':
+            if verbose:
+                print(f"[backlash-collapse:mjcf] skip '{body_name}': joints are not both revolute")
+            continue
+
+        limit = j_backlash.get('limit', {}) or {}
+        lower = float(limit.get('lower', 0.0))
+        upper = float(limit.get('upper', 0.0))
+        deg = math.degrees(max(abs(lower), abs(upper)))
+        dynamics = j_backlash.get('dynamics', {}) or {}
+        damping = float(dynamics.get('damping', 0.0))
+        # MJCF parser stores <joint frictionloss=...> under dynamics['friction'].
+        frictionloss = float(dynamics.get('friction', 0.0))
+        armature = float(dynamics.get('armature', 0.0))
+
+        real_child_name = j_real.get('child')
+        if real_child_name is None or real_child_name not in bodies_data:
+            if verbose:
+                print(f"[backlash-collapse:mjcf] skip '{body_name}': downstream child '{real_child_name}' missing")
+            continue
+
+        backlash_body = bodies_data[body_name]
+        real_child_body = bodies_data[real_child_name]
+        # Transfer body pose onto the real child body (child was emitted with pos=0/identity).
+        real_child_body['pos'] = list(backlash_body.get('pos', [0.0, 0.0, 0.0]))
+        real_child_body['quat'] = list(backlash_body.get('quat', [1.0, 0.0, 0.0, 0.0]))
+        real_child_body['rpy'] = list(backlash_body.get('rpy', [0.0, 0.0, 0.0]))
+        # Also update the outgoing joint's origin fields so downstream code (which uses
+        # joint_data['origin_xyz']/'origin_rpy') sees the correct port location.
+        if 'origin_xyz' in j_backlash:
+            j_real['origin_xyz'] = list(j_backlash['origin_xyz'])
+        if 'origin_rpy' in j_backlash:
+            j_real['origin_rpy'] = list(j_backlash['origin_rpy'])
+        if 'origin_quat' in j_backlash:
+            j_real['origin_quat'] = list(j_backlash['origin_quat'])
+        # The real child now sits directly under the original grandparent body.
+        real_child_body['parent'] = j_backlash.get('parent')
+        j_real['parent'] = j_backlash.get('parent')
+
+        real_child_body['_pending_backlash'] = {
+            'deg': deg,
+            'damping': damping,
+            'frictionloss': frictionloss,
+            'armature': armature,
+        }
+
+        to_remove_joints.append(j_backlash)
+        to_remove_bodies.append(body_name)
+        collapsed_children.append(real_child_name)
+        if verbose:
+            print(
+                f"[backlash-collapse:mjcf] absorbed '{body_name}' into '{real_child_name}' "
+                f"(deg={deg:.6f}, damping={damping:.6f})"
+            )
+
+    for j in to_remove_joints:
+        try:
+            joints_data.remove(j)
+        except ValueError:
+            pass
+    for bname in to_remove_bodies:
+        bodies_data.pop(bname, None)
+    if bodies_data_list is not None:
+        bodies_data_list[:] = [b for b in bodies_data_list if b.get('name') not in to_remove_bodies]
+
+    return collapsed_children
+
+
+def _apply_pending_backlash_to_nodes(graph, links_data, nodes, verbose=True):
+    """Assign backlash presets to nodes based on link_data['_pending_backlash'].
+
+    - Looks up (or appends) a matching preset via graph.register_backlash_preset()
+    - Sets node.backlash_preset to the resulting 1-based index
+    - Warns and resets to 0 (Zero(Ideal)) when the 255-preset cap is exhausted
+    """
+    if not links_data or not nodes:
+        return
+    exhausted = []
+    for link_name, link_data in links_data.items():
+        pending = link_data.get('_pending_backlash') if isinstance(link_data, dict) else None
+        if not pending:
+            continue
+        node = nodes.get(link_name)
+        if node is None:
+            continue
+        idx = graph.register_backlash_preset(
+            pending.get('deg', 0.0),
+            pending.get('damping', 0.0),
+            frictionloss=pending.get('frictionloss', 0.0),
+            armature=pending.get('armature', 0.0),
+        )
+        if idx is None:
+            exhausted.append(link_name)
+            node.backlash_preset = 0
+        else:
+            node.backlash_preset = idx
+            if verbose:
+                print(f"[backlash-collapse] '{link_name}' -> preset {idx}")
+    if exhausted:
+        preview = ", ".join(exhausted[:5])
+        if len(exhausted) > 5:
+            preview += f", ... (+{len(exhausted) - 5} more)"
+        msg = (
+            f"Backlash preset limit ({255}) reached. "
+            f"{len(exhausted)} node(s) reset to Zero(Ideal):\n{preview}"
+        )
+        print(f"[backlash-collapse] WARNING: {msg}")
+        try:
+            QtWidgets.QMessageBox.warning(getattr(graph, 'widget', None), "Backlash Preset Limit", msg)
+        except Exception:
+            pass
+
+
 def import_urdf(graph):
         """Import URDF file"""
         try:
+            # Default to ./model (create lazily) so imported robots live in a predictable place.
+            model_dir = os.path.abspath("./model_source")
+            try:
+                os.makedirs(model_dir, exist_ok=True)
+            except Exception as _e:
+                print(f"Could not ensure ./model_source exists: {_e}")
             # Dialog to select URDF, xacro, SDF, or SRDF file
             # Default shows all .urdf, .xacro, .sdf, .srdf files
             urdf_file, _ = QtWidgets.QFileDialog.getOpenFileName(
                 graph.widget,
                 "Select URDF, xacro, SDF, or SRDF file to import",
-                os.getcwd(),
+                model_dir,
                 "URDF/Xacro/SDF/SRDF Files (*.urdf;*.xacro;*.sdf;*.srdf);;URDF Files (*.urdf);;Xacro Files (*.xacro);;SDF Files (*.sdf);;SRDF Files (*.srdf);;All Files (*)"
             )
 
@@ -4475,6 +4728,10 @@ def import_urdf(graph):
             closed_loop_joints = urdf_data.get('closed_loop_joints', [])  # Get closed-loop joint info
             materials_data = urdf_data.get('materials', {})  # May be empty for SDF
             missing_stl_files = urdf_data.get('missing_meshes', [])  # May be empty for SDF
+
+            # Collapse urdf_kitchen backlash intermediate links into child node metadata.
+            # The pending records are consumed after nodes are created (see below).
+            _collapse_urdf_backlash(links_data, joints_data, verbose=True)
 
             # Load SRDF file (if exists)
             srdf_data = None
@@ -5263,6 +5520,9 @@ def import_urdf(graph):
                         # URDF standard: friction attribute → joint_frictionloss
                         child_node.joint_frictionloss = joint_data['dynamics']['friction']
 
+            # Resolve backlash pending entries -> preset assignment on child nodes.
+            _apply_pending_backlash_to_nodes(graph, links_data, nodes, verbose=True)
+
             # Connect nodes (based on joint parent-child relationships)
             print("\n=== Connecting Nodes ===")
             parent_port_indices = {}  # Reset
@@ -5774,11 +6034,16 @@ def import_urdf(graph):
 def import_mjcf(graph):
         """Import MJCF file"""
         try:
+            model_dir = os.path.abspath("./model_source")
+            try:
+                os.makedirs(model_dir, exist_ok=True)
+            except Exception as _e:
+                print(f"Could not ensure ./model_source exists: {_e}")
             # Dialog to select MJCF file or ZIP file
             mjcf_file, _ = QtWidgets.QFileDialog.getOpenFileName(
                 graph.widget,
                 "Select MJCF file or ZIP archive to import",
-                os.getcwd(),
+                model_dir,
                 "MJCF Files (*.xml *.zip);;XML Files (*.xml);;ZIP Files (*.zip);;All Files (*)"
             )
 
@@ -5898,6 +6163,10 @@ def import_mjcf(graph):
                 else:
                     # Skip or warn if name is missing
                     print(f"Warning: Body data without name found: {body_data}")
+
+            # Collapse urdf_kitchen backlash intermediate bodies into child metadata.
+            # Applied here (before node creation) so nodes for backlash bodies are never made.
+            _collapse_mjcf_backlash(bodies_data, bodies_data_list, joints_data, verbose=True)
 
             graph.robot_name = robot_name
             print(f"Robot name set to: {robot_name}")
@@ -6689,6 +6958,9 @@ def import_mjcf(graph):
                     for _ in range(needed_ports):
                         node._add_output()
                     print(f"  ✓ Added {needed_ports} output port(s) to '{body_name}' (children: {child_count})")
+
+            # Resolve backlash pending entries (records were attached in _collapse_mjcf_backlash).
+            _apply_pending_backlash_to_nodes(graph, bodies_data, nodes, verbose=True)
 
             # Apply joint information and connect
             parent_port_indices = {}

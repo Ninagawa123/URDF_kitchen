@@ -120,6 +120,27 @@ DEFAULT_MJCF_MESH_SIMPLIFY_THRESHOLD = 50000  # Face count threshold for mesh si
 DEFAULT_MJCF_MESH_MAX_FACES = 100000000  # Max face count for mesh export (100M; was 1M, increased for large CAD meshes)
 DEFAULT_NODE_GRID_ENABLED = True  # Enable/disable node grid snapping
 DEFAULT_NODE_GRID_SIZE = 50  # Node grid size (pixels)
+
+# Backlash presets: index 0 = Zero(Ideal) (no backlash), 1..4 = user-editable presets.
+# backlash_deg is the +/- backlash amplitude in degrees; damping is N*m*s/rad.
+# Exports convert deg -> rad; stored/edited in deg for UI clarity.
+# frictionloss (N*m) models the deadband "sticky" behavior; armature (kg*m^2) adds
+# virtual inertia for solver stability. Without these, the passive backlash hinge is
+# a pure damper -> under any residual torque it drifts at omega = tau/damping,
+# which is the "slow constant-velocity slide" seen in MuJoCo.
+DEFAULT_BACKLASH_PRESETS = [
+    {"name": "0.1", "backlash_deg": 0.05, "damping": 0.5, "frictionloss": 1.0, "armature": 0.01},
+    {"name": "0.2", "backlash_deg": 0.10, "damping": 0.5, "frictionloss": 1.0, "armature": 0.01},
+    {"name": "0.3", "backlash_deg": 0.15, "damping": 0.5, "frictionloss": 1.0, "armature": 0.01},
+    {"name": "0.4", "backlash_deg": 0.20, "damping": 0.5, "frictionloss": 1.0, "armature": 0.01},
+]
+MAX_BACKLASH_PRESETS = 255
+
+# Inertial of the massless backlash body used to keep the constraint chain
+# numerically well-conditioned. Kept small (backlash body is virtual) but not so
+# small that mass ratios with adjacent bodies exceed ~1000x (solver ill-conditioning).
+BACKLASH_BODY_MASS = 0.005            # kg (was 0.0001 -> 0.001 -> 0.005)
+BACKLASH_BODY_DIAGINERTIA = 1e-5      # kg*m^2 (was 1e-9 -> 1e-6 -> 1e-5)
 # Legacy constants for backward compatibility (to be removed)
 DEFAULT_JOINT_LOWER = -180.0
 DEFAULT_JOINT_UPPER = 180.0
@@ -229,6 +250,8 @@ def init_node_properties(node, graph=None):
     node.hide_mesh = False  # Default is mesh visible
     node.is_imu_site = False  # If True, node exports as <site> for MuJoCo IMU sensor placement
     node.is_camera_node = False  # If True, node exports as <camera> for MuJoCo camera placement
+    # Backlash preset selection: 0=Ideal (no backlash), 1..4=Preset1..Preset4 defined on the graph.
+    node.backlash_preset = 0
 
 
 # IMU node visual: title strip = green, body = default gray (connection-aware)
@@ -1184,6 +1207,32 @@ class InspectorWindow(QtWidgets.QWidget):
             btn.setVisible(False)
 
         angle_limits_layout.addStretch()  # Right margin
+
+        # Backlash preset selector (right-aligned at the end of the Min/Max Angle row)
+        self.backlash_label = QtWidgets.QLabel("Backlash:")
+        angle_limits_layout.addWidget(self.backlash_label)
+        self.backlash_combo = QtWidgets.QComboBox()
+        self.backlash_combo.addItem("Zero(Ideal)")
+        for i in range(1, 5):
+            self.backlash_combo.addItem(f"Preset{i}")
+        self.backlash_combo.setToolTip(
+            "Backlash preset for this joint (edit presets in Settings > Backlash)"
+        )
+        # Widen the field, and force white bg / black text on both the combo and its popup
+        # so the label stays readable under Windows dark themes.
+        self.backlash_combo.setMinimumWidth(140)
+        self.backlash_combo.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents
+        )
+        self.backlash_combo.setStyleSheet(
+            "QComboBox { background-color: #ffffff; color: #000000; "
+            "border: 1px solid #7a7a7a; padding: 2px 6px; }"
+            "QComboBox QAbstractItemView { background-color: #ffffff; color: #000000; "
+            "selection-background-color: #3874d1; selection-color: #ffffff; }"
+        )
+        self.backlash_combo.currentIndexChanged.connect(self.on_backlash_preset_changed)
+        angle_limits_layout.addWidget(self.backlash_combo)
+
         content_layout.addLayout(angle_limits_layout)
 
         # Buttons (right aligned)
@@ -2684,6 +2733,17 @@ class InspectorWindow(QtWidgets.QWidget):
             else:
                 node.joint_frictionloss = DEFAULT_FRICTIONLOSS
                 self.frictionloss_input.setText(str(node.joint_frictionloss))
+
+            # Set Backlash preset selection (labels reflect names from Settings)
+            if hasattr(self, 'backlash_combo'):
+                self.refresh_backlash_combo_labels()
+                preset_idx = getattr(node, 'backlash_preset', 0)
+                if not isinstance(preset_idx, int) or not (0 <= preset_idx < self.backlash_combo.count()):
+                    preset_idx = 0
+                node.backlash_preset = preset_idx
+                self.backlash_combo.blockSignals(True)
+                self.backlash_combo.setCurrentIndex(preset_idx)
+                self.backlash_combo.blockSignals(False)
 
             # Color settings - check node's node_color attribute and set
             if hasattr(node, 'node_color') and node.node_color:
@@ -4576,6 +4636,37 @@ class InspectorWindow(QtWidgets.QWidget):
         except ValueError:
             pass  # Ignore invalid values
 
+    def on_backlash_preset_changed(self, index):
+        """Store the selected backlash preset index (0=Ideal, 1..4=Preset1..4) on the current node."""
+        if not self.current_node:
+            return
+        self.current_node.backlash_preset = int(index)
+
+    def refresh_backlash_combo_labels(self):
+        """Rebuild backlash combo entries using preset names from the graph settings.
+
+        Ideal is index 0; entries 1..N mirror graph.backlash_presets. Current selection
+        is preserved when possible.
+        """
+        if not hasattr(self, 'backlash_combo'):
+            return
+        graph = getattr(self, 'graph', None) or (
+            self.current_node.graph if self.current_node and hasattr(self.current_node, 'graph') else None
+        )
+        presets = getattr(graph, 'backlash_presets', None) if graph is not None else None
+        if not presets:
+            presets = DEFAULT_BACKLASH_PRESETS
+        current_idx = self.backlash_combo.currentIndex()
+        self.backlash_combo.blockSignals(True)
+        self.backlash_combo.clear()
+        self.backlash_combo.addItem("Zero(Ideal)")
+        for i, preset in enumerate(presets, start=1):
+            name = preset.get("name") if isinstance(preset, dict) else None
+            self.backlash_combo.addItem(name or f"Preset{i}")
+        if 0 <= current_idx < self.backlash_combo.count():
+            self.backlash_combo.setCurrentIndex(current_idx)
+        self.backlash_combo.blockSignals(False)
+
     def update_joint_params(self):
         """jointparameterstextupdate(real-time + Enter key)"""
         if not self.current_node:
@@ -5300,12 +5391,36 @@ class SettingsDialog(QtWidgets.QDialog):
         self.setWindowTitle("Settings")
         self.setModal(True)
         self.setup_ui()
-        self.resize(300, self.sizeHint().height())
+        # Match dialog height to the main (parent) window so it always fits;
+        # content is inside a QScrollArea, so overflow scrolls by default.
+        default_height = self.sizeHint().height()
+        if parent is not None:
+            try:
+                default_height = max(400, parent.height())
+            except Exception:
+                pass
+        self.resize(750, default_height)
 
     def setup_ui(self):
         """UItextinitialize"""
         import math
-        layout = QtWidgets.QVBoxLayout(self)
+        # Outer layout hosts the scroll area + the (always-visible) button row.
+        self._outer_layout = QtWidgets.QVBoxLayout(self)
+        self._outer_layout.setContentsMargins(4, 4, 4, 4)
+        self._outer_layout.setSpacing(4)
+
+        self._scroll_area = QtWidgets.QScrollArea(self)
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self._scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self._scroll_content = QtWidgets.QWidget()
+        self._scroll_area.setWidget(self._scroll_content)
+        self._outer_layout.addWidget(self._scroll_area, 1)
+
+        # Existing setup code below references `layout` for every addWidget/addLayout call,
+        # so bind that name to the content layout inside the scroll area.
+        layout = QtWidgets.QVBoxLayout(self._scroll_content)
         layout.setSpacing(3)
 
         # Unified button style (global constants)
@@ -5506,6 +5621,87 @@ class SettingsDialog(QtWidgets.QDialog):
         act_group.setLayout(act_vbox)
         layout.addWidget(act_group)
 
+        # ===== Backlash Presets =====
+        backlash_group = QtWidgets.QGroupBox("Backlash")
+        backlash_outer = QtWidgets.QVBoxLayout()
+        backlash_outer.setSpacing(4)
+
+        backlash_grid = QtWidgets.QGridLayout()
+        backlash_grid.setVerticalSpacing(3)
+        backlash_grid.setHorizontalSpacing(6)
+        backlash_grid.setColumnStretch(0, 0)
+        backlash_grid.setColumnStretch(1, 1)
+        for c in range(2, 10):
+            backlash_grid.setColumnStretch(c, 0)
+
+        # Header row (compact unit-less headers; unit labels live in each data row)
+        backlash_grid.addWidget(QtWidgets.QLabel(""), 0, 0)
+        backlash_grid.addWidget(QtWidgets.QLabel("Preset Name"), 0, 1)
+        backlash_grid.addWidget(QtWidgets.QLabel("Backlash"), 0, 2, 1, 2, QtCore.Qt.AlignmentFlag.AlignHCenter)
+        backlash_grid.addWidget(QtWidgets.QLabel("Damping"), 0, 4, 1, 2, QtCore.Qt.AlignmentFlag.AlignHCenter)
+        backlash_grid.addWidget(QtWidgets.QLabel("Frictionloss"), 0, 6, 1, 2, QtCore.Qt.AlignmentFlag.AlignHCenter)
+        backlash_grid.addWidget(QtWidgets.QLabel("Armature"), 0, 8, 1, 2, QtCore.Qt.AlignmentFlag.AlignHCenter)
+
+        # Per-row widget tracking so we can add/remove rows dynamically.
+        self._backlash_grid = backlash_grid
+        self.backlash_rows = []
+        self.backlash_name_inputs = []
+        self.backlash_deg_inputs = []
+        self.backlash_damping_inputs = []
+        self.backlash_frictionloss_inputs = []
+        self.backlash_armature_inputs = []
+
+        presets = getattr(self.graph, 'backlash_presets', None) or [dict(p) for p in DEFAULT_BACKLASH_PRESETS]
+        for preset in presets:
+            self._add_backlash_row(preset)
+
+        backlash_outer.addLayout(backlash_grid)
+
+        # Add / Del buttons (bottom of the group)
+        backlash_btn_layout = QtWidgets.QHBoxLayout()
+        backlash_btn_layout.addStretch()
+        self.backlash_add_button = QtWidgets.QPushButton("Add")
+        self.backlash_add_button.setStyleSheet(self.button_style)
+        self.backlash_add_button.setAutoDefault(False)
+        self.backlash_add_button.setFixedWidth(70)
+        self.backlash_add_button.clicked.connect(self._on_add_backlash_preset)
+        backlash_btn_layout.addWidget(self.backlash_add_button)
+        self.backlash_del_button = QtWidgets.QPushButton("Del")
+        self.backlash_del_button.setStyleSheet(self.button_style)
+        self.backlash_del_button.setAutoDefault(False)
+        self.backlash_del_button.setFixedWidth(70)
+        self.backlash_del_button.clicked.connect(self._on_del_backlash_preset)
+        backlash_btn_layout.addWidget(self.backlash_del_button)
+        backlash_outer.addLayout(backlash_btn_layout)
+
+        # Apply-to-all row: [dropdown] [Apply Backlash to All Actuators]
+        apply_row = QtWidgets.QHBoxLayout()
+        apply_row.addStretch()
+        self.backlash_apply_combo = QtWidgets.QComboBox()
+        self.backlash_apply_combo.setMinimumWidth(160)
+        self.backlash_apply_combo.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents
+        )
+        # Force white bg / black text so the label stays readable on Windows dark themes.
+        self.backlash_apply_combo.setStyleSheet(
+            "QComboBox { background-color: #ffffff; color: #000000; "
+            "border: 1px solid #7a7a7a; padding: 2px 6px; }"
+            "QComboBox QAbstractItemView { background-color: #ffffff; color: #000000; "
+            "selection-background-color: #3874d1; selection-color: #ffffff; }"
+        )
+        apply_row.addWidget(self.backlash_apply_combo)
+        self.backlash_apply_button = QtWidgets.QPushButton("Apply Backlash to All Actuators")
+        self.backlash_apply_button.setStyleSheet(self.button_style)
+        self.backlash_apply_button.setAutoDefault(False)
+        self.backlash_apply_button.clicked.connect(self._on_apply_backlash_to_all)
+        apply_row.addWidget(self.backlash_apply_button)
+        backlash_outer.addLayout(apply_row)
+
+        backlash_group.setLayout(backlash_outer)
+        layout.addWidget(backlash_group)
+        self._update_backlash_button_state()
+        self._refresh_backlash_apply_combo()
+
         # ===== MJCF Export Settings =====
         mjcf_group = QtWidgets.QGroupBox("MJCF Export Settings")
         mjcf_layout = QtWidgets.QGridLayout()
@@ -5695,7 +5891,8 @@ class SettingsDialog(QtWidgets.QDialog):
         cancel_button.clicked.connect(self.reject)
         button_layout.addWidget(cancel_button)
 
-        layout.addLayout(button_layout)
+        # Keep OK/Cancel visible below the scroll area rather than inside it.
+        self._outer_layout.addLayout(button_layout)
 
         # Set TODO
         self.effort_input.editingFinished.connect(
@@ -5760,6 +5957,267 @@ class SettingsDialog(QtWidgets.QDialog):
                 current_width = 100
             new_width = int(current_width * 0.6)
             field.setFixedWidth(new_width)
+
+    def _add_backlash_row(self, preset):
+        """Append a Backlash preset row to the grid using values from `preset`."""
+        idx = len(self.backlash_rows)
+        row = idx + 1  # row 0 is the header
+
+        label = QtWidgets.QLabel(f"Preset{idx + 1}:")
+        self._backlash_grid.addWidget(label, row, 0)
+
+        name_input = QtWidgets.QLineEdit()
+        name_input.setText(str(preset.get("name", f"Preset{idx + 1}")))
+        name_input.editingFinished.connect(self._refresh_backlash_apply_combo)
+        self._backlash_grid.addWidget(name_input, row, 1)
+
+        deg_input = QtWidgets.QLineEdit()
+        deg_input.setValidator(QDoubleValidator(0.0, 180.0, 4))
+        deg_input.setFixedWidth(70)
+        deg_val = float(preset.get("backlash_deg", preset.get("backlash_mm", 0.0)))
+        deg_input.setText(f"{deg_val:.4f}")
+        self._backlash_grid.addWidget(deg_input, row, 2)
+        deg_unit = QtWidgets.QLabel("±deg")
+        self._backlash_grid.addWidget(deg_unit, row, 3)
+
+        damping_input = QtWidgets.QLineEdit()
+        damping_input.setValidator(QDoubleValidator(0.0, 10000.0, 6))
+        damping_input.setFixedWidth(80)
+        damping_input.setText(f"{float(preset.get('damping', 0.0)):.6f}")
+        self._backlash_grid.addWidget(damping_input, row, 4)
+        damping_unit = QtWidgets.QLabel("N*m*s/rad")
+        self._backlash_grid.addWidget(damping_unit, row, 5)
+
+        frictionloss_input = QtWidgets.QLineEdit()
+        frictionloss_input.setValidator(QDoubleValidator(0.0, 10000.0, 6))
+        frictionloss_input.setFixedWidth(70)
+        frictionloss_input.setText(f"{float(preset.get('frictionloss', 0.0)):.6f}")
+        self._backlash_grid.addWidget(frictionloss_input, row, 6)
+        frictionloss_unit = QtWidgets.QLabel("N*m")
+        self._backlash_grid.addWidget(frictionloss_unit, row, 7)
+
+        armature_input = QtWidgets.QLineEdit()
+        armature_input.setValidator(QDoubleValidator(0.0, 10000.0, 6))
+        armature_input.setFixedWidth(70)
+        armature_input.setText(f"{float(preset.get('armature', 0.0)):.6f}")
+        self._backlash_grid.addWidget(armature_input, row, 8)
+        armature_unit = QtWidgets.QLabel("kg*m²")
+        self._backlash_grid.addWidget(armature_unit, row, 9)
+
+        self.backlash_name_inputs.append(name_input)
+        self.backlash_deg_inputs.append(deg_input)
+        self.backlash_damping_inputs.append(damping_input)
+        self.backlash_frictionloss_inputs.append(frictionloss_input)
+        self.backlash_armature_inputs.append(armature_input)
+        self.backlash_rows.append({
+            'label': label,
+            'name': name_input,
+            'deg': deg_input,
+            'deg_unit': deg_unit,
+            'damping': damping_input,
+            'damping_unit': damping_unit,
+            'frictionloss': frictionloss_input,
+            'frictionloss_unit': frictionloss_unit,
+            'armature': armature_input,
+            'armature_unit': armature_unit,
+        })
+
+    def _remove_last_backlash_row(self):
+        """Detach and delete the last Backlash preset row's widgets."""
+        if not self.backlash_rows:
+            return
+        row = self.backlash_rows.pop()
+        for w in (row['label'], row['name'], row['deg'], row['deg_unit'],
+                  row['damping'], row['damping_unit'],
+                  row['frictionloss'], row['frictionloss_unit'],
+                  row['armature'], row['armature_unit']):
+            self._backlash_grid.removeWidget(w)
+            w.setParent(None)
+            w.deleteLater()
+        self.backlash_name_inputs.pop()
+        self.backlash_deg_inputs.pop()
+        self.backlash_damping_inputs.pop()
+        self.backlash_frictionloss_inputs.pop()
+        self.backlash_armature_inputs.pop()
+
+    def _update_backlash_button_state(self):
+        """Enable Add up to MAX_BACKLASH_PRESETS; keep at least 1 row (disable Del at 1)."""
+        count = len(self.backlash_rows)
+        if hasattr(self, 'backlash_add_button'):
+            self.backlash_add_button.setEnabled(count < MAX_BACKLASH_PRESETS)
+        if hasattr(self, 'backlash_del_button'):
+            self.backlash_del_button.setEnabled(count > 1)
+
+    def _on_add_backlash_preset(self):
+        """Append a new Preset row with zeroed values and an auto-numbered name."""
+        if len(self.backlash_rows) >= MAX_BACKLASH_PRESETS:
+            return
+        next_idx = len(self.backlash_rows) + 1
+        self._add_backlash_row({
+            "name": f"Preset{next_idx}",
+            "backlash_deg": 0.0,
+            "damping": 0.0,
+            "frictionloss": 0.0,
+            "armature": 0.0,
+        })
+        self._update_backlash_button_state()
+        self._refresh_backlash_apply_combo()
+
+    def _on_del_backlash_preset(self):
+        """Remove the last Preset row. If any node references it, warn and let the user cancel."""
+        count = len(self.backlash_rows)
+        if count <= 1:
+            return
+        target_idx = count  # 1-based preset index that would be deleted
+        # Find nodes currently using this preset.
+        affected = []
+        try:
+            for n in self.graph.all_nodes():
+                if getattr(n, 'backlash_preset', 0) == target_idx:
+                    affected.append(n.name())
+        except Exception:
+            affected = []
+        if affected:
+            preview = ", ".join(affected[:5])
+            if len(affected) > 5:
+                preview += f", ... (+{len(affected) - 5} more)"
+            reply = QtWidgets.QMessageBox.warning(
+                self,
+                "Preset In Use",
+                f"Preset{target_idx} is used by {len(affected)} node(s):\n{preview}\n\n"
+                f"If you delete it, those nodes will be reset to Zero(Ideal).\n"
+                f"Continue?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+            for n in self.graph.all_nodes():
+                if getattr(n, 'backlash_preset', 0) == target_idx:
+                    n.backlash_preset = 0
+        self._remove_last_backlash_row()
+        self._update_backlash_button_state()
+        self._refresh_backlash_apply_combo()
+
+    def _refresh_backlash_apply_combo(self):
+        """Rebuild the Apply-to-all dropdown from the current backlash preset rows.
+        Item 0 = Zero(Ideal); items 1..N mirror the visible preset rows in order.
+        """
+        if not hasattr(self, 'backlash_apply_combo'):
+            return
+        current_idx = self.backlash_apply_combo.currentIndex()
+        self.backlash_apply_combo.blockSignals(True)
+        self.backlash_apply_combo.clear()
+        self.backlash_apply_combo.addItem("Zero(Ideal)")
+        for i, name_input in enumerate(self.backlash_name_inputs, start=1):
+            name = name_input.text().strip() or f"Preset{i}"
+            self.backlash_apply_combo.addItem(name)
+        if 0 <= current_idx < self.backlash_apply_combo.count():
+            self.backlash_apply_combo.setCurrentIndex(current_idx)
+        else:
+            self.backlash_apply_combo.setCurrentIndex(0)
+        self.backlash_apply_combo.blockSignals(False)
+
+    def _on_apply_backlash_to_all(self):
+        """Apply the selected backlash preset (or Zero) to every X/Y/Z hinge node.
+
+        Nodes directly connected to base_link are excluded, since they map to the
+        MJCF root body (freejoint) and adding a backlash joint between world and
+        that body is not meaningful.
+        """
+        if not hasattr(self, 'backlash_apply_combo'):
+            return
+        target_idx = self.backlash_apply_combo.currentIndex()
+        if target_idx < 0:
+            return
+        target_label = self.backlash_apply_combo.currentText()
+        try:
+            nodes = list(self.graph.all_nodes())
+        except Exception:
+            nodes = []
+
+        def _is_child_of_base_link(n):
+            try:
+                for input_port in n.input_ports():
+                    for connected_port in input_port.connected_ports():
+                        parent = connected_port.node()
+                        if parent.__class__.__name__ == 'BaseLinkNode':
+                            return True
+                        try:
+                            if parent.name() == 'base_link':
+                                return True
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            return False
+
+        def _is_non_actuator_node(n):
+            """Filter out nodes that should never receive backlash.
+
+            - massless_decoration: extra visual (_dec*) collapsed into parent geom on export
+            - is_imu_site / is_camera_node: emitted as <site>/<camera>, not a body
+            - CoincidentNode / ClosedLoopJointNode: constraint-only, no servo joint
+            """
+            if getattr(n, 'massless_decoration', False):
+                return True
+            if getattr(n, 'is_imu_site', False):
+                return True
+            if getattr(n, 'is_camera_node', False):
+                return True
+            cls_name = n.__class__.__name__
+            if cls_name in ('CoincidentNode', 'ClosedLoopJointNode'):
+                return True
+            return False
+
+        def _is_eligible(n):
+            return (
+                getattr(n, 'rotation_axis', -1) in (0, 1, 2)
+                and not _is_non_actuator_node(n)
+                and not _is_child_of_base_link(n)
+            )
+
+        eligible = [n for n in nodes if _is_eligible(n)]
+        skipped_base = sum(
+            1 for n in nodes
+            if getattr(n, 'rotation_axis', -1) in (0, 1, 2)
+            and not _is_non_actuator_node(n)
+            and _is_child_of_base_link(n)
+        )
+        skipped_special = sum(
+            1 for n in nodes
+            if getattr(n, 'rotation_axis', -1) in (0, 1, 2)
+            and _is_non_actuator_node(n)
+        )
+        skipped = skipped_base + skipped_special
+        if not eligible:
+            msg = "No X/Y/Z hinge servo nodes found (all are base_link children, decorations, IMU/camera, or constraint nodes)."
+            QtWidgets.QMessageBox.information(self, "Apply Backlash to All", msg)
+            return
+        detail_parts = []
+        if skipped_base:
+            detail_parts.append(f"{skipped_base} base_link child(ren)")
+        if skipped_special:
+            detail_parts.append(f"{skipped_special} decoration/IMU/camera/constraint node(s)")
+        detail_suffix = ""
+        if detail_parts:
+            detail_suffix = "\n(Skipping: " + ", ".join(detail_parts) + ".)"
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Apply Backlash to All Actuators",
+            f"Apply '{target_label}' to {len(eligible)} X/Y/Z hinge node(s)?{detail_suffix}",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        for n in eligible:
+            n.backlash_preset = int(target_idx)
+        print(
+            f"Applied backlash preset {target_idx} ('{target_label}') to {len(eligible)} node(s); "
+            f"skipped {skipped_base} base_link child(ren), "
+            f"{skipped_special} decoration/IMU/camera/constraint node(s)."
+        )
 
     def pick_highlight_color(self):
         """textーtextーtextーtext"""
@@ -5865,6 +6323,23 @@ class SettingsDialog(QtWidgets.QDialog):
             self.graph.default_mjcf_mesh_simplify_threshold = mjcf_mesh_simplify
             mjcf_mesh_max_faces = int(normalize_number_input(self.mjcf_mesh_max_faces_input.text()))
             self.graph.default_mjcf_mesh_max_faces = mjcf_mesh_max_faces
+
+            # Backlash presets (variable-length)
+            new_presets = []
+            for i in range(len(self.backlash_name_inputs)):
+                name_text = self.backlash_name_inputs[i].text().strip() or f"Preset{i + 1}"
+                deg_val = float(normalize_number_input(self.backlash_deg_inputs[i].text()))
+                damping_val = float(normalize_number_input(self.backlash_damping_inputs[i].text()))
+                frictionloss_val = float(normalize_number_input(self.backlash_frictionloss_inputs[i].text()))
+                armature_val = float(normalize_number_input(self.backlash_armature_inputs[i].text()))
+                new_presets.append({
+                    "name": name_text,
+                    "backlash_deg": deg_val,
+                    "damping": damping_val,
+                    "frictionloss": frictionloss_val,
+                    "armature": armature_val,
+                })
+            self.graph.backlash_presets = new_presets
 
             # Node node grid
             grid_enabled = self.grid_enabled_checkbox.isChecked()
@@ -9024,6 +9499,9 @@ class CustomNodeGraph(NodeGraph):
         self.last_save_dir = None
         self.mjcf_eulerseq = 'xyz'  # MJCFEuler（）
         self.closed_loop_joints = []  # NOTE
+        # Populated during load_project when node STL/XML references cannot be found.
+        # Each entry: {'node', 'kind' ('stl'|'xml'), 'basename', 'original_rel'}.
+        self._pending_missing_files = []
 
         # Todo
         self.default_joint_effort = DEFAULT_JOINT_EFFORT
@@ -9061,6 +9539,9 @@ class CustomNodeGraph(NodeGraph):
         # Set Node Grid Node Grid
         self.node_grid_enabled = DEFAULT_NODE_GRID_ENABLED
         self.node_grid_size = DEFAULT_NODE_GRID_SIZE
+
+        # Backlash presets (Preset1..Preset4). Ideal (no backlash) is implicit at index 0.
+        self.backlash_presets = [dict(p) for p in DEFAULT_BACKLASH_PRESETS]
 
         # Todo
         self.highlight_color = DEFAULT_HIGHLIGHT_COLOR
@@ -10598,6 +11079,91 @@ class CustomNodeGraph(NodeGraph):
             return name
         return self._canonical_link_map.get(name, name)
 
+    def register_backlash_preset(self, backlash_deg, damping,
+                                 frictionloss=0.0, armature=0.0,
+                                 deg_tol=1e-4, damping_tol=1e-6,
+                                 frictionloss_tol=1e-6, armature_tol=1e-6,
+                                 name=None):
+        """Find or append a backlash preset matching (deg, damping, frictionloss, armature).
+
+        Returns the 1-based preset index (matches node.backlash_preset), or None
+        if a new preset would exceed MAX_BACKLASH_PRESETS.
+        """
+        try:
+            deg_val = float(backlash_deg)
+            damping_val = float(damping)
+            frictionloss_val = float(frictionloss or 0.0)
+            armature_val = float(armature or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if not hasattr(self, 'backlash_presets') or self.backlash_presets is None:
+            self.backlash_presets = []
+        for i, preset in enumerate(self.backlash_presets, start=1):
+            existing_deg = float(preset.get('backlash_deg', preset.get('backlash_mm', 0.0)))
+            existing_damping = float(preset.get('damping', 0.0))
+            existing_friction = float(preset.get('frictionloss', 0.0))
+            existing_armature = float(preset.get('armature', 0.0))
+            if (abs(existing_deg - deg_val) <= deg_tol and
+                    abs(existing_damping - damping_val) <= damping_tol and
+                    abs(existing_friction - frictionloss_val) <= frictionloss_tol and
+                    abs(existing_armature - armature_val) <= armature_tol):
+                return i
+        if len(self.backlash_presets) >= MAX_BACKLASH_PRESETS:
+            return None
+        new_name = name if name else f"{deg_val:g}"
+        existing_names = {str(p.get('name', '')) for p in self.backlash_presets}
+        if new_name in existing_names:
+            suffix = 1
+            while f"{new_name}_{suffix}" in existing_names:
+                suffix += 1
+            new_name = f"{new_name}_{suffix}"
+        self.backlash_presets.append({
+            "name": new_name,
+            "backlash_deg": deg_val,
+            "damping": damping_val,
+            "frictionloss": frictionloss_val,
+            "armature": armature_val,
+        })
+        return len(self.backlash_presets)
+
+    def _get_backlash_info(self, node):
+        """Return backlash parameters for a node, or None if backlash is not applied.
+
+        Only hinge joints on X/Y/Z (rotation_axis 0/1/2) with a preset > 0 get backlash.
+        Returned dict has:
+            axis_id: 0/1/2 (world-relative rotation axis, same as node's rotation)
+            backlash_rad: absolute joint limit magnitude (rad); range is [-v, +v]
+            damping: N*m*s/rad
+            frictionloss: N*m (static friction, ~= real backlash deadband stiction)
+            armature: kg*m^2 (virtual inertia; needed for solver stability)
+            preset_name: preset label (for naming)
+        """
+        preset_idx = getattr(node, 'backlash_preset', 0) or 0
+        if preset_idx <= 0:
+            return None
+        axis_id = getattr(node, 'rotation_axis', -1)
+        if axis_id not in (0, 1, 2):
+            return None
+        presets = getattr(self, 'backlash_presets', None) or DEFAULT_BACKLASH_PRESETS
+        idx = preset_idx - 1
+        if not (0 <= idx < len(presets)):
+            return None
+        preset = presets[idx]
+        deg_val = float(preset.get('backlash_deg', preset.get('backlash_mm', 0.0)))
+        damping_val = float(preset.get('damping', 0.0))
+        frictionloss_val = float(preset.get('frictionloss', 0.0))
+        armature_val = float(preset.get('armature', 0.0))
+        if deg_val <= 0.0:
+            return None
+        return {
+            'axis_id': axis_id,
+            'backlash_rad': math.radians(deg_val),
+            'damping': damping_val,
+            'frictionloss': frictionloss_val,
+            'armature': armature_val,
+            'preset_name': str(preset.get('name', f'Preset{preset_idx}')),
+        }
+
     def _export_urdf_joint_name(self, parent_node, child_node) -> str:
         parent_name = parent_node.name()
         child_name = child_node.name()
@@ -10631,11 +11197,16 @@ class CustomNodeGraph(NodeGraph):
             robot_base_name = self.robot_name or "robot"
             clean_name = self.clean_robot_name(robot_base_name)
 
-            # Select
+            # Select (default to ./model_output, created lazily)
+            model_output_dir = os.path.abspath("./model_output")
+            try:
+                os.makedirs(model_output_dir, exist_ok=True)
+            except Exception as _e:
+                print(f"Could not ensure ./model_output exists: {_e}")
             parent_dir = QtWidgets.QFileDialog.getExistingDirectory(
                 self.widget,
                 "Select parent directory for URDF export",
-                os.getcwd()
+                model_output_dir,
             )
 
             if not parent_dir:
@@ -10968,8 +11539,8 @@ class CustomNodeGraph(NodeGraph):
                         continue
                     # Massless decoration link output massless decoration
                     if not (hasattr(child_node, 'massless_decoration') and child_node.massless_decoration):
-                        # Output
-                        self._write_joint(file, node, child_node)
+                        # Output (may insert backlash joint+link when configured on child)
+                        self._write_urdf_joint_pair(file, node, child_node)
                         file.write('\n')
 
                         # Next link output
@@ -11455,7 +12026,9 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(node_elem, "joint_armature").text = str(node.joint_armature)
         if hasattr(node, 'joint_frictionloss'):
             ET.SubElement(node_elem, "joint_frictionloss").text = str(node.joint_frictionloss)
-        
+        if hasattr(node, 'backlash_preset'):
+            ET.SubElement(node_elem, "backlash_preset").text = str(int(node.backlash_preset))
+
         # Save Body Angle Body Angle
         if hasattr(node, 'body_angle'):
             body_angle_str = ' '.join(str(v) for v in node.body_angle)
@@ -11710,6 +12283,13 @@ class CustomNodeGraph(NodeGraph):
                         stl_path = os.path.join(self.project_dir, _xml_path(stl_elem.text))
                         if os.path.exists(stl_path):
                             base_link_sub_node.stl_file = stl_path
+                        else:
+                            self._pending_missing_files.append({
+                                'node': base_link_sub_node,
+                                'kind': 'stl',
+                                'basename': os.path.basename(stl_elem.text),
+                                'original_rel': stl_elem.text,
+                            })
                     
                     # Todo
                     if mass_elem is not None:
@@ -11810,7 +12390,14 @@ class CustomNodeGraph(NodeGraph):
                     joint_frictionloss_elem = node_elem.find("joint_frictionloss")
                     if joint_frictionloss_elem is not None:
                         base_link_sub_node.joint_frictionloss = float(joint_frictionloss_elem.text)
-                    
+
+                    backlash_preset_elem = node_elem.find("backlash_preset")
+                    if backlash_preset_elem is not None and backlash_preset_elem.text:
+                        try:
+                            base_link_sub_node.backlash_preset = int(backlash_preset_elem.text)
+                        except (ValueError, TypeError):
+                            base_link_sub_node.backlash_preset = 0
+
                     # Body angle body angle
                     body_angle_elem = node_elem.find("body_angle")
                     if body_angle_elem is not None:
@@ -12007,7 +12594,20 @@ class CustomNodeGraph(NodeGraph):
                 stl_path = os.path.join(self.project_dir, _xml_path(stl_elem.text))
                 if os.path.exists(stl_path):
                     node.stl_file = stl_path
-            
+                    print(f"[load stl] OK '{node_name}': {stl_path}")
+                else:
+                    self._pending_missing_files.append({
+                        'node': node,
+                        'kind': 'stl',
+                        'basename': os.path.basename(stl_elem.text),
+                        'original_rel': stl_elem.text,
+                    })
+                    print(f"[load stl] MISSING '{node_name}': tried '{stl_path}' (raw='{stl_elem.text}')")
+            elif stl_elem is None:
+                print(f"[load stl] no <stl_file> for '{node_name}'")
+            else:
+                print(f"[load stl] empty <stl_file> for '{node_name}'")
+
             # Todo
             mass_elem = node_elem.find("mass")
             if mass_elem is not None:
@@ -12040,7 +12640,14 @@ class CustomNodeGraph(NodeGraph):
                 xml_path = os.path.join(self.project_dir, _xml_path(xml_file_elem.text))
                 if os.path.exists(xml_path):
                     node.xml_file = xml_path
-            
+                else:
+                    self._pending_missing_files.append({
+                        'node': node,
+                        'kind': 'xml',
+                        'basename': os.path.basename(xml_file_elem.text),
+                        'original_rel': xml_file_elem.text,
+                    })
+
             # Inertial
             inertia_elem = node_elem.find("inertia")
             if inertia_elem is not None:
@@ -12114,7 +12721,14 @@ class CustomNodeGraph(NodeGraph):
             joint_frictionloss_elem = node_elem.find("joint_frictionloss")
             if joint_frictionloss_elem is not None:
                 node.joint_frictionloss = float(joint_frictionloss_elem.text)
-            
+
+            backlash_preset_elem = node_elem.find("backlash_preset")
+            if backlash_preset_elem is not None and backlash_preset_elem.text:
+                try:
+                    node.backlash_preset = int(backlash_preset_elem.text)
+                except (ValueError, TypeError):
+                    node.backlash_preset = 0
+
             # Body angle body angle
             body_angle_elem = node_elem.find("body_angle")
             if body_angle_elem is not None:
@@ -12371,7 +12985,13 @@ class CustomNodeGraph(NodeGraph):
             # Get TODO
             if not file_path:
                 default_filename = f"{self.robot_name}_pj_{datetime.datetime.now().strftime('%Y%m%d%H%M')}.xml"
-                default_dir = self.last_save_dir or self.meshes_dir or os.getcwd()
+                # Default to ./save (created lazily) unless the user has saved elsewhere this session.
+                save_dir = os.path.abspath("./save")
+                try:
+                    os.makedirs(save_dir, exist_ok=True)
+                except Exception as _e:
+                    print(f"Could not ensure ./save exists: {_e}")
+                default_dir = self.last_save_dir or self.meshes_dir or save_dir
                 file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
                     None,
                     "Save Project",
@@ -12525,6 +13145,19 @@ class CustomNodeGraph(NodeGraph):
             node_grid_elem.set("size", str(self.node_grid_size))
             print(f"Saved node grid: enabled={self.node_grid_enabled}, size={self.node_grid_size}")
 
+            # Save backlash presets
+            backlash_root = ET.SubElement(root, "backlash_presets")
+            for i, preset in enumerate(getattr(self, 'backlash_presets', []) or [], start=1):
+                p_elem = ET.SubElement(backlash_root, "preset")
+                p_elem.set("index", str(i))
+                p_elem.set("name", str(preset.get("name", f"Preset{i}")))
+                deg_val = float(preset.get("backlash_deg", preset.get("backlash_mm", 0.0)))
+                p_elem.set("backlash_deg", str(deg_val))
+                p_elem.set("damping", str(float(preset.get("damping", 0.0))))
+                p_elem.set("frictionloss", str(float(preset.get("frictionloss", 0.0))))
+                p_elem.set("armature", str(float(preset.get("armature", 0.0))))
+            print(f"Saved backlash presets: {self.backlash_presets}")
+
             # Save file
             print("\nWriting to file...")
             tree = ET.ElementTree(root)
@@ -12592,15 +13225,204 @@ class CustomNodeGraph(NodeGraph):
                     print(f"Found meshes directory: {self.meshes_dir}")
                     return
 
+    def _build_basename_index(self, root_dir):
+        """Walk ``root_dir`` recursively and return {basename: [abs_path, ...]}.
+        Each list is sorted so the shortest (nearest-root) path comes first.
+        """
+        index = {}
+        try:
+            for r, _dirs, files in os.walk(root_dir):
+                for fname in files:
+                    index.setdefault(fname, []).append(os.path.join(r, fname))
+        except Exception as _e:
+            print(f"[missing-files] Walk failed for {root_dir}: {_e}")
+        for candidates in index.values():
+            candidates.sort(key=lambda p: (len(p), p))
+        return index
+
+    def _apply_missing_matches(self, matches, source_desc):
+        """Apply the (missing_entry, resolved_abs_path) matches to nodes and refresh 3D."""
+        for m, hit in matches:
+            node = m.get('node')
+            kind = m.get('kind')
+            if node is None or not hit:
+                continue
+            if kind == 'stl':
+                node.stl_file = hit
+            elif kind == 'xml':
+                node.xml_file = hit
+            print(f"[missing-files] Resolved via {source_desc}: [{kind}] {m.get('basename')} -> {hit}")
+        # Refresh STL viewer for newly-populated stl_file paths.
+        if hasattr(self, 'stl_viewer') and self.stl_viewer:
+            for m, _ in matches:
+                if m.get('kind') != 'stl':
+                    continue
+                node = m.get('node')
+                if node is None or not getattr(node, 'stl_file', None):
+                    continue
+                try:
+                    self.stl_viewer.load_stl_for_node(node, show_progress=False)
+                except Exception as _e:
+                    print(f"[missing-files] Warning: failed to reload STL for {node.name()}: {_e}")
+
+    def _resolve_missing_files_dialog(self):
+        """Auto-resolve missing STL/XML references under ./model_source, then fall back to manual browse.
+
+        Flow:
+          1. Auto-walk ``./model_source`` (CWD-relative) and try to locate each missing
+             basename. Present a confirmation dialog listing matches + unresolved.
+          2. If the user clicks OK, apply the matches (node paths become absolute; the
+             next Save Project rewrites them as relative to ``project_dir``).
+          3. For any files still missing, fall back to the classic browse-a-directory
+             dialog so the user can point somewhere else.
+        """
+        missing = list(self._pending_missing_files)
+        self._pending_missing_files = []
+        if not missing:
+            return
+
+        # -------- Stage 1: auto-search ./model_source --------
+        model_source_dir = os.path.abspath("./model_source")
+        auto_matches = []          # (missing_entry, absolute_hit)
+        auto_unresolved = []       # entries not found by auto-search
+        if os.path.isdir(model_source_dir):
+            index = self._build_basename_index(model_source_dir)
+            for m in missing:
+                basename = m.get('basename')
+                if not basename:
+                    auto_unresolved.append(m)
+                    continue
+                candidates = index.get(basename)
+                if candidates:
+                    auto_matches.append((m, candidates[0]))
+                else:
+                    auto_unresolved.append(m)
+        else:
+            auto_unresolved = list(missing)
+
+        # -------- Stage 2: confirmation dialog for auto-matches --------
+        applied_matches = []
+        if auto_matches:
+            lines = [
+                f"Auto-search under ./model_source found {len(auto_matches)} of {len(missing)} missing file(s).",
+                "",
+                "Matches to apply:",
+            ]
+            for m, hit in auto_matches[:12]:
+                try:
+                    rel = os.path.relpath(hit, os.path.abspath("."))
+                except Exception:
+                    rel = hit
+                lines.append(f"  [{m.get('kind','?')}] {m.get('basename','?')}  ->  {rel}")
+            if len(auto_matches) > 12:
+                lines.append(f"  ... (+{len(auto_matches) - 12} more)")
+            if auto_unresolved:
+                lines.append("")
+                lines.append(f"Still missing ({len(auto_unresolved)}):")
+                for m in auto_unresolved[:8]:
+                    lines.append(f"  [{m.get('kind','?')}] {m.get('basename','?')}  (was: {m.get('original_rel','?')})")
+                if len(auto_unresolved) > 8:
+                    lines.append(f"  ... (+{len(auto_unresolved) - 8} more)")
+                lines.append("")
+                lines.append("After OK you can pick another directory to resolve the rest.")
+            lines.append("")
+            lines.append("OK: rewrite matched paths (saved as relative on next Save Project).")
+            lines.append("Cancel: skip auto-apply.")
+            body = "\n".join(lines)
+
+            box = QtWidgets.QMessageBox(None)
+            box.setWindowTitle("Auto-resolve Missing Files")
+            box.setIcon(QtWidgets.QMessageBox.Question)
+            box.setText(body)
+            box.setStandardButtons(QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel)
+            box.setDefaultButton(QtWidgets.QMessageBox.Ok)
+            if box.exec() == QtWidgets.QMessageBox.Ok:
+                self._apply_missing_matches(auto_matches, "./model_source")
+                applied_matches = auto_matches
+                # Prefer ./model_source as the meshes_dir root so relative paths on
+                # the next save become sensible (project_dir/relative/to/model_source).
+                if any(m.get('kind') == 'stl' for m, _ in auto_matches):
+                    self.meshes_dir = model_source_dir
+            else:
+                # User declined auto-apply; treat everything as still missing.
+                auto_unresolved = list(missing)
+                applied_matches = []
+
+        # -------- Stage 3: manual browse for anything still missing --------
+        if auto_unresolved:
+            summary_lines = [f"{len(auto_unresolved)} file(s) still missing:"]
+            preview = auto_unresolved[:8]
+            for m in preview:
+                summary_lines.append(f"  [{m.get('kind','?')}] {m.get('basename','?')}  (was: {m.get('original_rel','?')})")
+            if len(auto_unresolved) > len(preview):
+                summary_lines.append(f"  ... (+{len(auto_unresolved) - len(preview)} more)")
+            summary_lines.append("")
+            summary_lines.append("Browse another directory to search recursively?")
+
+            reply = QtWidgets.QMessageBox.question(
+                None,
+                "Browse for Missing Files",
+                "\n".join(summary_lines),
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.Yes,
+            )
+            if reply == QtWidgets.QMessageBox.Yes:
+                start_dir = model_source_dir if os.path.isdir(model_source_dir) else (self.project_dir or os.path.abspath("."))
+                search_dir = QtWidgets.QFileDialog.getExistingDirectory(
+                    None,
+                    "Select directory to search for missing files",
+                    start_dir,
+                )
+                if search_dir:
+                    index = self._build_basename_index(search_dir)
+                    manual_matches = []
+                    manual_still = []
+                    for m in auto_unresolved:
+                        basename = m.get('basename')
+                        candidates = index.get(basename) if basename else None
+                        if candidates:
+                            manual_matches.append((m, candidates[0]))
+                        else:
+                            manual_still.append(m)
+                    if manual_matches:
+                        self._apply_missing_matches(manual_matches, search_dir)
+                        applied_matches.extend(manual_matches)
+                        if any(m.get('kind') == 'stl' for m, _ in manual_matches):
+                            # If ./model_source didn't cover STLs, take the manual dir.
+                            if not self.meshes_dir:
+                                self.meshes_dir = search_dir
+                    auto_unresolved = manual_still
+
+        # -------- Final report --------
+        total = len(missing)
+        resolved = len(applied_matches)
+        report = [f"Resolved {resolved} of {total} missing file(s)."]
+        if auto_unresolved:
+            report.append(f"{len(auto_unresolved)} still missing:")
+            for m in auto_unresolved[:8]:
+                report.append(f"  [{m.get('kind','?')}] {m.get('basename','?')}")
+            if len(auto_unresolved) > 8:
+                report.append(f"  ... (+{len(auto_unresolved) - 8} more)")
+            report.append("")
+            report.append("Re-load the project after placing the files to retry.")
+        QtWidgets.QMessageBox.information(None, "Missing Files Resolution", "\n".join(report))
+
     def load_project(self, file_path=None):
         """textload(textーtext)"""
         print("\n=== Starting Project Load ===")
+        # Fresh accumulator for this load's missing-file bookkeeping.
+        self._pending_missing_files = []
         try:
             if not file_path:
+                save_dir = os.path.abspath("./save")
+                try:
+                    os.makedirs(save_dir, exist_ok=True)
+                except Exception as _e:
+                    print(f"Could not ensure ./save exists: {_e}")
                 file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
                     None,
                     "Load Project",
-                    self.last_save_dir or "",
+                    self.last_save_dir or save_dir,
                     "XML Files (*.xml)"
                 )
                 
@@ -12835,6 +13657,41 @@ class CustomNodeGraph(NodeGraph):
             else:
                 print("No MJCF defaults found in project file, using defaults")
 
+            # Load backlash presets
+            backlash_root = root.find("backlash_presets")
+            if backlash_root is not None:
+                try:
+                    loaded_presets = []
+                    for p_elem in backlash_root.findall("preset"):
+                        name = p_elem.get("name") or f"Preset{len(loaded_presets) + 1}"
+                        # Accept new backlash_deg or legacy backlash_mm (treated as deg).
+                        deg_attr = p_elem.get("backlash_deg")
+                        if deg_attr is None:
+                            deg_attr = p_elem.get("backlash_mm", "0")
+                        deg_val = float(deg_attr or 0.0)
+                        damping_val = float(p_elem.get("damping", "0") or 0.0)
+                        # frictionloss/armature: default to 0.0 for legacy XMLs (missing attribute).
+                        frictionloss_val = float(p_elem.get("frictionloss", "0") or 0.0)
+                        armature_val = float(p_elem.get("armature", "0") or 0.0)
+                        loaded_presets.append({
+                            "name": name,
+                            "backlash_deg": deg_val,
+                            "damping": damping_val,
+                            "frictionloss": frictionloss_val,
+                            "armature": armature_val,
+                        })
+                    # Ensure at least 1 preset (never leave the list empty).
+                    if not loaded_presets:
+                        loaded_presets = [dict(DEFAULT_BACKLASH_PRESETS[0])]
+                    # Cap at MAX_BACKLASH_PRESETS to guard against malformed XML.
+                    self.backlash_presets = loaded_presets[:MAX_BACKLASH_PRESETS]
+                    print(f"Restored backlash presets: {self.backlash_presets}")
+                except (ValueError, TypeError) as e:
+                    print(f"Error parsing backlash presets, using defaults: {e}")
+                    self.backlash_presets = [dict(p) for p in DEFAULT_BACKLASH_PRESETS]
+            else:
+                print("No backlash presets found in project file, using defaults")
+
             # Load node grid settings
             node_grid_elem = root.find("node_grid")
             if node_grid_elem is not None:
@@ -12991,6 +13848,13 @@ class CustomNodeGraph(NodeGraph):
 
             # Hide STL
             # Hide TODO
+
+            # If any mesh/xml references failed to resolve, let the user pick a
+            # replacement directory and re-resolve by basename (relative-path friendly).
+            pending = getattr(self, '_pending_missing_files', None)
+            print(f"[load done] _pending_missing_files count = {len(pending) if pending else 0}")
+            if pending:
+                self._resolve_missing_files_dialog()
 
             print(f"\nProject successfully loaded from: {file_path}")
             return True
@@ -15052,6 +15916,118 @@ class CustomNodeGraph(NodeGraph):
             print(f"Error disconnecting ports: {str(e)}")
             return False
 
+    def _get_port_origin(self, parent_node, child_node):
+        """Return (xyz, rpy) for the parent-side port connecting parent_node to child_node.
+        Falls back to zeros when the port index cannot be resolved."""
+        origin_xyz = [0, 0, 0]
+        origin_rpy = [0.0, 0.0, 0.0]
+        for port in parent_node.output_ports():
+            for connected_port in port.connected_ports():
+                if connected_port.node() == child_node:
+                    try:
+                        port_name = port.name()
+                        if '_' in port_name:
+                            parts = port_name.split('_')
+                            if len(parts) > 1 and parts[1].isdigit():
+                                port_idx = int(parts[1]) - 1
+                                if port_idx < len(parent_node.points):
+                                    origin_xyz = parent_node.points[port_idx]['xyz']
+                                    origin_rpy = parent_node.points[port_idx].get(
+                                        'angle',
+                                        parent_node.points[port_idx].get('rpy', [0.0, 0.0, 0.0]),
+                                    )
+                    except Exception as e:
+                        print(f"Warning: Error resolving port origin: {e}")
+                    return list(origin_xyz), list(origin_rpy)
+        return list(origin_xyz), list(origin_rpy)
+
+    def _write_urdf_joint_pair(self, file, parent_node, child_node):
+        """Write the joint(s) linking parent_node -> child_node in URDF.
+
+        When the child has a backlash preset active, inserts an intermediate
+        {child}_backlash link with an extra revolute joint (same axis, ±deg range,
+        preset damping) between the parent link and the child link.
+        Falls back to a single _write_joint call otherwise.
+        """
+        info = self._get_backlash_info(child_node)
+        if info is None:
+            self._write_joint(file, parent_node, child_node)
+            return
+        try:
+            origin_xyz, origin_rpy = self._get_port_origin(parent_node, child_node)
+            axis_id = info['axis_id']
+            axis_vec = [[1, 0, 0], [0, 1, 0], [0, 0, 1]][axis_id]
+            backlash_rad = info['backlash_rad']
+            damping = info['damping']
+
+            parent_link = self._export_link_name(parent_node.name())
+            child_link = self._export_link_name(child_node.name())
+            backlash_link = f"{child_node.name()}_backlash"
+            original_joint_name = self._export_urdf_joint_name(parent_node, child_node)
+            backlash_joint_name = f"{original_joint_name}_backlash"
+
+            frictionloss = float(info.get('frictionloss', 0.0))
+            # URDF has no `armature` on <joint>; only damping+friction go into <dynamics>.
+            # Callers that need armature should read it from the paired MJCF.
+            # 1. Backlash joint: parent_link -> backlash_link (carries original port origin)
+            file.write(f'  <joint name="{backlash_joint_name}" type="revolute">\n')
+            file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
+            file.write(f'    <axis xyz="{axis_vec[0]} {axis_vec[1]} {axis_vec[2]}"/>\n')
+            file.write(f'    <parent link="{parent_link}"/>\n')
+            file.write(f'    <child link="{backlash_link}"/>\n')
+            file.write(f'    <limit lower="{-backlash_rad}" upper="{backlash_rad}" effort="0" velocity="0"/>\n')
+            file.write(f'    <dynamics damping="{damping}" friction="{frictionloss}"/>\n')
+            file.write('  </joint>\n\n')
+
+            # 2. Backlash dummy link (small but numerically stable inertial)
+            body_mass_str = format_float_no_exp(BACKLASH_BODY_MASS)
+            body_inertia_str = format_float_no_exp(BACKLASH_BODY_DIAGINERTIA)
+            file.write(f'  <link name="{backlash_link}">\n')
+            file.write('    <inertial>\n')
+            file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+            file.write(f'      <mass value="{body_mass_str}"/>\n')
+            file.write(
+                f'      <inertia ixx="{body_inertia_str}" ixy="0" ixz="0" '
+                f'iyy="{body_inertia_str}" iyz="0" izz="{body_inertia_str}"/>\n'
+            )
+            file.write('    </inertial>\n')
+            file.write('  </link>\n\n')
+
+            # 3. Original joint: backlash_link -> child_link (origin at zero, same axis and limits)
+            rot_axis = axis_id
+            lower = getattr(child_node, 'joint_lower', -3.14159)
+            upper = getattr(child_node, 'joint_upper', 3.14159)
+            effort = getattr(child_node, 'joint_effort', 10.0)
+            velocity = getattr(child_node, 'joint_velocity', 3.0)
+            if hasattr(child_node, 'body_angle') and rot_axis in [0, 1, 2]:
+                body_offset = child_node.body_angle[rot_axis]
+                lower -= body_offset
+                upper -= body_offset
+
+            file.write(f'  <joint name="{original_joint_name}" type="revolute">\n')
+            file.write(f'    <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+            file.write(f'    <axis xyz="{axis_vec[0]} {axis_vec[1]} {axis_vec[2]}"/>\n')
+            file.write(f'    <parent link="{backlash_link}"/>\n')
+            file.write(f'    <child link="{child_link}"/>\n')
+            file.write(f'    <limit lower="{lower}" upper="{upper}" effort="{effort}" velocity="{velocity}"/>\n')
+            ch_damping = getattr(child_node, 'joint_damping', 0.0)
+            ch_friction = getattr(child_node, 'joint_frictionloss', 0.0)
+            file.write(f'    <dynamics damping="{ch_damping}" friction="{ch_friction}"/>\n')
+            file.write('  </joint>\n')
+
+            kp = getattr(child_node, 'joint_stiffness', 0.0)
+            if kp > 0:
+                file.write(f'  <gazebo reference="{original_joint_name}">\n')
+                file.write(f'    <implicitSpringDamper>true</implicitSpringDamper>\n')
+                file.write(f'    <springStiffness>{format_float_no_exp(kp)}</springStiffness>\n')
+                file.write(f'    <springReference>0.0</springReference>\n')
+                file.write(f'  </gazebo>\n')
+        except Exception as e:
+            print(f"Error writing backlash joint pair: {e}")
+            traceback.print_exc()
+            # Safety net: emit the plain joint so the export doesn't lose the connection.
+            self._write_joint(file, parent_node, child_node)
+
     def _write_joint(self, file, parent_node, child_node):
         """jointtext"""
         try:
@@ -15534,9 +16510,15 @@ class CustomNodeGraph(NodeGraph):
             message_box.setText("Please select the directory where you want to create the Unity project structure.")
             message_box.exec_()
 
+            model_output_dir = os.path.abspath("./model_output")
+            try:
+                os.makedirs(model_output_dir, exist_ok=True)
+            except Exception as _e:
+                print(f"Could not ensure ./model_output exists: {_e}")
             base_dir = QtWidgets.QFileDialog.getExistingDirectory(
                 self.widget,
-                "Select Base Directory for Unity Export"
+                "Select Base Directory for Unity Export",
+                model_output_dir,
             )
 
             if not base_dir:
@@ -15659,8 +16641,8 @@ class CustomNodeGraph(NodeGraph):
                         continue
                     # Massless decoration link output massless decoration
                     if not (hasattr(child_node, 'massless_decoration') and child_node.massless_decoration):
-                        # Output
-                        self._write_joint(file, node, child_node)
+                        # Output (may insert backlash joint+link when configured on child)
+                        self._write_urdf_joint_pair(file, node, child_node)
                         file.write('\n')
 
                         # Next link output path unity
@@ -15783,10 +16765,16 @@ class CustomNodeGraph(NodeGraph):
             if hasattr(self, 'graph'):
                 self.graph.default_base_link_height = base_link_height
 
-            # Select
+            # Select (default to ./model_output, created lazily)
+            model_output_dir = os.path.abspath("./model_output")
+            try:
+                os.makedirs(model_output_dir, exist_ok=True)
+            except Exception as _e:
+                print(f"Could not ensure ./model_output exists: {_e}")
             parent_dir = QtWidgets.QFileDialog.getExistingDirectory(
                 self.widget,
-                "Select Parent Directory for MJCF Export"
+                "Select Parent Directory for MJCF Export",
+                model_output_dir,
             )
 
             if not parent_dir:
@@ -17804,7 +18792,11 @@ class CustomNodeGraph(NodeGraph):
 
                     port_index = list(node.output_ports()).index(port)
                     child_joint_info = self._get_joint_info(node, child_node, port_index, created_joints)
-                    self._write_mjcf_body(file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent + 2, child_joint_info, fix_base_to_ground, used_body_names, used_joint_names, is_root=False, rename_to_base_link=False)
+                    self._write_mjcf_child_with_backlash(
+                        file, node, child_node, child_joint_info,
+                        visited_nodes, mesh_names, node_to_mesh, created_joints,
+                        indent + 2, fix_base_to_ground, used_body_names, used_joint_names,
+                    )
 
             # Add moving body freejoint inertial
             if not has_inertial:
@@ -18157,8 +19149,12 @@ class CustomNodeGraph(NodeGraph):
                 # Get port_index enumerate
                 child_joint_info = self._get_joint_info(node, child_node, port_index, created_joints)
 
-                # Output
-                self._write_mjcf_body(file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent + 2, child_joint_info, fix_base_to_ground, used_body_names, used_joint_names, is_root=False, rename_to_base_link=False)
+                # Output (may wrap child body in a backlash body when configured)
+                self._write_mjcf_child_with_backlash(
+                    file, node, child_node, child_joint_info,
+                    visited_nodes, mesh_names, node_to_mesh, created_joints,
+                    indent + 2, fix_base_to_ground, used_body_names, used_joint_names,
+                )
 
         # Add moving body joint inertial
         if is_moving_body and not has_inertial:
@@ -18168,6 +19164,106 @@ class CustomNodeGraph(NodeGraph):
 
         # Body
         file.write(f'{indent_str}</body>\n')
+
+    def _write_mjcf_child_with_backlash(self, file, parent_node, child_node, child_joint_info,
+                                         visited_nodes, mesh_names, node_to_mesh, created_joints,
+                                         indent, fix_base_to_ground, used_body_names, used_joint_names):
+        """Emit the child MJCF body, wrapping it in a backlash body when configured.
+
+        When the child has a Backlash preset (>0) and is an X/Y/Z hinge joint, this
+        wraps the child body in an intermediate {child}_backlash body with a hinge
+        joint (same axis, ±deg preset -> rad, preset damping). Otherwise it just
+        forwards to _write_mjcf_body unchanged.
+        """
+        info = self._get_backlash_info(child_node)
+        if info is None or child_joint_info is None or child_joint_info.get('type') != 'hinge':
+            self._write_mjcf_body(
+                file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints,
+                indent, child_joint_info, fix_base_to_ground, used_body_names,
+                used_joint_names, is_root=False, rename_to_base_link=False,
+            )
+            return
+
+        try:
+            indent_str = ' ' * indent
+            axis_id = info['axis_id']
+            axis_vec = [[1, 0, 0], [0, 1, 0], [0, 0, 1]][axis_id]
+            backlash_rad = info['backlash_rad']
+            damping = info['damping']
+
+            sanitized_child = self._sanitize_name(self._export_link_name(child_node.name()))
+            backlash_body_name = f"{sanitized_child}_backlash"
+            unique_backlash_body_name = backlash_body_name
+            counter = 1
+            while unique_backlash_body_name in used_body_names:
+                unique_backlash_body_name = f"{backlash_body_name}_{counter}"
+                counter += 1
+            used_body_names.add(unique_backlash_body_name)
+
+            pos_str = child_joint_info.get('pos', '0 0 0')
+            rpy_val = child_joint_info.get('rpy', [0.0, 0.0, 0.0])
+            quat_attr = ""
+            q_base = self._rpy_to_quat(rpy_val)
+            if q_base is not None:
+                identity = np.array([1.0, 0.0, 0.0, 0.0])
+                if np.any(np.abs(q_base - identity) > 1e-9):
+                    quat_str = (
+                        f"{format_float_no_exp(q_base[0])} {format_float_no_exp(q_base[1])} "
+                        f"{format_float_no_exp(q_base[2])} {format_float_no_exp(q_base[3])}"
+                    )
+                    quat_attr = f' quat="{quat_str}"'
+
+            file.write(f'{indent_str}<body name="{unique_backlash_body_name}" pos="{pos_str}"{quat_attr}>\n')
+            body_mass_str = format_float_no_exp(BACKLASH_BODY_MASS)
+            body_diag_str = format_float_no_exp(BACKLASH_BODY_DIAGINERTIA)
+            file.write(
+                f'{indent_str}  <inertial pos="0 0 0" mass="{body_mass_str}" '
+                f'diaginertia="{body_diag_str} {body_diag_str} {body_diag_str}"/>\n'
+            )
+
+            backlash_joint_name = f"{sanitized_child}_backlash_joint"
+            unique_backlash_joint_name = backlash_joint_name
+            counter = 1
+            while unique_backlash_joint_name in used_joint_names:
+                unique_backlash_joint_name = f"{backlash_joint_name}_{counter}"
+                counter += 1
+            used_joint_names.add(unique_backlash_joint_name)
+
+            frictionloss_val = float(info.get('frictionloss', 0.0))
+            armature_val = float(info.get('armature', 0.0))
+            joint_extra = ""
+            if frictionloss_val > 0.0:
+                joint_extra += f' frictionloss="{format_float_no_exp(frictionloss_val)}"'
+            if armature_val > 0.0:
+                joint_extra += f' armature="{format_float_no_exp(armature_val)}"'
+            file.write(
+                f'{indent_str}  <joint name="{unique_backlash_joint_name}" type="hinge" '
+                f'pos="0 0 0" axis="{axis_vec[0]} {axis_vec[1]} {axis_vec[2]}" '
+                f'range="{format_float_no_exp(-backlash_rad)} {format_float_no_exp(backlash_rad)}" '
+                f'limited="true" damping="{format_float_no_exp(damping)}"{joint_extra}/>\n'
+            )
+
+            # Original body is emitted inside the backlash body, at zero offset/orientation.
+            inner_joint_info = dict(child_joint_info)
+            inner_joint_info['pos'] = '0 0 0'
+            inner_joint_info['rpy'] = [0.0, 0.0, 0.0]
+
+            self._write_mjcf_body(
+                file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints,
+                indent + 2, inner_joint_info, fix_base_to_ground,
+                used_body_names, used_joint_names, is_root=False, rename_to_base_link=False,
+            )
+
+            file.write(f'{indent_str}</body>\n')
+        except Exception as e:
+            print(f"Error wrapping child body in backlash: {e}")
+            traceback.print_exc()
+            # Fallback to plain emission so the export doesn't lose the body.
+            self._write_mjcf_body(
+                file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints,
+                indent, child_joint_info, fix_base_to_ground, used_body_names,
+                used_joint_names, is_root=False, rename_to_base_link=False,
+            )
 
     def _get_joint_info(self, parent_node, child_node, port_index, created_joints):
         """jointtextgettext"""
