@@ -129,18 +129,21 @@ DEFAULT_NODE_GRID_SIZE = 50  # Node grid size (pixels)
 # a pure damper -> under any residual torque it drifts at omega = tau/damping,
 # which is the "slow constant-velocity slide" seen in MuJoCo.
 DEFAULT_BACKLASH_PRESETS = [
-    {"name": "0.1", "backlash_deg": 0.05, "damping": 0.5, "frictionloss": 1.0, "armature": 0.01},
-    {"name": "0.2", "backlash_deg": 0.10, "damping": 0.5, "frictionloss": 1.0, "armature": 0.01},
-    {"name": "0.3", "backlash_deg": 0.15, "damping": 0.5, "frictionloss": 1.0, "armature": 0.01},
-    {"name": "0.4", "backlash_deg": 0.20, "damping": 0.5, "frictionloss": 1.0, "armature": 0.01},
+    # Physical defaults: grease viscous, bearing static friction, rotor-reflected armature.
+    # Sliding suppression comes from ground friction + MJCF solver settings, not from
+    # over-damping the backlash joint itself.
+    {"name": "0.1", "backlash_deg": 0.05, "damping": 0.001, "frictionloss": 0.01, "armature": 0.01},
+    {"name": "0.2", "backlash_deg": 0.10, "damping": 0.001, "frictionloss": 0.01, "armature": 0.01},
+    {"name": "0.3", "backlash_deg": 0.15, "damping": 0.001, "frictionloss": 0.01, "armature": 0.01},
+    {"name": "0.4", "backlash_deg": 0.20, "damping": 0.001, "frictionloss": 0.01, "armature": 0.01},
 ]
 MAX_BACKLASH_PRESETS = 255
 
 # Inertial of the massless backlash body used to keep the constraint chain
 # numerically well-conditioned. Kept small (backlash body is virtual) but not so
 # small that mass ratios with adjacent bodies exceed ~1000x (solver ill-conditioning).
-BACKLASH_BODY_MASS = 0.005            # kg (was 0.0001 -> 0.001 -> 0.005)
-BACKLASH_BODY_DIAGINERTIA = 1e-5      # kg*m^2 (was 1e-9 -> 1e-6 -> 1e-5)
+BACKLASH_BODY_MASS = 0.005            # kg — small (final-gear-only) but numerically stable
+BACKLASH_BODY_DIAGINERTIA = 1e-5      # kg*m^2 — small enough to preserve realistic rattle
 # Legacy constants for backward compatibility (to be removed)
 DEFAULT_JOINT_LOWER = -180.0
 DEFAULT_JOINT_UPPER = 180.0
