@@ -75,6 +75,8 @@ from urdf_kitchen_Importer import (
     build_unity_package_path,
     export_mesh_to_format,
     simplify_mesh_to_threshold,
+    open_mjcf_for_write,
+    MJCF_XML_DECLARATION,
 )
 
 # M4 Mac (Apple Silicon) compatibility
@@ -116,10 +118,52 @@ DEFAULT_MJCF_MOTOR_CTRLRANGE = 23.7  # Motor control range (+/-) for MJCF <defau
 DEFAULT_MJCF_OPTION_IMPRATIO = 100  # Impedance ratio for MJCF <option>
 DEFAULT_MJCF_OPTION_TIMESTEP = 0.002  # Simulation timestep for MJCF <option>
 DEFAULT_MJCF_OPTION_ITERATIONS = 30  # Solver iterations for MJCF <option>
+# <equality connect> の拘束剛性 (「鉄骨ヒンジ」= MuJoCo デフォルトの 4〜5 倍相当)。
+#   solref = "時定数[s] 減衰比"   デフォルト "0.02 1" (20 ms 臨界減衰)
+#   solimp = "d0 d_width width [midpoint power]"   デフォルト "0.9 0.95 0.001 0.5 2"
+# ここでは 5 ms 臨界減衰 + 定常インピーダンス 0.999 に引き上げて拘束を強化。
+# 全ての <connect> (CoincidentNode + ClosedLoopJointNode ball) に共通適用。
+DEFAULT_MJCF_CONNECT_SOLREF = "0.005 1"
+DEFAULT_MJCF_CONNECT_SOLIMP = "0.99 0.999 0.001"
+# Free ヒンジ / ball joint の受動関節に付与する下限値。
+# 「ほぼ摩擦なしのボールベアリング」相当:
+#   - damping はソルバ安定化に必要な最小限だけ残す (完全 0 だと数値発散しやすい)
+#   - armature は非常に軽い反射慣性
+#   - frictionloss (Coulomb) は 0 = 静止摩擦なし
+# 実際の書き出しは max(ノード値, 下記) なので、ユーザがより大きい値を
+# 明示していればそちらが尊重される。ball joint は元々 3 属性が空だったので
+# この最低値がそのまま適用される。
+FREE_JOINT_GREASE_DAMPING = 0.02        # N·m·s/rad (light viscous)
+FREE_JOINT_GREASE_ARMATURE = 0.001      # kg·m^2 (very low reflected inertia)
+FREE_JOINT_GREASE_FRICTIONLOSS = 0.0    # N·m (frictionless Coulomb)
 DEFAULT_MJCF_MESH_SIMPLIFY_THRESHOLD = 50000  # Face count threshold for mesh simplification warning
 DEFAULT_MJCF_MESH_MAX_FACES = 100000000  # Max face count for mesh export (100M; was 1M, increased for large CAD meshes)
 DEFAULT_NODE_GRID_ENABLED = True  # Enable/disable node grid snapping
 DEFAULT_NODE_GRID_SIZE = 50  # Node grid size (pixels)
+
+# Backlash presets: index 0 = Zero(Ideal) (no backlash), 1..4 = user-editable presets.
+# backlash_deg is the +/- backlash amplitude in degrees; damping is N*m*s/rad.
+# Exports convert deg -> rad; stored/edited in deg for UI clarity.
+# frictionloss (N*m) models the deadband "sticky" behavior; armature (kg*m^2) adds
+# virtual inertia for solver stability. Without these, the passive backlash hinge is
+# a pure damper -> under any residual torque it drifts at omega = tau/damping,
+# which is the "slow constant-velocity slide" seen in MuJoCo.
+DEFAULT_BACKLASH_PRESETS = [
+    # Physical defaults: grease viscous, bearing static friction, rotor-reflected armature.
+    # Sliding suppression comes from ground friction + MJCF solver settings, not from
+    # over-damping the backlash joint itself.
+    {"name": "0.1", "backlash_deg": 0.05, "damping": 0.001, "frictionloss": 0.01, "armature": 0.01},
+    {"name": "0.2", "backlash_deg": 0.10, "damping": 0.001, "frictionloss": 0.01, "armature": 0.01},
+    {"name": "0.3", "backlash_deg": 0.15, "damping": 0.001, "frictionloss": 0.01, "armature": 0.01},
+    {"name": "0.4", "backlash_deg": 0.20, "damping": 0.001, "frictionloss": 0.01, "armature": 0.01},
+]
+MAX_BACKLASH_PRESETS = 255
+
+# Inertial of the massless backlash body used to keep the constraint chain
+# numerically well-conditioned. Kept small (backlash body is virtual) but not so
+# small that mass ratios with adjacent bodies exceed ~1000x (solver ill-conditioning).
+BACKLASH_BODY_MASS = 0.005            # kg — small (final-gear-only) but numerically stable
+BACKLASH_BODY_DIAGINERTIA = 1e-5      # kg*m^2 — small enough to preserve realistic rattle
 # Legacy constants for backward compatibility (to be removed)
 DEFAULT_JOINT_LOWER = -180.0
 DEFAULT_JOINT_UPPER = 180.0
@@ -195,7 +239,11 @@ def init_node_properties(node, graph=None):
     node.is_mesh_reversed = False  # Flag for reversed/mirrored mesh (for MJCF export)
     node.node_color = DEFAULT_COLOR_WHITE.copy()
     node.mesh_original_color = None  # Original color extracted from mesh file (DAE/OBJ/STL)
-    node.rotation_axis = 0  # 0: X, 1: Y, 2: Z, 3: Fixed, 4: Free, 5: Slide
+    node.rotation_axis = 0  # 0: X, 1: Y, 2: Z, 3: Fixed, 5: Slide
+                            # NOTE: id=4 (legacy "Free") is deprecated. Use is_free_joint instead.
+    node.is_free_joint = False  # True if this node is a closed-loop endpoint (Free checkbox in UI).
+                                # When combined with rotation_axis 0/1/2 → hinge closure (tree emits
+                                # <joint type="hinge" range="min max">); rotation_axis 3/5 → ball closure.
     node.slide_axis = 0     # Slide axis (0: X, 1: Y, 2: Z) - used when rotation_axis=5
     node.slide_lower = -0.05  # Slide lower limit (m)
     node.slide_upper = 0.05   # Slide upper limit (m)
@@ -229,6 +277,8 @@ def init_node_properties(node, graph=None):
     node.hide_mesh = False  # Default is mesh visible
     node.is_imu_site = False  # If True, node exports as <site> for MuJoCo IMU sensor placement
     node.is_camera_node = False  # If True, node exports as <camera> for MuJoCo camera placement
+    # Backlash preset selection: 0=Ideal (no backlash), 1..4=Preset1..Preset4 defined on the graph.
+    node.backlash_preset = 0
 
 
 # IMU node visual: title strip = green, body = default gray (connection-aware)
@@ -1089,15 +1139,34 @@ class InspectorWindow(QtWidgets.QWidget):
         rotation_layout = QtWidgets.QHBoxLayout()
         rotation_layout.addWidget(QtWidgets.QLabel("Rotation Axis:   "))
         self.axis_group = QtWidgets.QButtonGroup(self)
-        # (label, id): 0-2=revolute, 3=fixed, 4=free, 5=slide
+        # (label, id): 0-2=revolute, 3=fixed, 5=slide
+        # Note: 4 was legacy "Free" (ball joint tree output). Now Free is a
+        #   separate checkbox (self.free_checkbox) meaning "this node is a
+        #   closed-loop endpoint whose closure is expressed via CoincidentNode
+        #   + <equality>". id=4 is intentionally not present.
         axis_options = [
             ('X (Roll)', 0), ('Y (Pitch)', 1), ('Z (Yaw)', 2),
-            ('Free', 4), ('Fixed', 3), ('Slide', 5)
+            ('Fixed', 3), ('Slide', 5)
         ]
         for label, axis_id in axis_options:
             radio = QtWidgets.QRadioButton(label)
             self.axis_group.addButton(radio, axis_id)
             rotation_layout.addWidget(radio)
+
+        # Free: 上のラジオ (X/Y/Z/Fixed/Slide) とは独立した ON/OFF。
+        # ON かつ radio=X/Y/Z → その軸のヒンジ閉ループ (tree に hinge+range を出し、
+        #   CoincidentNode 側は 1 個の <equality connect> で閉じる)。
+        # ON かつ radio=Fixed (or Slide) → ボール閉ループ (tree に joint を出さず、
+        #   CoincidentNode 側の 1 個の <equality connect> で 3 DOF 自由回転を許す)。
+        self.free_checkbox = QtWidgets.QCheckBox("Free")
+        self.free_checkbox.setToolTip(
+            "Mark this node as a closed-loop endpoint.\n"
+            "  Free + X/Y/Z : hinge closure on that axis (uses Min/Max as range)\n"
+            "  Free + Fixed/Slide : ball closure (3 DOF free rotation)"
+        )
+        self.free_checkbox.toggled.connect(self.on_free_checkbox_toggled)
+        rotation_layout.addWidget(self.free_checkbox)
+
         rotation_layout.addStretch()  # Add margin on right
         content_layout.addLayout(rotation_layout)
 
@@ -1184,6 +1253,32 @@ class InspectorWindow(QtWidgets.QWidget):
             btn.setVisible(False)
 
         angle_limits_layout.addStretch()  # Right margin
+
+        # Backlash preset selector (right-aligned at the end of the Min/Max Angle row)
+        self.backlash_label = QtWidgets.QLabel("Backlash:")
+        angle_limits_layout.addWidget(self.backlash_label)
+        self.backlash_combo = QtWidgets.QComboBox()
+        self.backlash_combo.addItem("Zero(Ideal)")
+        for i in range(1, 5):
+            self.backlash_combo.addItem(f"Preset{i}")
+        self.backlash_combo.setToolTip(
+            "Backlash preset for this joint (edit presets in Settings > Backlash)"
+        )
+        # Widen the field, and force white bg / black text on both the combo and its popup
+        # so the label stays readable under Windows dark themes.
+        self.backlash_combo.setMinimumWidth(140)
+        self.backlash_combo.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents
+        )
+        self.backlash_combo.setStyleSheet(
+            "QComboBox { background-color: #ffffff; color: #000000; "
+            "border: 1px solid #7a7a7a; padding: 2px 6px; }"
+            "QComboBox QAbstractItemView { background-color: #ffffff; color: #000000; "
+            "selection-background-color: #3874d1; selection-color: #ffffff; }"
+        )
+        self.backlash_combo.currentIndexChanged.connect(self.on_backlash_preset_changed)
+        angle_limits_layout.addWidget(self.backlash_combo)
+
         content_layout.addLayout(angle_limits_layout)
 
         # Buttons (right aligned)
@@ -2501,6 +2596,12 @@ class InspectorWindow(QtWidgets.QWidget):
                 self._set_inertial_origin_ui(node.inertial_origin['xyz'], node.inertial_origin['rpy'])
 
             # Rotation Axis - check node's rotation_axis attribute and set
+            # Legacy migration: rotation_axis=4 (旧 "Free") は is_free_joint=True +
+            # rotation_axis=3 (Fixed 相当) に振り替える。旧プロジェクト load 時にここで
+            # 静かに変換される。
+            if getattr(node, 'rotation_axis', None) == 4:
+                node.rotation_axis = 3
+                node.is_free_joint = True
             if hasattr(node, 'rotation_axis'):
                 axis_button = self.axis_group.button(node.rotation_axis)
                 if axis_button:
@@ -2513,6 +2614,14 @@ class InspectorWindow(QtWidgets.QWidget):
                 if self.axis_group.button(0):
                     self.axis_group.button(0).setChecked(True)
                 self._update_limit_labels_for_axis(0)
+
+            # Free checkbox: 独立プロパティ is_free_joint を反映。旧プロジェクトで
+            # 未設定なら False (通常の tree joint) 扱い。
+            _is_free = bool(getattr(node, 'is_free_joint', False))
+            # blockSignals で on_free_checkbox_toggled が二重発火しないように
+            self.free_checkbox.blockSignals(True)
+            self.free_checkbox.setChecked(_is_free)
+            self.free_checkbox.blockSignals(False)
 
             # Set Body Angle (display in degrees)
             # Get and apply Ang value from connected parent node's outport
@@ -2685,6 +2794,17 @@ class InspectorWindow(QtWidgets.QWidget):
                 node.joint_frictionloss = DEFAULT_FRICTIONLOSS
                 self.frictionloss_input.setText(str(node.joint_frictionloss))
 
+            # Set Backlash preset selection (labels reflect names from Settings)
+            if hasattr(self, 'backlash_combo'):
+                self.refresh_backlash_combo_labels()
+                preset_idx = getattr(node, 'backlash_preset', 0)
+                if not isinstance(preset_idx, int) or not (0 <= preset_idx < self.backlash_combo.count()):
+                    preset_idx = 0
+                node.backlash_preset = preset_idx
+                self.backlash_combo.blockSignals(True)
+                self.backlash_combo.setCurrentIndex(preset_idx)
+                self.backlash_combo.blockSignals(False)
+
             # Color settings - check node's node_color attribute and set
             if hasattr(node, 'node_color') and node.node_color:
                 self._set_color_ui(node.node_color)
@@ -2737,6 +2857,13 @@ class InspectorWindow(QtWidgets.QWidget):
             axis_id = self.axis_group.id(button)
             self.current_node.rotation_axis = axis_id
             self._update_limit_labels_for_axis(axis_id)
+
+    def on_free_checkbox_toggled(self, checked: bool):
+        """Free チェックボックスの ON/OFF を current_node.is_free_joint に反映。
+        Free ON かつ radio=X/Y/Z なら hinge closure、それ以外なら ball closure。
+        (実際の MJCF 出力の分岐は _get_joint_info と equality writer 側で判定する)"""
+        if self.current_node is not None:
+            self.current_node.is_free_joint = bool(checked)
 
     def _update_limit_labels_for_axis(self, axis_id):
         """Switch labels to Lower/Upper(m) when Slide is selected, otherwise Min/Max Angle(deg)"""
@@ -4576,6 +4703,37 @@ class InspectorWindow(QtWidgets.QWidget):
         except ValueError:
             pass  # Ignore invalid values
 
+    def on_backlash_preset_changed(self, index):
+        """Store the selected backlash preset index (0=Ideal, 1..4=Preset1..4) on the current node."""
+        if not self.current_node:
+            return
+        self.current_node.backlash_preset = int(index)
+
+    def refresh_backlash_combo_labels(self):
+        """Rebuild backlash combo entries using preset names from the graph settings.
+
+        Ideal is index 0; entries 1..N mirror graph.backlash_presets. Current selection
+        is preserved when possible.
+        """
+        if not hasattr(self, 'backlash_combo'):
+            return
+        graph = getattr(self, 'graph', None) or (
+            self.current_node.graph if self.current_node and hasattr(self.current_node, 'graph') else None
+        )
+        presets = getattr(graph, 'backlash_presets', None) if graph is not None else None
+        if not presets:
+            presets = DEFAULT_BACKLASH_PRESETS
+        current_idx = self.backlash_combo.currentIndex()
+        self.backlash_combo.blockSignals(True)
+        self.backlash_combo.clear()
+        self.backlash_combo.addItem("Zero(Ideal)")
+        for i, preset in enumerate(presets, start=1):
+            name = preset.get("name") if isinstance(preset, dict) else None
+            self.backlash_combo.addItem(name or f"Preset{i}")
+        if 0 <= current_idx < self.backlash_combo.count():
+            self.backlash_combo.setCurrentIndex(current_idx)
+        self.backlash_combo.blockSignals(False)
+
     def update_joint_params(self):
         """jointparameterstextupdate(real-time + Enter key)"""
         if not self.current_node:
@@ -5300,12 +5458,36 @@ class SettingsDialog(QtWidgets.QDialog):
         self.setWindowTitle("Settings")
         self.setModal(True)
         self.setup_ui()
-        self.resize(300, self.sizeHint().height())
+        # Match dialog height to the main (parent) window so it always fits;
+        # content is inside a QScrollArea, so overflow scrolls by default.
+        default_height = self.sizeHint().height()
+        if parent is not None:
+            try:
+                default_height = max(400, parent.height())
+            except Exception:
+                pass
+        self.resize(750, default_height)
 
     def setup_ui(self):
         """UItextinitialize"""
         import math
-        layout = QtWidgets.QVBoxLayout(self)
+        # Outer layout hosts the scroll area + the (always-visible) button row.
+        self._outer_layout = QtWidgets.QVBoxLayout(self)
+        self._outer_layout.setContentsMargins(4, 4, 4, 4)
+        self._outer_layout.setSpacing(4)
+
+        self._scroll_area = QtWidgets.QScrollArea(self)
+        self._scroll_area.setWidgetResizable(True)
+        self._scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAsNeeded)
+        self._scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarPolicy.ScrollBarAlwaysOn)
+        self._scroll_area.setFrameShape(QtWidgets.QFrame.Shape.NoFrame)
+        self._scroll_content = QtWidgets.QWidget()
+        self._scroll_area.setWidget(self._scroll_content)
+        self._outer_layout.addWidget(self._scroll_area, 1)
+
+        # Existing setup code below references `layout` for every addWidget/addLayout call,
+        # so bind that name to the content layout inside the scroll area.
+        layout = QtWidgets.QVBoxLayout(self._scroll_content)
         layout.setSpacing(3)
 
         # Unified button style (global constants)
@@ -5506,6 +5688,87 @@ class SettingsDialog(QtWidgets.QDialog):
         act_group.setLayout(act_vbox)
         layout.addWidget(act_group)
 
+        # ===== Backlash Presets =====
+        backlash_group = QtWidgets.QGroupBox("Backlash")
+        backlash_outer = QtWidgets.QVBoxLayout()
+        backlash_outer.setSpacing(4)
+
+        backlash_grid = QtWidgets.QGridLayout()
+        backlash_grid.setVerticalSpacing(3)
+        backlash_grid.setHorizontalSpacing(6)
+        backlash_grid.setColumnStretch(0, 0)
+        backlash_grid.setColumnStretch(1, 1)
+        for c in range(2, 10):
+            backlash_grid.setColumnStretch(c, 0)
+
+        # Header row (compact unit-less headers; unit labels live in each data row)
+        backlash_grid.addWidget(QtWidgets.QLabel(""), 0, 0)
+        backlash_grid.addWidget(QtWidgets.QLabel("Preset Name"), 0, 1)
+        backlash_grid.addWidget(QtWidgets.QLabel("Backlash"), 0, 2, 1, 2, QtCore.Qt.AlignmentFlag.AlignHCenter)
+        backlash_grid.addWidget(QtWidgets.QLabel("Damping"), 0, 4, 1, 2, QtCore.Qt.AlignmentFlag.AlignHCenter)
+        backlash_grid.addWidget(QtWidgets.QLabel("Frictionloss"), 0, 6, 1, 2, QtCore.Qt.AlignmentFlag.AlignHCenter)
+        backlash_grid.addWidget(QtWidgets.QLabel("Armature"), 0, 8, 1, 2, QtCore.Qt.AlignmentFlag.AlignHCenter)
+
+        # Per-row widget tracking so we can add/remove rows dynamically.
+        self._backlash_grid = backlash_grid
+        self.backlash_rows = []
+        self.backlash_name_inputs = []
+        self.backlash_deg_inputs = []
+        self.backlash_damping_inputs = []
+        self.backlash_frictionloss_inputs = []
+        self.backlash_armature_inputs = []
+
+        presets = getattr(self.graph, 'backlash_presets', None) or [dict(p) for p in DEFAULT_BACKLASH_PRESETS]
+        for preset in presets:
+            self._add_backlash_row(preset)
+
+        backlash_outer.addLayout(backlash_grid)
+
+        # Add / Del buttons (bottom of the group)
+        backlash_btn_layout = QtWidgets.QHBoxLayout()
+        backlash_btn_layout.addStretch()
+        self.backlash_add_button = QtWidgets.QPushButton("Add")
+        self.backlash_add_button.setStyleSheet(self.button_style)
+        self.backlash_add_button.setAutoDefault(False)
+        self.backlash_add_button.setFixedWidth(70)
+        self.backlash_add_button.clicked.connect(self._on_add_backlash_preset)
+        backlash_btn_layout.addWidget(self.backlash_add_button)
+        self.backlash_del_button = QtWidgets.QPushButton("Del")
+        self.backlash_del_button.setStyleSheet(self.button_style)
+        self.backlash_del_button.setAutoDefault(False)
+        self.backlash_del_button.setFixedWidth(70)
+        self.backlash_del_button.clicked.connect(self._on_del_backlash_preset)
+        backlash_btn_layout.addWidget(self.backlash_del_button)
+        backlash_outer.addLayout(backlash_btn_layout)
+
+        # Apply-to-all row: [dropdown] [Apply Backlash to All Actuators]
+        apply_row = QtWidgets.QHBoxLayout()
+        apply_row.addStretch()
+        self.backlash_apply_combo = QtWidgets.QComboBox()
+        self.backlash_apply_combo.setMinimumWidth(160)
+        self.backlash_apply_combo.setSizeAdjustPolicy(
+            QtWidgets.QComboBox.SizeAdjustPolicy.AdjustToContents
+        )
+        # Force white bg / black text so the label stays readable on Windows dark themes.
+        self.backlash_apply_combo.setStyleSheet(
+            "QComboBox { background-color: #ffffff; color: #000000; "
+            "border: 1px solid #7a7a7a; padding: 2px 6px; }"
+            "QComboBox QAbstractItemView { background-color: #ffffff; color: #000000; "
+            "selection-background-color: #3874d1; selection-color: #ffffff; }"
+        )
+        apply_row.addWidget(self.backlash_apply_combo)
+        self.backlash_apply_button = QtWidgets.QPushButton("Apply Backlash to All Actuators")
+        self.backlash_apply_button.setStyleSheet(self.button_style)
+        self.backlash_apply_button.setAutoDefault(False)
+        self.backlash_apply_button.clicked.connect(self._on_apply_backlash_to_all)
+        apply_row.addWidget(self.backlash_apply_button)
+        backlash_outer.addLayout(apply_row)
+
+        backlash_group.setLayout(backlash_outer)
+        layout.addWidget(backlash_group)
+        self._update_backlash_button_state()
+        self._refresh_backlash_apply_combo()
+
         # ===== MJCF Export Settings =====
         mjcf_group = QtWidgets.QGroupBox("MJCF Export Settings")
         mjcf_layout = QtWidgets.QGridLayout()
@@ -5695,7 +5958,8 @@ class SettingsDialog(QtWidgets.QDialog):
         cancel_button.clicked.connect(self.reject)
         button_layout.addWidget(cancel_button)
 
-        layout.addLayout(button_layout)
+        # Keep OK/Cancel visible below the scroll area rather than inside it.
+        self._outer_layout.addLayout(button_layout)
 
         # Set TODO
         self.effort_input.editingFinished.connect(
@@ -5760,6 +6024,267 @@ class SettingsDialog(QtWidgets.QDialog):
                 current_width = 100
             new_width = int(current_width * 0.6)
             field.setFixedWidth(new_width)
+
+    def _add_backlash_row(self, preset):
+        """Append a Backlash preset row to the grid using values from `preset`."""
+        idx = len(self.backlash_rows)
+        row = idx + 1  # row 0 is the header
+
+        label = QtWidgets.QLabel(f"Preset{idx + 1}:")
+        self._backlash_grid.addWidget(label, row, 0)
+
+        name_input = QtWidgets.QLineEdit()
+        name_input.setText(str(preset.get("name", f"Preset{idx + 1}")))
+        name_input.editingFinished.connect(self._refresh_backlash_apply_combo)
+        self._backlash_grid.addWidget(name_input, row, 1)
+
+        deg_input = QtWidgets.QLineEdit()
+        deg_input.setValidator(QDoubleValidator(0.0, 180.0, 4))
+        deg_input.setFixedWidth(70)
+        deg_val = float(preset.get("backlash_deg", preset.get("backlash_mm", 0.0)))
+        deg_input.setText(f"{deg_val:.4f}")
+        self._backlash_grid.addWidget(deg_input, row, 2)
+        deg_unit = QtWidgets.QLabel("±deg")
+        self._backlash_grid.addWidget(deg_unit, row, 3)
+
+        damping_input = QtWidgets.QLineEdit()
+        damping_input.setValidator(QDoubleValidator(0.0, 10000.0, 6))
+        damping_input.setFixedWidth(80)
+        damping_input.setText(f"{float(preset.get('damping', 0.0)):.6f}")
+        self._backlash_grid.addWidget(damping_input, row, 4)
+        damping_unit = QtWidgets.QLabel("N*m*s/rad")
+        self._backlash_grid.addWidget(damping_unit, row, 5)
+
+        frictionloss_input = QtWidgets.QLineEdit()
+        frictionloss_input.setValidator(QDoubleValidator(0.0, 10000.0, 6))
+        frictionloss_input.setFixedWidth(70)
+        frictionloss_input.setText(f"{float(preset.get('frictionloss', 0.0)):.6f}")
+        self._backlash_grid.addWidget(frictionloss_input, row, 6)
+        frictionloss_unit = QtWidgets.QLabel("N*m")
+        self._backlash_grid.addWidget(frictionloss_unit, row, 7)
+
+        armature_input = QtWidgets.QLineEdit()
+        armature_input.setValidator(QDoubleValidator(0.0, 10000.0, 6))
+        armature_input.setFixedWidth(70)
+        armature_input.setText(f"{float(preset.get('armature', 0.0)):.6f}")
+        self._backlash_grid.addWidget(armature_input, row, 8)
+        armature_unit = QtWidgets.QLabel("kg*m²")
+        self._backlash_grid.addWidget(armature_unit, row, 9)
+
+        self.backlash_name_inputs.append(name_input)
+        self.backlash_deg_inputs.append(deg_input)
+        self.backlash_damping_inputs.append(damping_input)
+        self.backlash_frictionloss_inputs.append(frictionloss_input)
+        self.backlash_armature_inputs.append(armature_input)
+        self.backlash_rows.append({
+            'label': label,
+            'name': name_input,
+            'deg': deg_input,
+            'deg_unit': deg_unit,
+            'damping': damping_input,
+            'damping_unit': damping_unit,
+            'frictionloss': frictionloss_input,
+            'frictionloss_unit': frictionloss_unit,
+            'armature': armature_input,
+            'armature_unit': armature_unit,
+        })
+
+    def _remove_last_backlash_row(self):
+        """Detach and delete the last Backlash preset row's widgets."""
+        if not self.backlash_rows:
+            return
+        row = self.backlash_rows.pop()
+        for w in (row['label'], row['name'], row['deg'], row['deg_unit'],
+                  row['damping'], row['damping_unit'],
+                  row['frictionloss'], row['frictionloss_unit'],
+                  row['armature'], row['armature_unit']):
+            self._backlash_grid.removeWidget(w)
+            w.setParent(None)
+            w.deleteLater()
+        self.backlash_name_inputs.pop()
+        self.backlash_deg_inputs.pop()
+        self.backlash_damping_inputs.pop()
+        self.backlash_frictionloss_inputs.pop()
+        self.backlash_armature_inputs.pop()
+
+    def _update_backlash_button_state(self):
+        """Enable Add up to MAX_BACKLASH_PRESETS; keep at least 1 row (disable Del at 1)."""
+        count = len(self.backlash_rows)
+        if hasattr(self, 'backlash_add_button'):
+            self.backlash_add_button.setEnabled(count < MAX_BACKLASH_PRESETS)
+        if hasattr(self, 'backlash_del_button'):
+            self.backlash_del_button.setEnabled(count > 1)
+
+    def _on_add_backlash_preset(self):
+        """Append a new Preset row with zeroed values and an auto-numbered name."""
+        if len(self.backlash_rows) >= MAX_BACKLASH_PRESETS:
+            return
+        next_idx = len(self.backlash_rows) + 1
+        self._add_backlash_row({
+            "name": f"Preset{next_idx}",
+            "backlash_deg": 0.0,
+            "damping": 0.0,
+            "frictionloss": 0.0,
+            "armature": 0.0,
+        })
+        self._update_backlash_button_state()
+        self._refresh_backlash_apply_combo()
+
+    def _on_del_backlash_preset(self):
+        """Remove the last Preset row. If any node references it, warn and let the user cancel."""
+        count = len(self.backlash_rows)
+        if count <= 1:
+            return
+        target_idx = count  # 1-based preset index that would be deleted
+        # Find nodes currently using this preset.
+        affected = []
+        try:
+            for n in self.graph.all_nodes():
+                if getattr(n, 'backlash_preset', 0) == target_idx:
+                    affected.append(n.name())
+        except Exception:
+            affected = []
+        if affected:
+            preview = ", ".join(affected[:5])
+            if len(affected) > 5:
+                preview += f", ... (+{len(affected) - 5} more)"
+            reply = QtWidgets.QMessageBox.warning(
+                self,
+                "Preset In Use",
+                f"Preset{target_idx} is used by {len(affected)} node(s):\n{preview}\n\n"
+                f"If you delete it, those nodes will be reset to Zero(Ideal).\n"
+                f"Continue?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.No,
+            )
+            if reply != QtWidgets.QMessageBox.Yes:
+                return
+            for n in self.graph.all_nodes():
+                if getattr(n, 'backlash_preset', 0) == target_idx:
+                    n.backlash_preset = 0
+        self._remove_last_backlash_row()
+        self._update_backlash_button_state()
+        self._refresh_backlash_apply_combo()
+
+    def _refresh_backlash_apply_combo(self):
+        """Rebuild the Apply-to-all dropdown from the current backlash preset rows.
+        Item 0 = Zero(Ideal); items 1..N mirror the visible preset rows in order.
+        """
+        if not hasattr(self, 'backlash_apply_combo'):
+            return
+        current_idx = self.backlash_apply_combo.currentIndex()
+        self.backlash_apply_combo.blockSignals(True)
+        self.backlash_apply_combo.clear()
+        self.backlash_apply_combo.addItem("Zero(Ideal)")
+        for i, name_input in enumerate(self.backlash_name_inputs, start=1):
+            name = name_input.text().strip() or f"Preset{i}"
+            self.backlash_apply_combo.addItem(name)
+        if 0 <= current_idx < self.backlash_apply_combo.count():
+            self.backlash_apply_combo.setCurrentIndex(current_idx)
+        else:
+            self.backlash_apply_combo.setCurrentIndex(0)
+        self.backlash_apply_combo.blockSignals(False)
+
+    def _on_apply_backlash_to_all(self):
+        """Apply the selected backlash preset (or Zero) to every X/Y/Z hinge node.
+
+        Nodes directly connected to base_link are excluded, since they map to the
+        MJCF root body (freejoint) and adding a backlash joint between world and
+        that body is not meaningful.
+        """
+        if not hasattr(self, 'backlash_apply_combo'):
+            return
+        target_idx = self.backlash_apply_combo.currentIndex()
+        if target_idx < 0:
+            return
+        target_label = self.backlash_apply_combo.currentText()
+        try:
+            nodes = list(self.graph.all_nodes())
+        except Exception:
+            nodes = []
+
+        def _is_child_of_base_link(n):
+            try:
+                for input_port in n.input_ports():
+                    for connected_port in input_port.connected_ports():
+                        parent = connected_port.node()
+                        if parent.__class__.__name__ == 'BaseLinkNode':
+                            return True
+                        try:
+                            if parent.name() == 'base_link':
+                                return True
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            return False
+
+        def _is_non_actuator_node(n):
+            """Filter out nodes that should never receive backlash.
+
+            - massless_decoration: extra visual (_dec*) collapsed into parent geom on export
+            - is_imu_site / is_camera_node: emitted as <site>/<camera>, not a body
+            - CoincidentNode / ClosedLoopJointNode: constraint-only, no servo joint
+            """
+            if getattr(n, 'massless_decoration', False):
+                return True
+            if getattr(n, 'is_imu_site', False):
+                return True
+            if getattr(n, 'is_camera_node', False):
+                return True
+            cls_name = n.__class__.__name__
+            if cls_name in ('CoincidentNode', 'ClosedLoopJointNode'):
+                return True
+            return False
+
+        def _is_eligible(n):
+            return (
+                getattr(n, 'rotation_axis', -1) in (0, 1, 2)
+                and not _is_non_actuator_node(n)
+                and not _is_child_of_base_link(n)
+            )
+
+        eligible = [n for n in nodes if _is_eligible(n)]
+        skipped_base = sum(
+            1 for n in nodes
+            if getattr(n, 'rotation_axis', -1) in (0, 1, 2)
+            and not _is_non_actuator_node(n)
+            and _is_child_of_base_link(n)
+        )
+        skipped_special = sum(
+            1 for n in nodes
+            if getattr(n, 'rotation_axis', -1) in (0, 1, 2)
+            and _is_non_actuator_node(n)
+        )
+        skipped = skipped_base + skipped_special
+        if not eligible:
+            msg = "No X/Y/Z hinge servo nodes found (all are base_link children, decorations, IMU/camera, or constraint nodes)."
+            QtWidgets.QMessageBox.information(self, "Apply Backlash to All", msg)
+            return
+        detail_parts = []
+        if skipped_base:
+            detail_parts.append(f"{skipped_base} base_link child(ren)")
+        if skipped_special:
+            detail_parts.append(f"{skipped_special} decoration/IMU/camera/constraint node(s)")
+        detail_suffix = ""
+        if detail_parts:
+            detail_suffix = "\n(Skipping: " + ", ".join(detail_parts) + ".)"
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Apply Backlash to All Actuators",
+            f"Apply '{target_label}' to {len(eligible)} X/Y/Z hinge node(s)?{detail_suffix}",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return
+        for n in eligible:
+            n.backlash_preset = int(target_idx)
+        print(
+            f"Applied backlash preset {target_idx} ('{target_label}') to {len(eligible)} node(s); "
+            f"skipped {skipped_base} base_link child(ren), "
+            f"{skipped_special} decoration/IMU/camera/constraint node(s)."
+        )
 
     def pick_highlight_color(self):
         """textーtextーtextーtext"""
@@ -5865,6 +6390,23 @@ class SettingsDialog(QtWidgets.QDialog):
             self.graph.default_mjcf_mesh_simplify_threshold = mjcf_mesh_simplify
             mjcf_mesh_max_faces = int(normalize_number_input(self.mjcf_mesh_max_faces_input.text()))
             self.graph.default_mjcf_mesh_max_faces = mjcf_mesh_max_faces
+
+            # Backlash presets (variable-length)
+            new_presets = []
+            for i in range(len(self.backlash_name_inputs)):
+                name_text = self.backlash_name_inputs[i].text().strip() or f"Preset{i + 1}"
+                deg_val = float(normalize_number_input(self.backlash_deg_inputs[i].text()))
+                damping_val = float(normalize_number_input(self.backlash_damping_inputs[i].text()))
+                frictionloss_val = float(normalize_number_input(self.backlash_frictionloss_inputs[i].text()))
+                armature_val = float(normalize_number_input(self.backlash_armature_inputs[i].text()))
+                new_presets.append({
+                    "name": name_text,
+                    "backlash_deg": deg_val,
+                    "damping": damping_val,
+                    "frictionloss": frictionloss_val,
+                    "armature": armature_val,
+                })
+            self.graph.backlash_presets = new_presets
 
             # Node node grid
             grid_enabled = self.grid_enabled_checkbox.isChecked()
@@ -6817,10 +7359,18 @@ class STLViewerWidget(QtWidgets.QWidget):
             # Check fixed or free
             rot_axis = getattr(node, 'rotation_axis', 0)
             is_fixed = rot_axis == 3
-            is_free = rot_axis == 4
+            # is_free_joint (Free チェックボックス) 由来に統一。旧 rotation_axis=4 は
+            # データ層で自動マイグレート済み。
+            is_free = bool(getattr(node, 'is_free_joint', False))
 
-            # If fixed - blink display
-            if is_fixed:
+            # Animation branch:
+            #   ・Fixed 単独 (Free OFF) → 赤白点滅
+            #   ・Fixed + Free (ボール閉ループ) → スピニングトップ (3 DOF 自由回転)
+            #   ・Slide → 従来の Slide 往復 (Free ON/OFF いずれも)
+            #   ・X/Y/Z hinge (Free ON/OFF いずれも) → 選択軸で Min/Max 振動
+            # → is_free 単独では分岐せず、rot_axis と Free の組み合わせで判定する。
+            if is_fixed and not is_free:
+                # Fixed only: blink red/white (unchanged)
                 # 400ms
                 # 60fps 24 400ms
                 is_red = (self.current_angle // 24) % 2 == 0
@@ -6828,8 +7378,8 @@ class STLViewerWidget(QtWidgets.QWidget):
                     self.stl_actors[node].GetProperty().SetColor(1.0, 0.0, 0.0)  # NOTE
                 else:
                     self.stl_actors[node].GetProperty().SetColor(1.0, 1.0, 1.0)  # NOTE
-            elif is_free:
-                # Free: spinning top wobble (rotate yaw, roll, pitch simultaneously)
+            elif is_fixed and is_free:
+                # Free + Fixed = ball closure: spinning top wobble (rotate yaw, roll, pitch simultaneously)
                 import math
                 self.current_angle += 2.0  # 2x progress speed
                 t = math.radians(self.current_angle)
@@ -9024,6 +9574,9 @@ class CustomNodeGraph(NodeGraph):
         self.last_save_dir = None
         self.mjcf_eulerseq = 'xyz'  # MJCFEuler（）
         self.closed_loop_joints = []  # NOTE
+        # Populated during load_project when node STL/XML references cannot be found.
+        # Each entry: {'node', 'kind' ('stl'|'xml'), 'basename', 'original_rel'}.
+        self._pending_missing_files = []
 
         # Todo
         self.default_joint_effort = DEFAULT_JOINT_EFFORT
@@ -9061,6 +9614,9 @@ class CustomNodeGraph(NodeGraph):
         # Set Node Grid Node Grid
         self.node_grid_enabled = DEFAULT_NODE_GRID_ENABLED
         self.node_grid_size = DEFAULT_NODE_GRID_SIZE
+
+        # Backlash presets (Preset1..Preset4). Ideal (no backlash) is implicit at index 0.
+        self.backlash_presets = [dict(p) for p in DEFAULT_BACKLASH_PRESETS]
 
         # Todo
         self.highlight_color = DEFAULT_HIGHLIGHT_COLOR
@@ -10558,10 +11114,11 @@ class CustomNodeGraph(NodeGraph):
                     suffix = "_pitch"
                 elif rot_axis == 2:
                     suffix = "_yaw"
-                elif rot_axis == 4:
-                    suffix = "_ball"
                 elif rot_axis == 5:
                     suffix = "_slide"
+                # 旧 rot_axis == 4 (ball) はデータ層で is_free_joint に振り替え済み。
+                # Free + X/Y/Z の場合は上の 0/1/2 分岐が採用され通常ヒンジと同じ
+                # roll/pitch/yaw suffix になる。
                 joint_map_mjcf[(parent_name, child_name)] = f"{child_sanitized}{suffix}"
 
         self._canonical_link_map = link_map
@@ -10598,6 +11155,91 @@ class CustomNodeGraph(NodeGraph):
             return name
         return self._canonical_link_map.get(name, name)
 
+    def register_backlash_preset(self, backlash_deg, damping,
+                                 frictionloss=0.0, armature=0.0,
+                                 deg_tol=1e-4, damping_tol=1e-6,
+                                 frictionloss_tol=1e-6, armature_tol=1e-6,
+                                 name=None):
+        """Find or append a backlash preset matching (deg, damping, frictionloss, armature).
+
+        Returns the 1-based preset index (matches node.backlash_preset), or None
+        if a new preset would exceed MAX_BACKLASH_PRESETS.
+        """
+        try:
+            deg_val = float(backlash_deg)
+            damping_val = float(damping)
+            frictionloss_val = float(frictionloss or 0.0)
+            armature_val = float(armature or 0.0)
+        except (TypeError, ValueError):
+            return None
+        if not hasattr(self, 'backlash_presets') or self.backlash_presets is None:
+            self.backlash_presets = []
+        for i, preset in enumerate(self.backlash_presets, start=1):
+            existing_deg = float(preset.get('backlash_deg', preset.get('backlash_mm', 0.0)))
+            existing_damping = float(preset.get('damping', 0.0))
+            existing_friction = float(preset.get('frictionloss', 0.0))
+            existing_armature = float(preset.get('armature', 0.0))
+            if (abs(existing_deg - deg_val) <= deg_tol and
+                    abs(existing_damping - damping_val) <= damping_tol and
+                    abs(existing_friction - frictionloss_val) <= frictionloss_tol and
+                    abs(existing_armature - armature_val) <= armature_tol):
+                return i
+        if len(self.backlash_presets) >= MAX_BACKLASH_PRESETS:
+            return None
+        new_name = name if name else f"{deg_val:g}"
+        existing_names = {str(p.get('name', '')) for p in self.backlash_presets}
+        if new_name in existing_names:
+            suffix = 1
+            while f"{new_name}_{suffix}" in existing_names:
+                suffix += 1
+            new_name = f"{new_name}_{suffix}"
+        self.backlash_presets.append({
+            "name": new_name,
+            "backlash_deg": deg_val,
+            "damping": damping_val,
+            "frictionloss": frictionloss_val,
+            "armature": armature_val,
+        })
+        return len(self.backlash_presets)
+
+    def _get_backlash_info(self, node):
+        """Return backlash parameters for a node, or None if backlash is not applied.
+
+        Only hinge joints on X/Y/Z (rotation_axis 0/1/2) with a preset > 0 get backlash.
+        Returned dict has:
+            axis_id: 0/1/2 (world-relative rotation axis, same as node's rotation)
+            backlash_rad: absolute joint limit magnitude (rad); range is [-v, +v]
+            damping: N*m*s/rad
+            frictionloss: N*m (static friction, ~= real backlash deadband stiction)
+            armature: kg*m^2 (virtual inertia; needed for solver stability)
+            preset_name: preset label (for naming)
+        """
+        preset_idx = getattr(node, 'backlash_preset', 0) or 0
+        if preset_idx <= 0:
+            return None
+        axis_id = getattr(node, 'rotation_axis', -1)
+        if axis_id not in (0, 1, 2):
+            return None
+        presets = getattr(self, 'backlash_presets', None) or DEFAULT_BACKLASH_PRESETS
+        idx = preset_idx - 1
+        if not (0 <= idx < len(presets)):
+            return None
+        preset = presets[idx]
+        deg_val = float(preset.get('backlash_deg', preset.get('backlash_mm', 0.0)))
+        damping_val = float(preset.get('damping', 0.0))
+        frictionloss_val = float(preset.get('frictionloss', 0.0))
+        armature_val = float(preset.get('armature', 0.0))
+        if deg_val <= 0.0:
+            return None
+        return {
+            'axis_id': axis_id,
+            'backlash_rad': math.radians(deg_val),
+            'damping': damping_val,
+            'frictionloss': frictionloss_val,
+            'armature': armature_val,
+            'preset_name': str(preset.get('name', f'Preset{preset_idx}')),
+        }
+
     def _export_urdf_joint_name(self, parent_node, child_node) -> str:
         parent_name = parent_node.name()
         child_name = child_node.name()
@@ -10631,11 +11273,16 @@ class CustomNodeGraph(NodeGraph):
             robot_base_name = self.robot_name or "robot"
             clean_name = self.clean_robot_name(robot_base_name)
 
-            # Select
+            # Select (default to ./model_output, created lazily)
+            model_output_dir = os.path.abspath("./model_output")
+            try:
+                os.makedirs(model_output_dir, exist_ok=True)
+            except Exception as _e:
+                print(f"Could not ensure ./model_output exists: {_e}")
             parent_dir = QtWidgets.QFileDialog.getExistingDirectory(
                 self.widget,
                 "Select parent directory for URDF export",
-                os.getcwd()
+                model_output_dir,
             )
 
             if not parent_dir:
@@ -10968,8 +11615,8 @@ class CustomNodeGraph(NodeGraph):
                         continue
                     # Massless decoration link output massless decoration
                     if not (hasattr(child_node, 'massless_decoration') and child_node.massless_decoration):
-                        # Output
-                        self._write_joint(file, node, child_node)
+                        # Output (may insert backlash joint+link when configured on child)
+                        self._write_urdf_joint_pair(file, node, child_node)
                         file.write('\n')
 
                         # Next link output
@@ -11396,6 +12043,11 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(node_elem, "color").text = color_str
         if hasattr(node, 'rotation_axis'):
             ET.SubElement(node_elem, "rotation_axis").text = str(node.rotation_axis)
+        # is_free_joint: Free ラジオ (=独立 CheckBox) の状態を True/False で保存。
+        # 旧プロジェクト (rotation_axis=4=legacy Free) は _load_node_data で
+        # is_free_joint=True + rotation_axis=3 に自動マイグレートされる。
+        if hasattr(node, 'is_free_joint'):
+            ET.SubElement(node_elem, "is_free_joint").text = str(bool(node.is_free_joint))
         if hasattr(node, 'slide_axis'):
             ET.SubElement(node_elem, "slide_axis").text = str(node.slide_axis)
         if hasattr(node, 'slide_lower'):
@@ -11455,7 +12107,9 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(node_elem, "joint_armature").text = str(node.joint_armature)
         if hasattr(node, 'joint_frictionloss'):
             ET.SubElement(node_elem, "joint_frictionloss").text = str(node.joint_frictionloss)
-        
+        if hasattr(node, 'backlash_preset'):
+            ET.SubElement(node_elem, "backlash_preset").text = str(int(node.backlash_preset))
+
         # Save Body Angle Body Angle
         if hasattr(node, 'body_angle'):
             body_angle_str = ' '.join(str(v) for v in node.body_angle)
@@ -11710,6 +12364,13 @@ class CustomNodeGraph(NodeGraph):
                         stl_path = os.path.join(self.project_dir, _xml_path(stl_elem.text))
                         if os.path.exists(stl_path):
                             base_link_sub_node.stl_file = stl_path
+                        else:
+                            self._pending_missing_files.append({
+                                'node': base_link_sub_node,
+                                'kind': 'stl',
+                                'basename': os.path.basename(stl_elem.text),
+                                'original_rel': stl_elem.text,
+                            })
                     
                     # Todo
                     if mass_elem is not None:
@@ -11810,7 +12471,14 @@ class CustomNodeGraph(NodeGraph):
                     joint_frictionloss_elem = node_elem.find("joint_frictionloss")
                     if joint_frictionloss_elem is not None:
                         base_link_sub_node.joint_frictionloss = float(joint_frictionloss_elem.text)
-                    
+
+                    backlash_preset_elem = node_elem.find("backlash_preset")
+                    if backlash_preset_elem is not None and backlash_preset_elem.text:
+                        try:
+                            base_link_sub_node.backlash_preset = int(backlash_preset_elem.text)
+                        except (ValueError, TypeError):
+                            base_link_sub_node.backlash_preset = 0
+
                     # Body angle body angle
                     body_angle_elem = node_elem.find("body_angle")
                     if body_angle_elem is not None:
@@ -12007,7 +12675,20 @@ class CustomNodeGraph(NodeGraph):
                 stl_path = os.path.join(self.project_dir, _xml_path(stl_elem.text))
                 if os.path.exists(stl_path):
                     node.stl_file = stl_path
-            
+                    print(f"[load stl] OK '{node_name}': {stl_path}")
+                else:
+                    self._pending_missing_files.append({
+                        'node': node,
+                        'kind': 'stl',
+                        'basename': os.path.basename(stl_elem.text),
+                        'original_rel': stl_elem.text,
+                    })
+                    print(f"[load stl] MISSING '{node_name}': tried '{stl_path}' (raw='{stl_elem.text}')")
+            elif stl_elem is None:
+                print(f"[load stl] no <stl_file> for '{node_name}'")
+            else:
+                print(f"[load stl] empty <stl_file> for '{node_name}'")
+
             # Todo
             mass_elem = node_elem.find("mass")
             if mass_elem is not None:
@@ -12025,6 +12706,20 @@ class CustomNodeGraph(NodeGraph):
             if rotation_axis_elem is not None:
                 node.rotation_axis = int(rotation_axis_elem.text)
 
+            # is_free_joint: 明示保存されていれば復元。旧プロジェクトで無ければ
+            # 直後のマイグレーション処理で決定 (rotation_axis=4 なら True 化)。
+            is_free_elem = node_elem.find("is_free_joint")
+            if is_free_elem is not None and is_free_elem.text is not None:
+                node.is_free_joint = (is_free_elem.text.strip().lower() == 'true')
+            elif not hasattr(node, 'is_free_joint'):
+                node.is_free_joint = False
+
+            # Legacy migration: 旧 rotation_axis=4 は「Free (ball)」を意味していた。
+            # 新体系では is_free_joint=True + rotation_axis=3 (Fixed) に振り替える。
+            if getattr(node, 'rotation_axis', None) == 4:
+                node.rotation_axis = 3
+                node.is_free_joint = True
+
             slide_axis_elem = node_elem.find("slide_axis")
             if slide_axis_elem is not None:
                 node.slide_axis = int(slide_axis_elem.text)
@@ -12040,7 +12735,14 @@ class CustomNodeGraph(NodeGraph):
                 xml_path = os.path.join(self.project_dir, _xml_path(xml_file_elem.text))
                 if os.path.exists(xml_path):
                     node.xml_file = xml_path
-            
+                else:
+                    self._pending_missing_files.append({
+                        'node': node,
+                        'kind': 'xml',
+                        'basename': os.path.basename(xml_file_elem.text),
+                        'original_rel': xml_file_elem.text,
+                    })
+
             # Inertial
             inertia_elem = node_elem.find("inertia")
             if inertia_elem is not None:
@@ -12114,7 +12816,14 @@ class CustomNodeGraph(NodeGraph):
             joint_frictionloss_elem = node_elem.find("joint_frictionloss")
             if joint_frictionloss_elem is not None:
                 node.joint_frictionloss = float(joint_frictionloss_elem.text)
-            
+
+            backlash_preset_elem = node_elem.find("backlash_preset")
+            if backlash_preset_elem is not None and backlash_preset_elem.text:
+                try:
+                    node.backlash_preset = int(backlash_preset_elem.text)
+                except (ValueError, TypeError):
+                    node.backlash_preset = 0
+
             # Body angle body angle
             body_angle_elem = node_elem.find("body_angle")
             if body_angle_elem is not None:
@@ -12371,7 +13080,13 @@ class CustomNodeGraph(NodeGraph):
             # Get TODO
             if not file_path:
                 default_filename = f"{self.robot_name}_pj_{datetime.datetime.now().strftime('%Y%m%d%H%M')}.xml"
-                default_dir = self.last_save_dir or self.meshes_dir or os.getcwd()
+                # Default to ./save (created lazily) unless the user has saved elsewhere this session.
+                save_dir = os.path.abspath("./save")
+                try:
+                    os.makedirs(save_dir, exist_ok=True)
+                except Exception as _e:
+                    print(f"Could not ensure ./save exists: {_e}")
+                default_dir = self.last_save_dir or self.meshes_dir or save_dir
                 file_path, _ = QtWidgets.QFileDialog.getSaveFileName(
                     None,
                     "Save Project",
@@ -12525,6 +13240,19 @@ class CustomNodeGraph(NodeGraph):
             node_grid_elem.set("size", str(self.node_grid_size))
             print(f"Saved node grid: enabled={self.node_grid_enabled}, size={self.node_grid_size}")
 
+            # Save backlash presets
+            backlash_root = ET.SubElement(root, "backlash_presets")
+            for i, preset in enumerate(getattr(self, 'backlash_presets', []) or [], start=1):
+                p_elem = ET.SubElement(backlash_root, "preset")
+                p_elem.set("index", str(i))
+                p_elem.set("name", str(preset.get("name", f"Preset{i}")))
+                deg_val = float(preset.get("backlash_deg", preset.get("backlash_mm", 0.0)))
+                p_elem.set("backlash_deg", str(deg_val))
+                p_elem.set("damping", str(float(preset.get("damping", 0.0))))
+                p_elem.set("frictionloss", str(float(preset.get("frictionloss", 0.0))))
+                p_elem.set("armature", str(float(preset.get("armature", 0.0))))
+            print(f"Saved backlash presets: {self.backlash_presets}")
+
             # Save file
             print("\nWriting to file...")
             tree = ET.ElementTree(root)
@@ -12592,15 +13320,204 @@ class CustomNodeGraph(NodeGraph):
                     print(f"Found meshes directory: {self.meshes_dir}")
                     return
 
+    def _build_basename_index(self, root_dir):
+        """Walk ``root_dir`` recursively and return {basename: [abs_path, ...]}.
+        Each list is sorted so the shortest (nearest-root) path comes first.
+        """
+        index = {}
+        try:
+            for r, _dirs, files in os.walk(root_dir):
+                for fname in files:
+                    index.setdefault(fname, []).append(os.path.join(r, fname))
+        except Exception as _e:
+            print(f"[missing-files] Walk failed for {root_dir}: {_e}")
+        for candidates in index.values():
+            candidates.sort(key=lambda p: (len(p), p))
+        return index
+
+    def _apply_missing_matches(self, matches, source_desc):
+        """Apply the (missing_entry, resolved_abs_path) matches to nodes and refresh 3D."""
+        for m, hit in matches:
+            node = m.get('node')
+            kind = m.get('kind')
+            if node is None or not hit:
+                continue
+            if kind == 'stl':
+                node.stl_file = hit
+            elif kind == 'xml':
+                node.xml_file = hit
+            print(f"[missing-files] Resolved via {source_desc}: [{kind}] {m.get('basename')} -> {hit}")
+        # Refresh STL viewer for newly-populated stl_file paths.
+        if hasattr(self, 'stl_viewer') and self.stl_viewer:
+            for m, _ in matches:
+                if m.get('kind') != 'stl':
+                    continue
+                node = m.get('node')
+                if node is None or not getattr(node, 'stl_file', None):
+                    continue
+                try:
+                    self.stl_viewer.load_stl_for_node(node, show_progress=False)
+                except Exception as _e:
+                    print(f"[missing-files] Warning: failed to reload STL for {node.name()}: {_e}")
+
+    def _resolve_missing_files_dialog(self):
+        """Auto-resolve missing STL/XML references under ./model_source, then fall back to manual browse.
+
+        Flow:
+          1. Auto-walk ``./model_source`` (CWD-relative) and try to locate each missing
+             basename. Present a confirmation dialog listing matches + unresolved.
+          2. If the user clicks OK, apply the matches (node paths become absolute; the
+             next Save Project rewrites them as relative to ``project_dir``).
+          3. For any files still missing, fall back to the classic browse-a-directory
+             dialog so the user can point somewhere else.
+        """
+        missing = list(self._pending_missing_files)
+        self._pending_missing_files = []
+        if not missing:
+            return
+
+        # -------- Stage 1: auto-search ./model_source --------
+        model_source_dir = os.path.abspath("./model_source")
+        auto_matches = []          # (missing_entry, absolute_hit)
+        auto_unresolved = []       # entries not found by auto-search
+        if os.path.isdir(model_source_dir):
+            index = self._build_basename_index(model_source_dir)
+            for m in missing:
+                basename = m.get('basename')
+                if not basename:
+                    auto_unresolved.append(m)
+                    continue
+                candidates = index.get(basename)
+                if candidates:
+                    auto_matches.append((m, candidates[0]))
+                else:
+                    auto_unresolved.append(m)
+        else:
+            auto_unresolved = list(missing)
+
+        # -------- Stage 2: confirmation dialog for auto-matches --------
+        applied_matches = []
+        if auto_matches:
+            lines = [
+                f"Auto-search under ./model_source found {len(auto_matches)} of {len(missing)} missing file(s).",
+                "",
+                "Matches to apply:",
+            ]
+            for m, hit in auto_matches[:12]:
+                try:
+                    rel = os.path.relpath(hit, os.path.abspath("."))
+                except Exception:
+                    rel = hit
+                lines.append(f"  [{m.get('kind','?')}] {m.get('basename','?')}  ->  {rel}")
+            if len(auto_matches) > 12:
+                lines.append(f"  ... (+{len(auto_matches) - 12} more)")
+            if auto_unresolved:
+                lines.append("")
+                lines.append(f"Still missing ({len(auto_unresolved)}):")
+                for m in auto_unresolved[:8]:
+                    lines.append(f"  [{m.get('kind','?')}] {m.get('basename','?')}  (was: {m.get('original_rel','?')})")
+                if len(auto_unresolved) > 8:
+                    lines.append(f"  ... (+{len(auto_unresolved) - 8} more)")
+                lines.append("")
+                lines.append("After OK you can pick another directory to resolve the rest.")
+            lines.append("")
+            lines.append("OK: rewrite matched paths (saved as relative on next Save Project).")
+            lines.append("Cancel: skip auto-apply.")
+            body = "\n".join(lines)
+
+            box = QtWidgets.QMessageBox(None)
+            box.setWindowTitle("Auto-resolve Missing Files")
+            box.setIcon(QtWidgets.QMessageBox.Question)
+            box.setText(body)
+            box.setStandardButtons(QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel)
+            box.setDefaultButton(QtWidgets.QMessageBox.Ok)
+            if box.exec() == QtWidgets.QMessageBox.Ok:
+                self._apply_missing_matches(auto_matches, "./model_source")
+                applied_matches = auto_matches
+                # Prefer ./model_source as the meshes_dir root so relative paths on
+                # the next save become sensible (project_dir/relative/to/model_source).
+                if any(m.get('kind') == 'stl' for m, _ in auto_matches):
+                    self.meshes_dir = model_source_dir
+            else:
+                # User declined auto-apply; treat everything as still missing.
+                auto_unresolved = list(missing)
+                applied_matches = []
+
+        # -------- Stage 3: manual browse for anything still missing --------
+        if auto_unresolved:
+            summary_lines = [f"{len(auto_unresolved)} file(s) still missing:"]
+            preview = auto_unresolved[:8]
+            for m in preview:
+                summary_lines.append(f"  [{m.get('kind','?')}] {m.get('basename','?')}  (was: {m.get('original_rel','?')})")
+            if len(auto_unresolved) > len(preview):
+                summary_lines.append(f"  ... (+{len(auto_unresolved) - len(preview)} more)")
+            summary_lines.append("")
+            summary_lines.append("Browse another directory to search recursively?")
+
+            reply = QtWidgets.QMessageBox.question(
+                None,
+                "Browse for Missing Files",
+                "\n".join(summary_lines),
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                QtWidgets.QMessageBox.Yes,
+            )
+            if reply == QtWidgets.QMessageBox.Yes:
+                start_dir = model_source_dir if os.path.isdir(model_source_dir) else (self.project_dir or os.path.abspath("."))
+                search_dir = QtWidgets.QFileDialog.getExistingDirectory(
+                    None,
+                    "Select directory to search for missing files",
+                    start_dir,
+                )
+                if search_dir:
+                    index = self._build_basename_index(search_dir)
+                    manual_matches = []
+                    manual_still = []
+                    for m in auto_unresolved:
+                        basename = m.get('basename')
+                        candidates = index.get(basename) if basename else None
+                        if candidates:
+                            manual_matches.append((m, candidates[0]))
+                        else:
+                            manual_still.append(m)
+                    if manual_matches:
+                        self._apply_missing_matches(manual_matches, search_dir)
+                        applied_matches.extend(manual_matches)
+                        if any(m.get('kind') == 'stl' for m, _ in manual_matches):
+                            # If ./model_source didn't cover STLs, take the manual dir.
+                            if not self.meshes_dir:
+                                self.meshes_dir = search_dir
+                    auto_unresolved = manual_still
+
+        # -------- Final report --------
+        total = len(missing)
+        resolved = len(applied_matches)
+        report = [f"Resolved {resolved} of {total} missing file(s)."]
+        if auto_unresolved:
+            report.append(f"{len(auto_unresolved)} still missing:")
+            for m in auto_unresolved[:8]:
+                report.append(f"  [{m.get('kind','?')}] {m.get('basename','?')}")
+            if len(auto_unresolved) > 8:
+                report.append(f"  ... (+{len(auto_unresolved) - 8} more)")
+            report.append("")
+            report.append("Re-load the project after placing the files to retry.")
+        QtWidgets.QMessageBox.information(None, "Missing Files Resolution", "\n".join(report))
+
     def load_project(self, file_path=None):
         """textload(textーtext)"""
         print("\n=== Starting Project Load ===")
+        # Fresh accumulator for this load's missing-file bookkeeping.
+        self._pending_missing_files = []
         try:
             if not file_path:
+                save_dir = os.path.abspath("./save")
+                try:
+                    os.makedirs(save_dir, exist_ok=True)
+                except Exception as _e:
+                    print(f"Could not ensure ./save exists: {_e}")
                 file_path, _ = QtWidgets.QFileDialog.getOpenFileName(
                     None,
                     "Load Project",
-                    self.last_save_dir or "",
+                    self.last_save_dir or save_dir,
                     "XML Files (*.xml)"
                 )
                 
@@ -12835,6 +13752,41 @@ class CustomNodeGraph(NodeGraph):
             else:
                 print("No MJCF defaults found in project file, using defaults")
 
+            # Load backlash presets
+            backlash_root = root.find("backlash_presets")
+            if backlash_root is not None:
+                try:
+                    loaded_presets = []
+                    for p_elem in backlash_root.findall("preset"):
+                        name = p_elem.get("name") or f"Preset{len(loaded_presets) + 1}"
+                        # Accept new backlash_deg or legacy backlash_mm (treated as deg).
+                        deg_attr = p_elem.get("backlash_deg")
+                        if deg_attr is None:
+                            deg_attr = p_elem.get("backlash_mm", "0")
+                        deg_val = float(deg_attr or 0.0)
+                        damping_val = float(p_elem.get("damping", "0") or 0.0)
+                        # frictionloss/armature: default to 0.0 for legacy XMLs (missing attribute).
+                        frictionloss_val = float(p_elem.get("frictionloss", "0") or 0.0)
+                        armature_val = float(p_elem.get("armature", "0") or 0.0)
+                        loaded_presets.append({
+                            "name": name,
+                            "backlash_deg": deg_val,
+                            "damping": damping_val,
+                            "frictionloss": frictionloss_val,
+                            "armature": armature_val,
+                        })
+                    # Ensure at least 1 preset (never leave the list empty).
+                    if not loaded_presets:
+                        loaded_presets = [dict(DEFAULT_BACKLASH_PRESETS[0])]
+                    # Cap at MAX_BACKLASH_PRESETS to guard against malformed XML.
+                    self.backlash_presets = loaded_presets[:MAX_BACKLASH_PRESETS]
+                    print(f"Restored backlash presets: {self.backlash_presets}")
+                except (ValueError, TypeError) as e:
+                    print(f"Error parsing backlash presets, using defaults: {e}")
+                    self.backlash_presets = [dict(p) for p in DEFAULT_BACKLASH_PRESETS]
+            else:
+                print("No backlash presets found in project file, using defaults")
+
             # Load node grid settings
             node_grid_elem = root.find("node_grid")
             if node_grid_elem is not None:
@@ -12991,6 +13943,13 @@ class CustomNodeGraph(NodeGraph):
 
             # Hide STL
             # Hide TODO
+
+            # If any mesh/xml references failed to resolve, let the user pick a
+            # replacement directory and re-resolve by basename (relative-path friendly).
+            pending = getattr(self, '_pending_missing_files', None)
+            print(f"[load done] _pending_missing_files count = {len(pending) if pending else 0}")
+            if pending:
+                self._resolve_missing_files_dialog()
 
             print(f"\nProject successfully loaded from: {file_path}")
             return True
@@ -15052,6 +16011,118 @@ class CustomNodeGraph(NodeGraph):
             print(f"Error disconnecting ports: {str(e)}")
             return False
 
+    def _get_port_origin(self, parent_node, child_node):
+        """Return (xyz, rpy) for the parent-side port connecting parent_node to child_node.
+        Falls back to zeros when the port index cannot be resolved."""
+        origin_xyz = [0, 0, 0]
+        origin_rpy = [0.0, 0.0, 0.0]
+        for port in parent_node.output_ports():
+            for connected_port in port.connected_ports():
+                if connected_port.node() == child_node:
+                    try:
+                        port_name = port.name()
+                        if '_' in port_name:
+                            parts = port_name.split('_')
+                            if len(parts) > 1 and parts[1].isdigit():
+                                port_idx = int(parts[1]) - 1
+                                if port_idx < len(parent_node.points):
+                                    origin_xyz = parent_node.points[port_idx]['xyz']
+                                    origin_rpy = parent_node.points[port_idx].get(
+                                        'angle',
+                                        parent_node.points[port_idx].get('rpy', [0.0, 0.0, 0.0]),
+                                    )
+                    except Exception as e:
+                        print(f"Warning: Error resolving port origin: {e}")
+                    return list(origin_xyz), list(origin_rpy)
+        return list(origin_xyz), list(origin_rpy)
+
+    def _write_urdf_joint_pair(self, file, parent_node, child_node):
+        """Write the joint(s) linking parent_node -> child_node in URDF.
+
+        When the child has a backlash preset active, inserts an intermediate
+        {child}_backlash link with an extra revolute joint (same axis, ±deg range,
+        preset damping) between the parent link and the child link.
+        Falls back to a single _write_joint call otherwise.
+        """
+        info = self._get_backlash_info(child_node)
+        if info is None:
+            self._write_joint(file, parent_node, child_node)
+            return
+        try:
+            origin_xyz, origin_rpy = self._get_port_origin(parent_node, child_node)
+            axis_id = info['axis_id']
+            axis_vec = [[1, 0, 0], [0, 1, 0], [0, 0, 1]][axis_id]
+            backlash_rad = info['backlash_rad']
+            damping = info['damping']
+
+            parent_link = self._export_link_name(parent_node.name())
+            child_link = self._export_link_name(child_node.name())
+            backlash_link = f"{child_node.name()}_backlash"
+            original_joint_name = self._export_urdf_joint_name(parent_node, child_node)
+            backlash_joint_name = f"{original_joint_name}_backlash"
+
+            frictionloss = float(info.get('frictionloss', 0.0))
+            # URDF has no `armature` on <joint>; only damping+friction go into <dynamics>.
+            # Callers that need armature should read it from the paired MJCF.
+            # 1. Backlash joint: parent_link -> backlash_link (carries original port origin)
+            file.write(f'  <joint name="{backlash_joint_name}" type="revolute">\n')
+            file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
+            file.write(f'    <axis xyz="{axis_vec[0]} {axis_vec[1]} {axis_vec[2]}"/>\n')
+            file.write(f'    <parent link="{parent_link}"/>\n')
+            file.write(f'    <child link="{backlash_link}"/>\n')
+            file.write(f'    <limit lower="{-backlash_rad}" upper="{backlash_rad}" effort="0" velocity="0"/>\n')
+            file.write(f'    <dynamics damping="{damping}" friction="{frictionloss}"/>\n')
+            file.write('  </joint>\n\n')
+
+            # 2. Backlash dummy link (small but numerically stable inertial)
+            body_mass_str = format_float_no_exp(BACKLASH_BODY_MASS)
+            body_inertia_str = format_float_no_exp(BACKLASH_BODY_DIAGINERTIA)
+            file.write(f'  <link name="{backlash_link}">\n')
+            file.write('    <inertial>\n')
+            file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+            file.write(f'      <mass value="{body_mass_str}"/>\n')
+            file.write(
+                f'      <inertia ixx="{body_inertia_str}" ixy="0" ixz="0" '
+                f'iyy="{body_inertia_str}" iyz="0" izz="{body_inertia_str}"/>\n'
+            )
+            file.write('    </inertial>\n')
+            file.write('  </link>\n\n')
+
+            # 3. Original joint: backlash_link -> child_link (origin at zero, same axis and limits)
+            rot_axis = axis_id
+            lower = getattr(child_node, 'joint_lower', -3.14159)
+            upper = getattr(child_node, 'joint_upper', 3.14159)
+            effort = getattr(child_node, 'joint_effort', 10.0)
+            velocity = getattr(child_node, 'joint_velocity', 3.0)
+            if hasattr(child_node, 'body_angle') and rot_axis in [0, 1, 2]:
+                body_offset = child_node.body_angle[rot_axis]
+                lower -= body_offset
+                upper -= body_offset
+
+            file.write(f'  <joint name="{original_joint_name}" type="revolute">\n')
+            file.write(f'    <origin xyz="0 0 0" rpy="0 0 0"/>\n')
+            file.write(f'    <axis xyz="{axis_vec[0]} {axis_vec[1]} {axis_vec[2]}"/>\n')
+            file.write(f'    <parent link="{backlash_link}"/>\n')
+            file.write(f'    <child link="{child_link}"/>\n')
+            file.write(f'    <limit lower="{lower}" upper="{upper}" effort="{effort}" velocity="{velocity}"/>\n')
+            ch_damping = getattr(child_node, 'joint_damping', 0.0)
+            ch_friction = getattr(child_node, 'joint_frictionloss', 0.0)
+            file.write(f'    <dynamics damping="{ch_damping}" friction="{ch_friction}"/>\n')
+            file.write('  </joint>\n')
+
+            kp = getattr(child_node, 'joint_stiffness', 0.0)
+            if kp > 0:
+                file.write(f'  <gazebo reference="{original_joint_name}">\n')
+                file.write(f'    <implicitSpringDamper>true</implicitSpringDamper>\n')
+                file.write(f'    <springStiffness>{format_float_no_exp(kp)}</springStiffness>\n')
+                file.write(f'    <springReference>0.0</springReference>\n')
+                file.write(f'  </gazebo>\n')
+        except Exception as e:
+            print(f"Error writing backlash joint pair: {e}")
+            traceback.print_exc()
+            # Safety net: emit the plain joint so the export doesn't lose the connection.
+            self._write_joint(file, parent_node, child_node)
+
     def _write_joint(self, file, parent_node, child_node):
         """jointtext"""
         try:
@@ -15090,12 +16161,10 @@ class CustomNodeGraph(NodeGraph):
                     file.write(f'    <parent link="{parent_link}"/>\n')
                     file.write(f'    <child link="{child_link}"/>\n')
                     file.write('  </joint>\n')
-                elif rot_axis == 4:  # Free → fixed (URDF has no ball joint, use fixed)
-                    file.write(f'  <joint name="{joint_name}" type="fixed">\n')
-                    file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
-                    file.write(f'    <parent link="{parent_link}"/>\n')
-                    file.write(f'    <child link="{child_link}"/>\n')
-                    file.write('  </joint>\n')
+                # 旧 rot_axis == 4 (Free/ball) は廃止。is_free_joint = True で
+                # 表現され、URDF export では下の分岐 (rot_axis 0/1/2 = revolute)
+                # または fixed に落ちる (Free + Fixed の場合)。URDF は closed-loop 拘束
+                # を持てないので equality 関連は Export URDF 時に警告済み。
                 elif rot_axis == 5:  # Slide → prismatic
                     # Default to X axis (use slide_axis if available)
                     slide_axis_id = getattr(child_node, 'slide_axis', 0)
@@ -15534,9 +16603,15 @@ class CustomNodeGraph(NodeGraph):
             message_box.setText("Please select the directory where you want to create the Unity project structure.")
             message_box.exec_()
 
+            model_output_dir = os.path.abspath("./model_output")
+            try:
+                os.makedirs(model_output_dir, exist_ok=True)
+            except Exception as _e:
+                print(f"Could not ensure ./model_output exists: {_e}")
             base_dir = QtWidgets.QFileDialog.getExistingDirectory(
                 self.widget,
-                "Select Base Directory for Unity Export"
+                "Select Base Directory for Unity Export",
+                model_output_dir,
             )
 
             if not base_dir:
@@ -15659,8 +16734,8 @@ class CustomNodeGraph(NodeGraph):
                         continue
                     # Massless decoration link output massless decoration
                     if not (hasattr(child_node, 'massless_decoration') and child_node.massless_decoration):
-                        # Output
-                        self._write_joint(file, node, child_node)
+                        # Output (may insert backlash joint+link when configured on child)
+                        self._write_urdf_joint_pair(file, node, child_node)
                         file.write('\n')
 
                         # Next link output path unity
@@ -15783,10 +16858,16 @@ class CustomNodeGraph(NodeGraph):
             if hasattr(self, 'graph'):
                 self.graph.default_base_link_height = base_link_height
 
-            # Select
+            # Select (default to ./model_output, created lazily)
+            model_output_dir = os.path.abspath("./model_output")
+            try:
+                os.makedirs(model_output_dir, exist_ok=True)
+            except Exception as _e:
+                print(f"Could not ensure ./model_output exists: {_e}")
             parent_dir = QtWidgets.QFileDialog.getExistingDirectory(
                 self.widget,
-                "Select Parent Directory for MJCF Export"
+                "Select Parent Directory for MJCF Export",
+                model_output_dir,
             )
 
             if not parent_dir:
@@ -16409,10 +17490,19 @@ class CustomNodeGraph(NodeGraph):
         self._camera_nodes = []
         self._camera_node_names = set()
 
-        with open(file_path, 'w') as f:
-            # Todo
+        # A-3: node → actually-written body name の逐次 populate 用マップ。
+        # _write_mjcf_body が dedup 後の unique_name を確定した時点で登録し、
+        # 後段 _write_mjcf_equality_constraints が canonical/dedup を跨いで正しい
+        # 名前を引けるようにする。robot ファイル 1 本を書き終えたら次回 export で
+        # また白紙から作り直せば良いので、常にここで空初期化する。
+        self._exported_body_name_map = {}
+
+        # open_mjcf_for_write / MJCF_XML_DECLARATION は Importer 側の共通ヘルパ。
+        # Windows-JP など platform default codec が cp932 の環境でも必ず UTF-8 で
+        # 書き出させるため、直接 open() せずこれを経由する。
+        with open_mjcf_for_write(file_path) as f:
             sanitized_model_name = self._sanitize_name(model_name)
-            # Todo
+            f.write(MJCF_XML_DECLARATION)
             f.write(f'<mujoco model="{sanitized_model_name}">\n')
 
             # Compiler
@@ -16565,30 +17655,37 @@ class CustomNodeGraph(NodeGraph):
 
             # actuator (position control)
             if created_joints:
-                f.write('  <actuator>\n')
-                for joint_info in created_joints:
-                    joint_name = joint_info['joint_name']
-                    actuator_name = joint_info['motor_name'].replace('_motor', '_actuator')
-                    
-                    # Kp stiffness, Kv damping
-                    kp = joint_info.get('stiffness', 100.0)
-                    kv = joint_info.get('damping', 1.0)
-                    effort = joint_info.get('effort', 10.0)
-                    kp_str = format_float_no_exp(kp)
-                    kv_str = format_float_no_exp(kv)
-                    forcerange = f"-{format_float_no_exp(effort)} {format_float_no_exp(effort)}"
+                # Free ヒンジ (is_free_joint=True) は閉ループの受動関節なので
+                # <position> actuator を出さない。前段駆動 joint が動けば
+                # <equality connect> 経由で追従するため、駆動側とは別に指令を
+                # 与えると constraint と競合してシミュレーションが不安定になる。
+                actuator_joints = [ji for ji in created_joints
+                                   if not ji.get('is_free_joint')]
+                if actuator_joints:
+                    f.write('  <actuator>\n')
+                    for joint_info in actuator_joints:
+                        joint_name = joint_info['joint_name']
+                        actuator_name = joint_info['motor_name'].replace('_motor', '_actuator')
 
-                    # Ctrlrange joint <compiler angle radian > radians output ctrlrange: compiler
-                    if joint_info.get('range_values'):
-                        lower, upper = joint_info['range_values']
-                        ctrlrange = f"{lower} {upper}"
-                    else:
-                        # ±π radians
-                        ctrlrange = "-3.14159 3.14159"
+                        # Kp stiffness, Kv damping
+                        kp = joint_info.get('stiffness', 100.0)
+                        kv = joint_info.get('damping', 1.0)
+                        effort = joint_info.get('effort', 10.0)
+                        kp_str = format_float_no_exp(kp)
+                        kv_str = format_float_no_exp(kv)
+                        forcerange = f"-{format_float_no_exp(effort)} {format_float_no_exp(effort)}"
 
-                    # Gear 1 1 1:1 (ctrlrange removed - using inheritrange from default)
-                    f.write(f'    <position name="{actuator_name}" joint="{joint_name}" gear="1" kp="{kp_str}" kv="{kv_str}" forcerange="{forcerange}" forcelimited="true"/>\n')
-                f.write('  </actuator>\n\n')
+                        # Ctrlrange joint <compiler angle radian > radians output ctrlrange: compiler
+                        if joint_info.get('range_values'):
+                            lower, upper = joint_info['range_values']
+                            ctrlrange = f"{lower} {upper}"
+                        else:
+                            # ±π radians
+                            ctrlrange = "-3.14159 3.14159"
+
+                        # Gear 1 1 1:1 (ctrlrange removed - using inheritrange from default)
+                        f.write(f'    <position name="{actuator_name}" joint="{joint_name}" gear="1" kp="{kp_str}" kv="{kv_str}" forcerange="{forcerange}" forcelimited="true"/>\n')
+                    f.write('  </actuator>\n\n')
 
             # sensor
             f.write('  <sensor>\n')
@@ -16603,6 +17700,118 @@ class CustomNodeGraph(NodeGraph):
 
             f.write('</mujoco>\n')
         print(f"Created robot file: {file_path}")
+
+        # C: round-trip 検証。書き出した robot ファイルを MJCFParser で再読み込みし、
+        # graph 上の CoincidentNode 接続と付き合わせて body 名・anchor・件数・
+        # XML declaration をチェックする。不一致があればダイアログで警告し、
+        # export 自体は成功扱いのまま続行。
+        try:
+            issues = self._verify_mjcf_roundtrip(file_path)
+            if issues:
+                self._show_mjcf_verification_dialog(file_path, issues)
+        except Exception as _ve:
+            print(f"[MJCF Verify] Skipped due to exception: {_ve}")
+
+    def _verify_mjcf_roundtrip(self, robot_file_path) -> list:
+        """C: 出力された MJCF を MJCFParser で読み直し、graph の CoincidentNode
+        接続と突き合わせる。以下 4 点を検査し、問題を str のリストで返す。
+          1. 先頭行に XML declaration + UTF-8 が明記されている
+          2. <connect> の総数がグラフ上の CoincidentNode 数と一致
+          3. 各 <connect> の body1/body2 が _exported_body_name_map と一致
+          4. 各 <connect> の anchor がグラフ側の point.xyz と 1e-6 tolerance で一致
+        いずれも自動修復はせず、警告表示に留める (ダイアログ側で "export 成功"扱い)。
+        """
+        issues: list[str] = []
+
+        # (1) XML declaration + UTF-8
+        try:
+            with open(robot_file_path, 'rb') as _bf:
+                first_line = _bf.readline().decode('utf-8', errors='replace').strip()
+            _fl_lower = first_line.lower()
+            if ('<?xml' not in _fl_lower or 'encoding' not in _fl_lower
+                    or 'utf-8' not in _fl_lower):
+                issues.append(
+                    "XML declaration missing / non-UTF-8 encoding: "
+                    f"first line was '{first_line}'")
+        except Exception as _e:
+            issues.append(f"Could not read first line for XML decl check: {_e}")
+
+        # (2) parse & compare
+        parsed_connects = []
+        try:
+            from urdf_kitchen_Importer import MJCFParser
+            _parser = MJCFParser(verbose=False)
+            _parsed = _parser.parse_mjcf(robot_file_path)
+            parsed_connects = list(_parsed.get('closed_loop_joints', []) or [])
+        except Exception as _e:
+            issues.append(f"Round-trip parse failed: {_e}")
+            return issues
+
+        # graph 上の期待 constraints (現在の graph 状態を snapshot)
+        expected = self._collect_coincident_constraints()
+
+        # (2) 件数
+        if len(parsed_connects) != len(expected):
+            issues.append(
+                f"<connect> count mismatch: MJCF has {len(parsed_connects)}, "
+                f"graph has {len(expected)} CoincidentNode(s)")
+
+        # (3)(4) 各 constraint を index で突合 (書き出し順は _collect と一致するはず)
+        _tol = 1e-6
+        n = min(len(parsed_connects), len(expected))
+        for i in range(n):
+            got = parsed_connects[i]
+            exp = expected[i]
+            exp_body1 = self._resolve_exported_body_name(
+                exp.get('body1_node'), exp.get('body1', ''))
+            exp_body2 = self._resolve_exported_body_name(
+                exp.get('body2_node'), exp.get('body2', ''))
+            got_body1 = str(got.get('parent', ''))
+            got_body2 = str(got.get('child', ''))
+            got_anchor = list(got.get('anchor', got.get('origin_xyz', [0.0, 0.0, 0.0])) or [0.0, 0.0, 0.0])
+            exp_anchor = list(exp.get('anchor1', [0.0, 0.0, 0.0]) or [0.0, 0.0, 0.0])
+            label = exp.get('name', f'[#{i}]')
+
+            if got_body1 != exp_body1:
+                issues.append(
+                    f"{label}: body1 exported='{got_body1}' expected='{exp_body1}'")
+            if got_body2 != exp_body2:
+                issues.append(
+                    f"{label}: body2 exported='{got_body2}' expected='{exp_body2}'")
+            for j in range(min(3, len(got_anchor), len(exp_anchor))):
+                if abs(float(got_anchor[j]) - float(exp_anchor[j])) > _tol:
+                    issues.append(
+                        f"{label}: anchor[{j}] exported={got_anchor[j]} "
+                        f"expected={exp_anchor[j]}")
+                    break
+
+        return issues
+
+    def _show_mjcf_verification_dialog(self, robot_file_path, issues: list) -> None:
+        """C: round-trip 検証で見つかった不一致をダイアログで警告表示。
+        export は成功扱いのままにするため OK ボタンだけ持つ QMessageBox。"""
+        print("[MJCF Verify] Detected issues in round-trip check:")
+        for _msg in issues:
+            print(f"  - {_msg}")
+        try:
+            details = "\n".join(f"• {m}" for m in issues[:40])
+            if len(issues) > 40:
+                details += f"\n… (+{len(issues) - 40} more)"
+            parent = getattr(self, "widget", None)
+            mb = QtWidgets.QMessageBox(parent)
+            mb.setIcon(QtWidgets.QMessageBox.Warning)
+            mb.setWindowTitle("MJCF Export — Verification Warning")
+            mb.setText(
+                "Round-trip verification detected inconsistencies in the exported MJCF.\n"
+                "The file was written successfully; please review the details below."
+            )
+            mb.setInformativeText(
+                f"File: {robot_file_path}\n\n{details}"
+            )
+            mb.setStandardButtons(QtWidgets.QMessageBox.Ok)
+            mb.exec()
+        except Exception as _de:
+            print(f"[MJCF Verify] Failed to show dialog: {_de}")
 
     def _calculate_model_z_height(self, base_node, node_to_mesh):
         """
@@ -16718,9 +17927,9 @@ class CustomNodeGraph(NodeGraph):
             base_link_height: base_linktextheight(m)。NonetextSettingstext
             fix_base_to_ground: Truetext、base_linktextworldtextequality weldtextadd
         """
-        with open(file_path, 'w') as f:
-            # Todo
+        with open_mjcf_for_write(file_path) as f:
             sanitized_robot_name = self._sanitize_name(robot_file_basename.replace('.xml', ''))
+            f.write(MJCF_XML_DECLARATION)
             f.write(f'<mujoco model="{sanitized_robot_name} scene">\n')
 
             # Set camera base_link_height
@@ -16771,8 +17980,8 @@ class CustomNodeGraph(NodeGraph):
         timeconst_val = self.default_timeconst
         gcondim = self.default_mjcf_geom_condim
         gfriction = self.default_mjcf_geom_friction
-        with open(file_path, 'w') as f:
-            f.write('<?xml version="1.0" ?>\n')
+        with open_mjcf_for_write(file_path) as f:
+            f.write(MJCF_XML_DECLARATION)
             f.write('<mujoco>\n')
             f.write('  <default>\n')
             f.write(f'    <joint damping="{jdamp:g}" armature="{armature_val:g}" />\n')
@@ -16784,8 +17993,8 @@ class CustomNodeGraph(NodeGraph):
 
     def _write_mjcf_body_file(self, file_path, base_node, mesh_names, node_to_mesh, created_joints, rename_to_base_link=False):
         """body.xmltext"""
-        with open(file_path, 'w') as f:
-            f.write('<?xml version="1.0" ?>\n')
+        with open_mjcf_for_write(file_path) as f:
+            f.write(MJCF_XML_DECLARATION)
             f.write('<mujoco>\n')
             f.write('  <worldbody>\n')
 
@@ -16799,12 +18008,16 @@ class CustomNodeGraph(NodeGraph):
 
     def _write_mjcf_actuators(self, file_path, created_joints):
         """actuators.xmltext"""
-        with open(file_path, 'w') as f:
-            f.write('<?xml version="1.0" ?>\n')
+        with open_mjcf_for_write(file_path) as f:
+            f.write(MJCF_XML_DECLARATION)
             f.write('<mujoco>\n')
             f.write('  <actuator>\n')
 
+            # Free ヒンジ (is_free_joint=True) は閉ループの受動関節として扱い、
+            # <position> actuator を出さない (_write_mjcf_robot_file 側と同じ方針)。
             for joint_info in created_joints:
+                if joint_info.get('is_free_joint'):
+                    continue
                 joint_name = joint_info['joint_name']
                 motor_name = joint_info['motor_name']
                 effort = joint_info.get('effort', 10.0)
@@ -16833,10 +18046,13 @@ class CustomNodeGraph(NodeGraph):
         Returns:
             list: List of constraint data. Each element is a dict with:
                 - name: Constraint name
-                - body1: First parent body name
-                - body2: Second parent body name
-                - anchor1: Anchor position in body1's local coordinates
-                - anchor2: Anchor position in body2's local coordinates
+                - body1 / body2: First / second parent body name (node.name() at collect time)
+                - body1_node / body2_node: 実 node 参照。equality writer 側で
+                    _exported_body_name_map を引くのに使う (canonical rename & body
+                    dedup を跨いで実際に worldbody に書かれた名前を解決するため)。
+                - anchor1 / anchor2: 各 parent の point.xyz (in local frame)
+                - coincident_node: 元の CoincidentNode 参照 (round-trip 検証で in_1/in_2
+                    接続を突合するのに使う)
         """
         constraints = []
 
@@ -16891,8 +18107,11 @@ class CustomNodeGraph(NodeGraph):
                     'name': f"coincident_{node.name()}",
                     'body1': parent_data[0]['name'],
                     'body2': parent_data[1]['name'],
+                    'body1_node': parent_data[0]['node'],
+                    'body2_node': parent_data[1]['node'],
                     'anchor1': parent_data[0]['anchor'],
-                    'anchor2': parent_data[1]['anchor']
+                    'anchor2': parent_data[1]['anchor'],
+                    'coincident_node': node,
                 }
                 constraints.append(constraint)
                 print(f"Found coincident constraint: {constraint['body1']} <-> {constraint['body2']}")
@@ -16900,6 +18119,17 @@ class CustomNodeGraph(NodeGraph):
                 print(f"Warning: CoincidentNode '{node.name()}' needs 2 connected parents, found {len(parent_data)}")
 
         return constraints
+
+    def _resolve_exported_body_name(self, node, fallback_name: str) -> str:
+        """A-3: node -> 実際に worldbody に書き出された body name。
+        `_exported_body_name_map` を最優先で引き、無ければ従来の
+        `_export_link_name` → `_sanitize_name` 経路にフォールバックする。
+        canonical remap で衝突した body が dedup で `_1` などに戻された場合、
+        equality writer もそれに追随できる。"""
+        m = getattr(self, "_exported_body_name_map", None)
+        if m and node is not None and node in m:
+            return m[node]
+        return self._sanitize_name(self._export_link_name(fallback_name))
 
     def _write_mjcf_equality_constraints(self, file, nodes_map):
         """textjointtextMJCFtextequalitytext
@@ -16918,15 +18148,28 @@ class CustomNodeGraph(NodeGraph):
 
         # Write Coincident constraints (connect)
         for constraint in coincident_constraints:
-            body1 = self._sanitize_name(self._export_link_name(constraint['body1']))
-            body2 = self._sanitize_name(self._export_link_name(constraint['body2']))
+            # A-3: 実際に worldbody に書き込まれた name (_exported_body_name_map で dedup 後
+            # の一意な名前) を最優先で使う。canonical で異なる node が同名に潰されても、
+            # _write_mjcf_body 側で counter suffix を付けているので、equality もそこと
+            # 一致させないと MuJoCo が body を見つけられなくなる。
+            # map に無ければ従来ロジック (_export_link_name → _sanitize_name) に fallback。
+            body1 = self._resolve_exported_body_name(
+                constraint.get('body1_node'), constraint['body1'])
+            body2 = self._resolve_exported_body_name(
+                constraint.get('body2_node'), constraint['body2'])
             anchor1 = constraint['anchor1']
-            anchor2 = constraint['anchor2']
             name = constraint['name']
 
-            # MuJoCo connect: anchor is in body1's local frame
+            # MuJoCo connect: anchor is in body1's local frame.
+            # solref/solimp で「鉄骨ヒンジ」相当の剛性を付与し、シミュレーション中に
+            # 4 節リンクの節が外れるのを防ぐ。
             anchor_str = f"{anchor1[0]} {anchor1[1]} {anchor1[2]}"
-            file.write(f'    <connect name="{name}" body1="{body1}" body2="{body2}" anchor="{anchor_str}"/>\n')
+            file.write(
+                f'    <connect name="{name}" body1="{body1}" body2="{body2}" '
+                f'anchor="{anchor_str}" '
+                f'solref="{DEFAULT_MJCF_CONNECT_SOLREF}" '
+                f'solimp="{DEFAULT_MJCF_CONNECT_SOLIMP}"/>\n'
+            )
             print(f"  Added coincident constraint: {name} ({body1} <-> {body2})")
 
         for joint_data in self.closed_loop_joints:
@@ -16941,10 +18184,16 @@ class CustomNodeGraph(NodeGraph):
             child_sanitized = self._sanitize_name(self._export_link_name(child_link))
 
             if original_type == 'ball':
-                # Connect ball joint <connect> output
-                # Anchor coords anchor:
+                # Connect ball joint <connect> output.
+                # ClosedLoopJointNode 経由の ball 閉ループにも同じ solref/solimp を
+                # 適用して「鉄骨」相当の剛性に統一。
                 anchor_str = f"{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}"
-                file.write(f'    <connect body1="{parent_sanitized}" body2="{child_sanitized}" anchor="{anchor_str}"/>\n')
+                file.write(
+                    f'    <connect body1="{parent_sanitized}" body2="{child_sanitized}" '
+                    f'anchor="{anchor_str}" '
+                    f'solref="{DEFAULT_MJCF_CONNECT_SOLREF}" '
+                    f'solimp="{DEFAULT_MJCF_CONNECT_SOLIMP}"/>\n'
+                )
                 print(f"  Added ball joint constraint: {joint_name} ({parent_link} <-> {child_link})")
 
             elif original_type == 'gearbox':
@@ -16973,8 +18222,8 @@ class CustomNodeGraph(NodeGraph):
 
     def _write_mjcf_sensors(self, file_path):
         """sensors.xmltext"""
-        with open(file_path, 'w') as f:
-            f.write('<?xml version="1.0" ?>\n')
+        with open_mjcf_for_write(file_path) as f:
+            f.write(MJCF_XML_DECLARATION)
             f.write('<mujoco>\n')
             f.write('  <sensor>\n')
             f.write('    <!-- Add sensors here if needed -->\n')
@@ -16984,8 +18233,8 @@ class CustomNodeGraph(NodeGraph):
 
     def _write_mjcf_materials(self, file_path, node_to_mesh, mesh_names):
         """assets/materials.xmltext(meshtext)"""
-        with open(file_path, 'w') as f:
-            f.write('<?xml version="1.0" ?>\n')
+        with open_mjcf_for_write(file_path) as f:
+            f.write(MJCF_XML_DECLARATION)
             f.write('<mujoco>\n')
             f.write('  <asset>\n')
 
@@ -17649,7 +18898,10 @@ class CustomNodeGraph(NodeGraph):
                 unique_name = f"{sanitized_name}_{counter}"
                 counter += 1
             used_body_names.add(unique_name)
-            
+            # A-3: node → 実際に書き出された body name を記録 (root)
+            if hasattr(self, "_exported_body_name_map"):
+                self._exported_body_name_map[node] = unique_name
+
             if unique_name != sanitized_name:
                 print(f"  ⚠ Body name '{sanitized_name}' already exists, renamed to '{unique_name}'")
 
@@ -17804,7 +19056,11 @@ class CustomNodeGraph(NodeGraph):
 
                     port_index = list(node.output_ports()).index(port)
                     child_joint_info = self._get_joint_info(node, child_node, port_index, created_joints)
-                    self._write_mjcf_body(file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent + 2, child_joint_info, fix_base_to_ground, used_body_names, used_joint_names, is_root=False, rename_to_base_link=False)
+                    self._write_mjcf_child_with_backlash(
+                        file, node, child_node, child_joint_info,
+                        visited_nodes, mesh_names, node_to_mesh, created_joints,
+                        indent + 2, fix_base_to_ground, used_body_names, used_joint_names,
+                    )
 
             # Add moving body freejoint inertial
             if not has_inertial:
@@ -17818,7 +19074,7 @@ class CustomNodeGraph(NodeGraph):
 
         # Name
         sanitized_name = self._sanitize_name(self._export_link_name(node.name()))
-        
+
         # Add body
         unique_name = sanitized_name
         counter = 1
@@ -17826,6 +19082,9 @@ class CustomNodeGraph(NodeGraph):
             unique_name = f"{sanitized_name}_{counter}"
             counter += 1
         used_body_names.add(unique_name)
+        # A-3: node → 実際に書き出された body name を記録 (child)
+        if hasattr(self, "_exported_body_name_map"):
+            self._exported_body_name_map[node] = unique_name
         
         if unique_name != sanitized_name:
             print(f"  ⚠ Body name '{sanitized_name}' already exists, renamed to '{unique_name}'")
@@ -18157,8 +19416,12 @@ class CustomNodeGraph(NodeGraph):
                 # Get port_index enumerate
                 child_joint_info = self._get_joint_info(node, child_node, port_index, created_joints)
 
-                # Output
-                self._write_mjcf_body(file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent + 2, child_joint_info, fix_base_to_ground, used_body_names, used_joint_names, is_root=False, rename_to_base_link=False)
+                # Output (may wrap child body in a backlash body when configured)
+                self._write_mjcf_child_with_backlash(
+                    file, node, child_node, child_joint_info,
+                    visited_nodes, mesh_names, node_to_mesh, created_joints,
+                    indent + 2, fix_base_to_ground, used_body_names, used_joint_names,
+                )
 
         # Add moving body joint inertial
         if is_moving_body and not has_inertial:
@@ -18168,6 +19431,106 @@ class CustomNodeGraph(NodeGraph):
 
         # Body
         file.write(f'{indent_str}</body>\n')
+
+    def _write_mjcf_child_with_backlash(self, file, parent_node, child_node, child_joint_info,
+                                         visited_nodes, mesh_names, node_to_mesh, created_joints,
+                                         indent, fix_base_to_ground, used_body_names, used_joint_names):
+        """Emit the child MJCF body, wrapping it in a backlash body when configured.
+
+        When the child has a Backlash preset (>0) and is an X/Y/Z hinge joint, this
+        wraps the child body in an intermediate {child}_backlash body with a hinge
+        joint (same axis, ±deg preset -> rad, preset damping). Otherwise it just
+        forwards to _write_mjcf_body unchanged.
+        """
+        info = self._get_backlash_info(child_node)
+        if info is None or child_joint_info is None or child_joint_info.get('type') != 'hinge':
+            self._write_mjcf_body(
+                file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints,
+                indent, child_joint_info, fix_base_to_ground, used_body_names,
+                used_joint_names, is_root=False, rename_to_base_link=False,
+            )
+            return
+
+        try:
+            indent_str = ' ' * indent
+            axis_id = info['axis_id']
+            axis_vec = [[1, 0, 0], [0, 1, 0], [0, 0, 1]][axis_id]
+            backlash_rad = info['backlash_rad']
+            damping = info['damping']
+
+            sanitized_child = self._sanitize_name(self._export_link_name(child_node.name()))
+            backlash_body_name = f"{sanitized_child}_backlash"
+            unique_backlash_body_name = backlash_body_name
+            counter = 1
+            while unique_backlash_body_name in used_body_names:
+                unique_backlash_body_name = f"{backlash_body_name}_{counter}"
+                counter += 1
+            used_body_names.add(unique_backlash_body_name)
+
+            pos_str = child_joint_info.get('pos', '0 0 0')
+            rpy_val = child_joint_info.get('rpy', [0.0, 0.0, 0.0])
+            quat_attr = ""
+            q_base = self._rpy_to_quat(rpy_val)
+            if q_base is not None:
+                identity = np.array([1.0, 0.0, 0.0, 0.0])
+                if np.any(np.abs(q_base - identity) > 1e-9):
+                    quat_str = (
+                        f"{format_float_no_exp(q_base[0])} {format_float_no_exp(q_base[1])} "
+                        f"{format_float_no_exp(q_base[2])} {format_float_no_exp(q_base[3])}"
+                    )
+                    quat_attr = f' quat="{quat_str}"'
+
+            file.write(f'{indent_str}<body name="{unique_backlash_body_name}" pos="{pos_str}"{quat_attr}>\n')
+            body_mass_str = format_float_no_exp(BACKLASH_BODY_MASS)
+            body_diag_str = format_float_no_exp(BACKLASH_BODY_DIAGINERTIA)
+            file.write(
+                f'{indent_str}  <inertial pos="0 0 0" mass="{body_mass_str}" '
+                f'diaginertia="{body_diag_str} {body_diag_str} {body_diag_str}"/>\n'
+            )
+
+            backlash_joint_name = f"{sanitized_child}_backlash_joint"
+            unique_backlash_joint_name = backlash_joint_name
+            counter = 1
+            while unique_backlash_joint_name in used_joint_names:
+                unique_backlash_joint_name = f"{backlash_joint_name}_{counter}"
+                counter += 1
+            used_joint_names.add(unique_backlash_joint_name)
+
+            frictionloss_val = float(info.get('frictionloss', 0.0))
+            armature_val = float(info.get('armature', 0.0))
+            joint_extra = ""
+            if frictionloss_val > 0.0:
+                joint_extra += f' frictionloss="{format_float_no_exp(frictionloss_val)}"'
+            if armature_val > 0.0:
+                joint_extra += f' armature="{format_float_no_exp(armature_val)}"'
+            file.write(
+                f'{indent_str}  <joint name="{unique_backlash_joint_name}" type="hinge" '
+                f'pos="0 0 0" axis="{axis_vec[0]} {axis_vec[1]} {axis_vec[2]}" '
+                f'range="{format_float_no_exp(-backlash_rad)} {format_float_no_exp(backlash_rad)}" '
+                f'limited="true" damping="{format_float_no_exp(damping)}"{joint_extra}/>\n'
+            )
+
+            # Original body is emitted inside the backlash body, at zero offset/orientation.
+            inner_joint_info = dict(child_joint_info)
+            inner_joint_info['pos'] = '0 0 0'
+            inner_joint_info['rpy'] = [0.0, 0.0, 0.0]
+
+            self._write_mjcf_body(
+                file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints,
+                indent + 2, inner_joint_info, fix_base_to_ground,
+                used_body_names, used_joint_names, is_root=False, rename_to_base_link=False,
+            )
+
+            file.write(f'{indent_str}</body>\n')
+        except Exception as e:
+            print(f"Error wrapping child body in backlash: {e}")
+            traceback.print_exc()
+            # Fallback to plain emission so the export doesn't lose the body.
+            self._write_mjcf_body(
+                file, child_node, visited_nodes, mesh_names, node_to_mesh, created_joints,
+                indent, child_joint_info, fix_base_to_ground, used_body_names,
+                used_joint_names, is_root=False, rename_to_base_link=False,
+            )
 
     def _get_joint_info(self, parent_node, child_node, port_index, created_joints):
         """jointtextgettext"""
@@ -18188,6 +19551,7 @@ class CustomNodeGraph(NodeGraph):
 
         # Get TODO
         rot_axis = getattr(child_node, 'rotation_axis', 0)
+        is_free_joint = bool(getattr(child_node, 'is_free_joint', False))
         if rot_axis == 0:
             joint_axis = [1, 0, 0]
         elif rot_axis == 1:
@@ -18199,11 +19563,22 @@ class CustomNodeGraph(NodeGraph):
             joint_axis = [1, 0, 0] if slide_axis_id == 0 else ([0, 1, 0] if slide_axis_id == 1 else [0, 0, 1])
 
         # Todo
+        # is_free_joint=True の分岐:
+        #   + rotation_axis 0/1/2 (X/Y/Z): この child は「軸ヒンジ閉ループの endpoint」
+        #     になる。ツリー側では通常のヒンジ (range 付) を出し、閉ループは
+        #     CoincidentNode 側の <equality connect> で 1 点固定して閉じる。
+        #   + rotation_axis 3/5 (Fixed/Slide): ボール閉ループ。ツリー側に
+        #     <joint type="ball"> を 1 本入れ、body に 3 DOF 自由回転を与える。
+        #     <equality connect> が 1 点位置を固定し、ball joint が 3 DOF 回転
+        #     を吸収して閉ループを成立させる。以前は type="fixed" (=joint 無し)
+        #     にしていたが、それでは body の DOF が 0 で拘束が働かず、閉ループが
+        #     実質機能しない不具合になっていた。
         joint_type = "hinge"
-        if rot_axis == 3:  # Fixed
-            joint_type = "fixed"
-        elif rot_axis == 4:  # Free → ball (MuJoCo's freejoint is only for root body)
+        if is_free_joint and rot_axis in (3, 5):
+            # Free ball closure: 3 DOF spherical rotation (positional 拘束は <connect>)
             joint_type = "ball"
+        elif rot_axis == 3:  # Fixed
+            joint_type = "fixed"
         elif rot_axis == 5:  # Slide
             joint_type = "slide"
 
@@ -18230,16 +19605,31 @@ class CustomNodeGraph(NodeGraph):
             axis_suffix = "_yaw"     # Z axis
         elif rot_axis == 3:
             axis_suffix = "_fixed"   # Fixed (though this case returns None above)
-        elif rot_axis == 4:
-            axis_suffix = "_ball"    # Ball (3DOF spherical)
         elif rot_axis == 5:
             axis_suffix = "_slide"   # Slide (prismatic)
+        # is_free_joint 補足:
+        #   Free + X/Y/Z: 上の 0/1/2 分岐で roll/pitch/yaw suffix (通常ヒンジと同じ)。
+        #   Free + Fixed/Slide (ball closure): 上流で joint_type='ball' に変わって
+        #   ここに到達する。suffix は元の rot_axis に従い _fixed / _slide のままだが
+        #   実出力は <joint type="ball"> なので、joint 名を意味的に揃えるため
+        #   ここで _ball に上書きしておく。
+        if joint_type == "ball":
+            axis_suffix = "_ball"
         joint_name = f"{child_sanitized_name}{axis_suffix}"
         joint_name = self._export_mjcf_joint_name(parent_node, child_node, joint_name)
         motor_name = f"{joint_name}_motor"
 
-        # Ball joint has no range limit (uses quaternion representation)
+        # Ball joint has no range limit (uses quaternion representation).
+        # Free + Fixed/Slide 経由の ball closure は、ノード側で damping/armature/
+        # frictionloss が明示されていないことが多いのでソフトグリス下限値を
+        # 保証する (max 合成)。これがないと球関節が重力で暴れて閉ループが破綻する。
         if joint_type == "ball":
+            _damp = max(float(getattr(child_node, 'joint_damping', 0.0) or 0.0),
+                        FREE_JOINT_GREASE_DAMPING)
+            _arm = max(float(getattr(child_node, 'joint_armature', 0.0) or 0.0),
+                       FREE_JOINT_GREASE_ARMATURE)
+            _fl = max(float(getattr(child_node, 'joint_frictionloss', 0.0) or 0.0),
+                      FREE_JOINT_GREASE_FRICTIONLOSS)
             return {
                 'name': joint_name,
                 'type': joint_type,
@@ -18249,9 +19639,9 @@ class CustomNodeGraph(NodeGraph):
                 'range': "",
                 'limited': "",
                 'margin': "",
-                'armature': "",
-                'frictionloss': "",
-                'damping': "",
+                'armature': f' armature="{format_float_no_exp(_arm)}"',
+                'frictionloss': f' frictionloss="{format_float_no_exp(_fl)}"',
+                'damping': f' damping="{format_float_no_exp(_damp)}"',
                 'stiffness': "",
                 'ref': "",
                 'motor_name': motor_name,
@@ -18308,20 +19698,33 @@ class CustomNodeGraph(NodeGraph):
         if hasattr(child_node, 'joint_margin'):
             margin_str = f' margin="{format_float_no_exp(child_node.joint_margin)}"'
 
+        # is_free_joint (hinge closure) の受動関節にはソフトグリス下限を保証する。
+        # 通常の hinge (is_free_joint=False) はノード値そのまま。
+        _armature_val = float(getattr(child_node, 'joint_armature', 0.0) or 0.0) \
+            if hasattr(child_node, 'joint_armature') else None
+        _frictionloss_val = float(getattr(child_node, 'joint_frictionloss', 0.0) or 0.0) \
+            if hasattr(child_node, 'joint_frictionloss') else None
+        _damping_val = float(getattr(child_node, 'joint_damping', 0.0) or 0.0) \
+            if hasattr(child_node, 'joint_damping') else None
+        if is_free_joint:
+            _armature_val = max(_armature_val or 0.0, FREE_JOINT_GREASE_ARMATURE)
+            _frictionloss_val = max(_frictionloss_val or 0.0, FREE_JOINT_GREASE_FRICTIONLOSS)
+            _damping_val = max(_damping_val or 0.0, FREE_JOINT_GREASE_DAMPING)
+
         # Armature armature value armature:
         armature_str = ""
-        if hasattr(child_node, 'joint_armature'):
-            armature_str = f' armature="{format_float_no_exp(child_node.joint_armature)}"'
+        if _armature_val is not None:
+            armature_str = f' armature="{format_float_no_exp(_armature_val)}"'
 
         # Frictionloss frictionloss value frictionloss:
         frictionloss_str = ""
-        if hasattr(child_node, 'joint_frictionloss'):
-            frictionloss_str = f' frictionloss="{format_float_no_exp(child_node.joint_frictionloss)}"'
+        if _frictionloss_val is not None:
+            frictionloss_str = f' frictionloss="{format_float_no_exp(_frictionloss_val)}"'
 
         # Damping (passive joint damping) → <joint damping="...">
         damping_str = ""
-        if hasattr(child_node, 'joint_damping'):
-            damping_str = f' damping="{format_float_no_exp(child_node.joint_damping)}"'
+        if _damping_val is not None:
+            damping_str = f' damping="{format_float_no_exp(_damping_val)}"'
 
         # Stiffness / Kp -> output as actuator's kp, not in joint
         stiffness_str = ""
@@ -18365,7 +19768,12 @@ class CustomNodeGraph(NodeGraph):
             'stiffness': joint_stiffness,
             'damping': joint_damping,
             'range': range_str,
-            'range_values': range_values
+            'range_values': range_values,
+            # is_free_joint=True の hinge は「閉ループの受動関節」なので actuator を
+            # 出力しない (下の actuator writer で参照)。Ball 閉ループの場合は
+            # 上流で return されるためここには到達しない (MuJoCo の <position>
+            # actuator は ball には非対応)。
+            'is_free_joint': is_free_joint,
         })
 
         return {
