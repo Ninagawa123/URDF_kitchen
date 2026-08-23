@@ -19563,23 +19563,25 @@ class CustomNodeGraph(NodeGraph):
             joint_axis = [1, 0, 0] if slide_axis_id == 0 else ([0, 1, 0] if slide_axis_id == 1 else [0, 0, 1])
 
         # Todo
-        # is_free_joint=True の分岐:
-        #   + rotation_axis 0/1/2 (X/Y/Z): この child は「軸ヒンジ閉ループの endpoint」
-        #     になる。ツリー側では通常のヒンジ (range 付) を出し、閉ループは
-        #     CoincidentNode 側の <equality connect> で 1 点固定して閉じる。
-        #   + rotation_axis 3/5 (Fixed/Slide): ボール閉ループ。ツリー側に
-        #     <joint type="ball"> を 1 本入れ、body に 3 DOF 自由回転を与える。
-        #     <equality connect> が 1 点位置を固定し、ball joint が 3 DOF 回転
-        #     を吸収して閉ループを成立させる。以前は type="fixed" (=joint 無し)
-        #     にしていたが、それでは body の DOF が 0 で拘束が働かず、閉ループが
-        #     実質機能しない不具合になっていた。
+        # is_free_joint=True の分岐 (閉ループ端点):
+        #   + rotation_axis 0/1/2 (X/Y/Z): 軸ヒンジ閉ループ。ツリー側は
+        #     <joint type="hinge" range="min max"> を出し、CoincidentNode の
+        #     <equality connect> 1 点で位置固定。
+        #   + rotation_axis 3 (Fixed): ボール閉ループ。ツリー側は
+        #     <joint type="ball"> で 3 DOF 自由回転を与え、<equality connect> の
+        #     1 点で位置拘束 → spherical joint 相当。
+        #   + rotation_axis 5 (Slide): スライダ閉ループ。ツリー側は
+        #     <joint type="slide" axis="..." range="lower upper"> を出し、
+        #     <equality connect> の 1 点で位置拘束。ノードの joint_stiffness が
+        #     ゼロでなければ <joint stiffness="..."> でバネ化して揺動軸になる
+        #     (パッシブなサスペンション的な挙動)。
         joint_type = "hinge"
-        if is_free_joint and rot_axis in (3, 5):
-            # Free ball closure: 3 DOF spherical rotation (positional 拘束は <connect>)
+        if is_free_joint and rot_axis == 3:
+            # Free + Fixed = ball closure (3 DOF spherical rotation)
             joint_type = "ball"
         elif rot_axis == 3:  # Fixed
             joint_type = "fixed"
-        elif rot_axis == 5:  # Slide
+        elif rot_axis == 5:  # Slide (Free or not)
             joint_type = "slide"
 
         # Fixed axis: no <joint> element is emitted, but the body still needs its
@@ -19726,8 +19728,15 @@ class CustomNodeGraph(NodeGraph):
         if _damping_val is not None:
             damping_str = f' damping="{format_float_no_exp(_damping_val)}"'
 
-        # Stiffness / Kp -> output as actuator's kp, not in joint
+        # Stiffness / Kp -> 通常は actuator の kp として出す (joint 属性には出さない)。
+        # ただし is_free_joint=True (Free 系の受動関節) は actuator が suppress
+        # されるので、代わりに <joint stiffness="..."> をパッシブスプリングとして
+        # 出す。ノード値が 0 なら省略 (バネなし = 自由スライダー/ヒンジ/ボール)。
         stiffness_str = ""
+        if is_free_joint:
+            _stiff_val = float(getattr(child_node, 'joint_stiffness', 0.0) or 0.0)
+            if _stiff_val > 0.0:
+                stiffness_str = f' stiffness="{format_float_no_exp(_stiff_val)}"'
         
         # body_angle is baked into the body's quat (not output as joint ref).
         # MuJoCo: actual_rotation = qpos - ref, so using ref here would invert
