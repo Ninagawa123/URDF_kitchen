@@ -35,6 +35,7 @@ from PySide6.QtNetwork import QLocalSocket
 import os
 import xml.etree.ElementTree as ET
 import base64
+import copy
 import shutil
 import datetime
 import tempfile
@@ -118,6 +119,11 @@ DEFAULT_MJCF_MOTOR_CTRLRANGE = 23.7  # Motor control range (+/-) for MJCF <defau
 DEFAULT_MJCF_OPTION_IMPRATIO = 100  # Impedance ratio for MJCF <option>
 DEFAULT_MJCF_OPTION_TIMESTEP = 0.002  # Simulation timestep for MJCF <option>
 DEFAULT_MJCF_OPTION_ITERATIONS = 30  # Solver iterations for MJCF <option>
+# MJCF numerical integrator. "implicitfast" tolerates high joint stiffness
+# (kp≥100) without oscillation, so it's the safe default for small servos
+# on tiny link inertias — the Euler default silently develops jitter there.
+DEFAULT_MJCF_OPTION_INTEGRATOR = "implicitfast"
+MJCF_INTEGRATOR_CHOICES = ("Euler", "implicit", "implicitfast", "RK4")
 # <equality connect> の拘束剛性 (「鉄骨ヒンジ」= MuJoCo デフォルトの 4〜5 倍相当)。
 #   solref = "時定数[s] 減衰比"   デフォルト "0.02 1" (20 ms 臨界減衰)
 #   solimp = "d0 d_width width [midpoint power]"   デフォルト "0.9 0.95 0.001 0.5 2"
@@ -5808,6 +5814,31 @@ class SettingsDialog(QtWidgets.QDialog):
         self.mjcf_iterations_input.setText(str(self.graph.default_mjcf_option_iterations))
         sim_row_layout.addWidget(self.mjcf_iterations_input)
 
+        # Integrator: implicitfast is safer for stiff systems (high kp on
+        # small link inertia) than the MuJoCo default Euler, which can
+        # develop numerical oscillation ("microtremor").
+        sim_row_layout.addWidget(QtWidgets.QLabel("  Integrator:"))
+        self.mjcf_integrator_combo = QtWidgets.QComboBox()
+        self.mjcf_integrator_combo.setFixedWidth(120)
+        for _name in MJCF_INTEGRATOR_CHOICES:
+            self.mjcf_integrator_combo.addItem(_name)
+        _current_integrator = getattr(
+            self.graph, "default_mjcf_option_integrator",
+            DEFAULT_MJCF_OPTION_INTEGRATOR,
+        )
+        _idx = self.mjcf_integrator_combo.findText(_current_integrator)
+        if _idx < 0:
+            _idx = self.mjcf_integrator_combo.findText(DEFAULT_MJCF_OPTION_INTEGRATOR)
+        if _idx >= 0:
+            self.mjcf_integrator_combo.setCurrentIndex(_idx)
+        self.mjcf_integrator_combo.setToolTip(
+            "MJCF <option integrator=...>. implicitfast = recommended for "
+            "stiff position servos (kp≥100). Euler = MuJoCo default (may "
+            "jitter). implicit = full implicit. RK4 = high accuracy, needs "
+            "smaller timestep."
+        )
+        sim_row_layout.addWidget(self.mjcf_integrator_combo)
+
         sim_row_layout.addStretch()
         mjcf_layout.addWidget(sim_row_widget, row, 0, 1, 3)
         row += 1
@@ -6386,6 +6417,12 @@ class SettingsDialog(QtWidgets.QDialog):
             self.graph.default_mjcf_option_timestep = mjcf_timestep
             mjcf_iterations = int(normalize_number_input(self.mjcf_iterations_input.text()))
             self.graph.default_mjcf_option_iterations = mjcf_iterations
+            # Integrator (dropdown). Guard against out-of-list free text.
+            _sel = self.mjcf_integrator_combo.currentText().strip()
+            if _sel in MJCF_INTEGRATOR_CHOICES:
+                self.graph.default_mjcf_option_integrator = _sel
+            else:
+                self.graph.default_mjcf_option_integrator = DEFAULT_MJCF_OPTION_INTEGRATOR
             mjcf_mesh_simplify = int(normalize_number_input(self.mjcf_mesh_simplify_input.text()))
             self.graph.default_mjcf_mesh_simplify_threshold = mjcf_mesh_simplify
             mjcf_mesh_max_faces = int(normalize_number_input(self.mjcf_mesh_max_faces_input.text()))
@@ -7058,6 +7095,31 @@ class STLViewerWidget(QtWidgets.QWidget):
             # Disable Inherit to Subnodes if transform Inherit Subnodes
             self._store_children_transforms(node)
 
+    # ------------------------------------------------------------------
+    # Helpers so pure-axis (mesh-less / "empty") nodes can participate in
+    # rotation preview & Inherit to Subnodes propagation. When a node has
+    # no STL loaded, self.stl_actors has no entry and self.transforms had
+    # no entry — the rotation code used to gate on both and silently do
+    # nothing. These helpers lazily create the transform entry and let
+    # actor updates become no-ops for empty nodes.
+    # ------------------------------------------------------------------
+    def _ensure_transform_entry(self, node):
+        """Return self.transforms[node], creating an identity vtkTransform
+        if the node has no mesh actor. Enables pure-axis (empty) nodes to
+        act as joint frames whose downstream meshes still rotate."""
+        tr = self.transforms.get(node)
+        if tr is None:
+            tr = vtk.vtkTransform()
+            tr.Identity()
+            self.transforms[node] = tr
+        return tr
+
+    def _set_actor_transform_if_present(self, node, transform):
+        """Apply transform to node's actor if it exists. No-op for empty nodes."""
+        actor = self.stl_actors.get(node)
+        if actor is not None:
+            actor.SetUserTransform(transform)
+
     def _store_children_transforms(self, parent_node):
         """textnodetextsave"""
         for output_port in parent_node.output_ports():
@@ -7073,20 +7135,28 @@ class STLViewerWidget(QtWidgets.QWidget):
                     self._store_children_transforms(child_node)
 
     def start_rotation_test(self, node):
-        """textstart(PartsEditortextーtext)"""
-        if node in self.stl_actors:
-            # Save current transform PartsEditor PartsEditor
-            self.store_current_transform(node)
-            
-            # Todo
-            self.rotation_test_active = True
-            self.rotating_node = node
-            # Angle offset 0 angle zero
-            self.current_angle = 0.0
-            self.rotation_direction = 1  # NOTE
-            self.rotation_paused = False  # state
-            self.pause_counter = 0
-            self.rotation_timer.start(16)  # 60FPS
+        """Start rotation test. Works for mesh-owning AND empty (mesh-less) nodes
+        so that a pure-axis intermediate node can be rotated and children still
+        follow via _rotate_children. Empty nodes have no stl actor to update
+        directly, but their transform propagates to downstream real meshes."""
+        if node is None:
+            return
+        # Save transform snapshot only if the node has one (mesh-owning nodes).
+        # store_current_transform already gates on `node in self.transforms`.
+        self.store_current_transform(node)
+        # Ensure the node has a transform entry so downstream _rotate_children
+        # can build child transforms off it. Empty nodes get a fresh identity.
+        self._ensure_transform_entry(node)
+
+        # Todo
+        self.rotation_test_active = True
+        self.rotating_node = node
+        # Angle offset 0 angle zero
+        self.current_angle = 0.0
+        self.rotation_direction = 1  # NOTE
+        self.rotation_paused = False  # state
+        self.pause_counter = 0
+        self.rotation_timer.start(16)  # 60FPS
 
     def stop_rotation_test(self, node):
         """textend - textangletext0text(PartsEditortextーtext)"""
@@ -7114,8 +7184,10 @@ class STLViewerWidget(QtWidgets.QWidget):
         # child links are correctly propagated via _rotate_children — restoring
         # cached original_transforms can leave children stale if body_angle was
         # changed since those originals were captured.
+        # For empty (mesh-less) nodes we STILL call show_angle so downstream
+        # meshes reset via _rotate_children; internal actor update becomes no-op.
         self.current_angle = 0
-        if target_node and target_node in self.stl_actors:
+        if target_node is not None:
             self.show_angle(target_node, 0.0)
 
         # Clean up cached originals
@@ -7130,10 +7202,13 @@ class STLViewerWidget(QtWidgets.QWidget):
         self.pause_counter = 0
 
     def show_angle(self, node, angle_rad):
-        """textangletextSTLmodeltextdisplay(text)"""
+        """textangletextSTLmodeltextdisplay(text)
+
+        Works for empty (mesh-less) nodes too: the transform is still built
+        so downstream meshes rotate via _rotate_children."""
         import math
 
-        if node not in self.stl_actors:
+        if node is None:
             return
 
         # Stop TODO
@@ -7145,8 +7220,8 @@ class STLViewerWidget(QtWidgets.QWidget):
         # Angle transform
         angle_deg = math.degrees(angle_rad)
 
-        # Get transform
-        transform = self.transforms[node]
+        # Get / create transform (lazy for pure-axis empty nodes).
+        transform = self._ensure_transform_entry(node)
 
         # Get parent transform joint origin XYZ/RPY parent point_angle XYZ/RPY
         parent_transform = None
@@ -7232,7 +7307,8 @@ class STLViewerWidget(QtWidgets.QWidget):
             elif node.rotation_axis == 2:
                 transform.RotateZ(angle_deg)
 
-        self.stl_actors[node].SetUserTransform(transform)
+        # No-op for empty nodes (no actor to update); child propagation still runs.
+        self._set_actor_transform_if_present(node, transform)
 
         # Enable Inherit to Subnodes if rotate Inherit Subnodes
         if self.follow_children and hasattr(node, 'graph'):
@@ -7349,9 +7425,11 @@ class STLViewerWidget(QtWidgets.QWidget):
 
     def update_rotation(self):
         """textupdate"""
-        if self.rotating_node and self.rotating_node in self.stl_actors:
+        # Also runs for empty (mesh-less / pure-axis) nodes so Rotation Test
+        # button responds and children propagate via _rotate_children.
+        if self.rotating_node:
             node = self.rotating_node
-            transform = self.transforms[node]
+            transform = self._ensure_transform_entry(node)
 
             # Current position
             position = transform.GetPosition()
@@ -7370,14 +7448,16 @@ class STLViewerWidget(QtWidgets.QWidget):
             #   ・X/Y/Z hinge (Free ON/OFF いずれも) → 選択軸で Min/Max 振動
             # → is_free 単独では分岐せず、rot_axis と Free の組み合わせで判定する。
             if is_fixed and not is_free:
-                # Fixed only: blink red/white (unchanged)
-                # 400ms
-                # 60fps 24 400ms
-                is_red = (self.current_angle // 24) % 2 == 0
-                if is_red:
-                    self.stl_actors[node].GetProperty().SetColor(1.0, 0.0, 0.0)  # NOTE
-                else:
-                    self.stl_actors[node].GetProperty().SetColor(1.0, 1.0, 1.0)  # NOTE
+                # Fixed only: blink red/white (no-op for empty nodes)
+                actor = self.stl_actors.get(node)
+                if actor is not None:
+                    # 400ms
+                    # 60fps 24 400ms
+                    is_red = (self.current_angle // 24) % 2 == 0
+                    if is_red:
+                        actor.GetProperty().SetColor(1.0, 0.0, 0.0)  # NOTE
+                    else:
+                        actor.GetProperty().SetColor(1.0, 1.0, 1.0)  # NOTE
             elif is_fixed and is_free:
                 # Free + Fixed = ball closure: spinning top wobble (rotate yaw, roll, pitch simultaneously)
                 import math
@@ -7456,7 +7536,7 @@ class STLViewerWidget(QtWidgets.QWidget):
                 transform.RotateY(pitch_deg)
                 transform.RotateX(roll_deg)
 
-                self.stl_actors[node].SetUserTransform(transform)
+                self._set_actor_transform_if_present(node, transform)
 
                 if self.follow_children and hasattr(node, 'graph'):
                     self._rotate_children(node, transform)
@@ -7556,7 +7636,7 @@ class STLViewerWidget(QtWidgets.QWidget):
                 else:  # Z axis
                     transform.Translate(0, 0, slide_pos)
 
-                self.stl_actors[node].SetUserTransform(transform)
+                self._set_actor_transform_if_present(node, transform)
 
                 if self.follow_children and hasattr(node, 'graph'):
                     self._rotate_children(node, transform)
@@ -7693,7 +7773,7 @@ class STLViewerWidget(QtWidgets.QWidget):
                     elif node.rotation_axis == 2:
                         transform.RotateZ(self.current_angle)
 
-                self.stl_actors[node].SetUserTransform(transform)
+                self._set_actor_transform_if_present(node, transform)
 
                 # Enable Inherit to Subnodes if rotate Inherit Subnodes
                 if self.follow_children and hasattr(node, 'graph'):
@@ -7702,7 +7782,9 @@ class STLViewerWidget(QtWidgets.QWidget):
             self.render_to_image()
 
     def _rotate_children(self, parent_node, parent_transform):
-        """textnodetext(text)"""
+        """Propagate parent's transform down the chain. Pass through empty
+        (mesh-less / pure-axis) child nodes so meshes farther down still move
+        when an intermediate axis-only node rotates."""
         import math
         import vtk
 
@@ -7711,10 +7793,6 @@ class STLViewerWidget(QtWidgets.QWidget):
             # Get TODO
             for connected_port in output_port.connected_ports():
                 child_node = connected_port.node()
-
-                # Stl stl
-                if child_node not in self.stl_actors or child_node not in self.transforms:
-                    continue
 
                 # Compute point index from port name (out_1->0, out_2->1, etc.)
                 port_name = output_port.name() if hasattr(output_port, 'name') else ''
@@ -7785,29 +7863,34 @@ class STLViewerWidget(QtWidgets.QWidget):
                         elif child_node.rotation_axis == 2:  # Z-axis
                             child_transform.RotateZ(child_angle_deg)
 
-                # Update transform apply self transforms self.transforms
-                self.transforms[child_node].DeepCopy(child_transform)
-                self.stl_actors[child_node].SetUserTransform(child_transform)
+                # Store the child's transform (create entry lazily so empty
+                # child nodes can still act as joint frames for their own
+                # descendants).
+                child_tr_slot = self._ensure_transform_entry(child_node)
+                child_tr_slot.DeepCopy(child_transform)
+                # Actor update is a no-op for empty nodes (nothing to render).
+                self._set_actor_transform_if_present(child_node, child_transform)
 
-                # Rotate
+                # Recurse regardless of whether this child had a mesh.
                 self._rotate_children(child_node, child_transform)
 
     def _restore_children_transforms(self, parent_node):
-        """textnodetext(text)"""
+        """Restore children back to their pre-rotation transforms. Pass through
+        empty (mesh-less) children so grand-children with meshes are also
+        restored."""
         for output_port in parent_node.output_ports():
             for connected_port in output_port.connected_ports():
                 child_node = connected_port.node()
 
-                # Stl stl
-                if child_node not in self.stl_actors or child_node not in self.transforms:
-                    continue
-
-                # Todo
+                # Restore any snapshotted transform onto this child.
                 if child_node in self.original_transforms:
-                    self.transforms[child_node].DeepCopy(self.original_transforms[child_node])
-                    self.stl_actors[child_node].SetUserTransform(self.transforms[child_node])
+                    child_tr_slot = self._ensure_transform_entry(child_node)
+                    child_tr_slot.DeepCopy(self.original_transforms[child_node])
+                    # Actor update is a no-op for empty nodes.
+                    self._set_actor_transform_if_present(child_node, child_tr_slot)
 
-                # Todo
+                # Recurse regardless of whether this child had a mesh so we
+                # still reach any downstream mesh-bearing nodes.
                 self._restore_children_transforms(child_node)
 
     def _get_scene_bounds_and_center(self):
@@ -8197,21 +8280,15 @@ class STLViewerWidget(QtWidgets.QWidget):
                 elif collider_type == 'mesh':
                     collider_mesh = collider.get('mesh')
                     collider_mesh_scale = collider.get('mesh_scale', [1.0, 1.0, 1.0])
-                    visual_mesh = getattr(node, 'stl_file', None)
                     if collider_mesh:
-                        # Resolve collider_mesh to absolute path before comparing
-                        # with visual_mesh. Otherwise a relative "part.stl" would
-                        # not match an absolute "/…/part.stl" and we'd render a
-                        # duplicate visual mesh as a collider (looks like the
-                        # model is doubled and Mesh toggle can't hide it).
-                        resolved_collider_mesh = collider_mesh
-                        if not os.path.isabs(resolved_collider_mesh) and visual_mesh:
-                            resolved_collider_mesh = os.path.join(
-                                os.path.dirname(visual_mesh), collider_mesh
-                            )
-                        if self._mesh_paths_equal(resolved_collider_mesh, visual_mesh):
-                            print(f"    → Skipping mesh collider identical to visual mesh: {os.path.basename(collider_mesh)}")
-                            continue
+                        # Note: previously we skipped mesh colliders whose path
+                        # matched the visual mesh (visual + collider on same
+                        # OBJ/STL) to avoid a "doubled" render. Now that mesh
+                        # colliders are drawn in translucent red (mapper
+                        # ScalarVisibilityOff + collision_color), the red
+                        # overlay is clearly distinguishable from the visual,
+                        # so we always render — otherwise picking the same
+                        # .obj as visual would silently show nothing.
                         print(f"    → Creating mesh collider: {os.path.basename(collider_mesh)}")
                         actor = self.create_mesh_collider_actor(node, collider_mesh, mesh_scale=collider_mesh_scale)
                         if actor:
@@ -8221,7 +8298,7 @@ class STLViewerWidget(QtWidgets.QWidget):
                         else:
                             print(f"    ✗ Failed to create mesh collider actor")
                     else:
-                        print(f"    ✗ No collider_mesh specified (visual mesh fallback disabled to avoid duplicate display)")
+                        print(f"    ✗ No collider_mesh specified")
                 else:
                     print(f"    ✗ Unknown collider_type: {collider_type}")
             
@@ -8521,6 +8598,14 @@ class STLViewerWidget(QtWidgets.QWidget):
         # Create TODO
         mapper = vtk.vtkPolyDataMapper()
         mapper.SetInputData(polydata)
+        # Force flat color from actor.SetColor: OBJ/DAE/STL collider meshes
+        # frequently ship with vertex/cell colors, which VTK's mapper picks up
+        # by default and uses instead of the actor color. That made mesh
+        # colliders render in their baked-in colors instead of the translucent
+        # red used for Box/Sphere/Cylinder colliders. Disabling scalar
+        # visibility makes actor.SetColor() authoritative so mesh colliders
+        # look identical to primitive colliders.
+        mapper.ScalarVisibilityOff()
 
         actor = vtk.vtkActor()
         actor.SetMapper(mapper)
@@ -9608,6 +9693,7 @@ class CustomNodeGraph(NodeGraph):
         self.default_mjcf_option_impratio = DEFAULT_MJCF_OPTION_IMPRATIO
         self.default_mjcf_option_timestep = DEFAULT_MJCF_OPTION_TIMESTEP
         self.default_mjcf_option_iterations = DEFAULT_MJCF_OPTION_ITERATIONS
+        self.default_mjcf_option_integrator = DEFAULT_MJCF_OPTION_INTEGRATOR
         self.default_mjcf_mesh_simplify_threshold = DEFAULT_MJCF_MESH_SIMPLIFY_THRESHOLD
         self.default_mjcf_mesh_max_faces = DEFAULT_MJCF_MESH_MAX_FACES
 
@@ -9973,6 +10059,36 @@ class CustomNodeGraph(NodeGraph):
             import traceback
             traceback.print_exc()
 
+    # Python attributes that make up the Node Inspector state.
+    # Included: everything visible to the user in the Inspector so a paste
+    #           produces a functionally identical clone.
+    # Excluded: stl_file / xml_file (mesh path — paste is treated as a "new"
+    #           mesh-less slot per user request) and current_joint_angle
+    #           (transient runtime state).
+    _COPYABLE_NODE_ATTRIBUTES = (
+        # Physical / inertial
+        "mass_value", "volume_value",
+        "inertia", "inertial_origin", "visual_origin",
+        # Rotation / axis
+        "rotation_axis", "is_free_joint",
+        "slide_axis", "slide_lower", "slide_upper",
+        "body_angle",
+        # Joint parameters
+        "joint_lower", "joint_upper",
+        "joint_effort", "joint_velocity",
+        "joint_damping", "joint_stiffness", "joint_kv",
+        "joint_margin", "joint_armature", "joint_frictionloss",
+        "backlash_preset",
+        # Visual / mesh (stl_file / xml_file intentionally omitted)
+        "mesh_scale", "is_mesh_reversed",
+        "node_color", "mesh_original_color",
+        # Flags
+        "massless_decoration", "hide_mesh",
+        "is_imu_site", "is_camera_node",
+        # Collider set (deep-copied per node so pastes don't share containers)
+        "colliders",
+    )
+
     def copy_nodes(self):
         """textnodetextーtextー"""
         selected = self.selected_nodes()
@@ -9996,24 +10112,49 @@ class CustomNodeGraph(NodeGraph):
                 # Qpointf if qpointf
                 original_pos = [float(pos.x()), float(pos.y())]
 
-            # Node
             node_data = {
                 'type': node.__class__.__name__,
                 'name': node.name(),
-                'original_pos': original_pos,  # NOTE
-                'properties': {}
+                'original_pos': original_pos,
+                # NodeGraphQt-managed custom_properties (kept for back-compat)
+                'properties': {},
+                # Python attributes managed by init_node_properties + Inspector
+                'attributes': {},
+                'points': None,
+                'cumulative_coords': None,
             }
 
             # Todo
-            for prop_name in node.model.custom_properties.keys():
-                try:
-                    node_data['properties'][prop_name] = node.get_property(prop_name)
-                except:
-                    pass
+            try:
+                for prop_name in node.model.custom_properties.keys():
+                    try:
+                        node_data['properties'][prop_name] = node.get_property(prop_name)
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # Snapshot every Inspector-visible Python attribute (deep copies
+            # for containers so subsequent edits to the original don't leak).
+            for attr in self._COPYABLE_NODE_ATTRIBUTES:
+                if not hasattr(node, attr):
+                    continue
+                val = getattr(node, attr)
+                if isinstance(val, (list, dict)):
+                    val = copy.deepcopy(val)
+                node_data['attributes'][attr] = val
+
+            # Output-port geometry: capture points + cumulative_coords so the
+            # paste rebuilds the same number of output ports and identical
+            # child-attachment poses (xyz / rpy / angle per port).
+            if hasattr(node, 'points') and isinstance(node.points, list):
+                node_data['points'] = copy.deepcopy(node.points)
+            if hasattr(node, 'cumulative_coords') and isinstance(node.cumulative_coords, list):
+                node_data['cumulative_coords'] = copy.deepcopy(node.cumulative_coords)
 
             self._node_clipboard.append(node_data)
 
-        print(f"Copied {len(self._node_clipboard)} node(s)")
+        print(f"Copied {len(self._node_clipboard)} node(s) with full Inspector state")
 
     def paste_nodes(self):
         """textーtextnodetextーtext"""
@@ -10062,12 +10203,53 @@ class CustomNodeGraph(NodeGraph):
                     pos=new_pos
                 )
 
-                # Todo
-                for prop_name, prop_value in node_data['properties'].items():
+                # NodeGraphQt-managed custom_properties (kept for back-compat)
+                for prop_name, prop_value in node_data.get('properties', {}).items():
                     try:
                         new_node.set_property(prop_name, prop_value)
                     except Exception as e:
                         print(f"Could not set property {prop_name}: {e}")
+
+                # Python attributes (deep-copy containers again to insulate
+                # the paste from later edits on the clipboard entry).
+                for attr, val in node_data.get('attributes', {}).items():
+                    if isinstance(val, (list, dict)):
+                        val = copy.deepcopy(val)
+                    try:
+                        setattr(new_node, attr, val)
+                    except Exception as e:
+                        print(f"Could not set attribute {attr}: {e}")
+
+                # Rebuild output ports so pasted node matches the source's
+                # port count, then overwrite points/cumulative_coords with the
+                # captured child-attachment geometry.
+                src_points = node_data.get('points')
+                src_cum = node_data.get('cumulative_coords')
+                if isinstance(src_points, list) and src_points:
+                    target_port_count = len(src_points)
+                    # FooNode ctor already added one output port; add more to match.
+                    while getattr(new_node, 'output_count', 0) < target_port_count:
+                        if hasattr(new_node, '_add_output'):
+                            new_node._add_output()
+                        else:
+                            break
+                    new_node.points = copy.deepcopy(src_points)
+                    if isinstance(src_cum, list) and len(src_cum) == target_port_count:
+                        new_node.cumulative_coords = copy.deepcopy(src_cum)
+
+                # Re-apply IMU / Camera visual decorations if the flag was copied.
+                if getattr(new_node, 'is_imu_site', False):
+                    try:
+                        _apply_imu_body_color(new_node)
+                        _install_imu_paint(new_node)
+                    except Exception as e:
+                        print(f"Could not re-install IMU paint: {e}")
+                if getattr(new_node, 'is_camera_node', False):
+                    try:
+                        _apply_camera_body_color(new_node)
+                        _install_camera_paint(new_node)
+                    except Exception as e:
+                        print(f"Could not re-install Camera paint: {e}")
 
                 pasted_nodes.append(new_node)
 
@@ -10080,7 +10262,7 @@ class CustomNodeGraph(NodeGraph):
         for node in pasted_nodes:
             node.set_selected(True)
 
-        print(f"Pasted {len(pasted_nodes)} node(s)")
+        print(f"Pasted {len(pasted_nodes)} node(s) with full Inspector state")
 
     def cut_nodes(self):
         """textnodetext(textーtextremove)"""
@@ -11134,15 +11316,14 @@ class CustomNodeGraph(NodeGraph):
             "The following names could not be standardized. "
             "They will be exported using their original names (or with only the link name applied):\n"
         ]
-        for kind, name, reason in unresolved[:25]:
+        # No truncation: the dialog now scrolls, so list every unresolved entry.
+        for kind, name, reason in unresolved:
             lines.append(f"  • [{kind}] {name}\n    {reason}")
-        if len(unresolved) > 25:
-            lines.append(f"\n  … and {len(unresolved) - 25} more")
 
-        QtWidgets.QMessageBox.warning(
-            self.widget,
+        self._show_scrollable_message_dialog(
             "Canonical Name — Unresolved",
             "\n".join(lines),
+            is_warning=True,
         )
         return True
 
@@ -13079,7 +13260,13 @@ class CustomNodeGraph(NodeGraph):
 
             # Get TODO
             if not file_path:
-                default_filename = f"{self.robot_name}_pj_{datetime.datetime.now().strftime('%Y%m%d%H%M')}.xml"
+                # Default filename convention: uka_<robot>_pr_<YYYYMMDD_HHMM>.xml
+                # ("uka" = URDF Kitchen Assembler, "pr" = project). Only used
+                # as the pre-filled name in the Save dialog — user can override.
+                default_filename = (
+                    f"uka_{self.robot_name}_pr_"
+                    f"{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xml"
+                )
                 # Default to ./save (created lazily) unless the user has saved elsewhere this session.
                 save_dir = os.path.abspath("./save")
                 try:
@@ -13224,6 +13411,7 @@ class CustomNodeGraph(NodeGraph):
             ET.SubElement(mjcf_defaults_elem, "motor_ctrlrange").text = str(self.default_mjcf_motor_ctrlrange)
             ET.SubElement(mjcf_defaults_elem, "option_timestep").text = str(self.default_mjcf_option_timestep)
             ET.SubElement(mjcf_defaults_elem, "option_iterations").text = str(self.default_mjcf_option_iterations)
+            ET.SubElement(mjcf_defaults_elem, "option_integrator").text = str(self.default_mjcf_option_integrator)
             ET.SubElement(mjcf_defaults_elem, "mesh_simplify_threshold").text = str(self.default_mjcf_mesh_simplify_threshold)
             ET.SubElement(mjcf_defaults_elem, "mesh_max_faces").text = str(self.default_mjcf_mesh_max_faces)
             print(f"Saved MJCF defaults: impratio={self.default_mjcf_option_impratio}, "
@@ -13736,6 +13924,11 @@ class CustomNodeGraph(NodeGraph):
                     elem = mjcf_defaults_elem.find("option_iterations")
                     if elem is not None and elem.text:
                         self.default_mjcf_option_iterations = int(elem.text)
+                    elem = mjcf_defaults_elem.find("option_integrator")
+                    if elem is not None and elem.text:
+                        _v = elem.text.strip()
+                        if _v in MJCF_INTEGRATOR_CHOICES:
+                            self.default_mjcf_option_integrator = _v
                     elem = mjcf_defaults_elem.find("mesh_simplify_threshold")
                     if elem is not None and elem.text:
                         self.default_mjcf_mesh_simplify_threshold = int(elem.text)
@@ -17329,11 +17522,19 @@ class CustomNodeGraph(NodeGraph):
             self._reset_canonical_export_state()
 
     def _show_scrollable_message_dialog(self, title, message, is_warning=False):
-        """Show a scrollable message dialog with max height of 600px."""
+        """Show a scrollable message dialog. Height matches the main window
+        so long lists (e.g. the canonical-name unresolved warning) fill the
+        available screen height; content that overflows is scrollable."""
         dialog = QtWidgets.QDialog(self.widget)
         dialog.setWindowTitle(title)
-        dialog.setMinimumWidth(450)
-        dialog.setMaximumHeight(600)
+        dialog.setMinimumWidth(500)
+
+        # Size dialog height to the main window so full content fits when the
+        # user has a tall window; scroll area handles overflow if longer still.
+        parent_win = self.widget.window() if self.widget else None
+        target_h = parent_win.height() if parent_win is not None else 600
+        target_h = max(300, min(target_h, 2000))  # sane bounds
+        dialog.resize(dialog.minimumWidth(), target_h)
 
         layout = QtWidgets.QVBoxLayout(dialog)
 
@@ -17341,6 +17542,8 @@ class CustomNodeGraph(NodeGraph):
         scroll_area = QtWidgets.QScrollArea()
         scroll_area.setWidgetResizable(True)
         scroll_area.setFrameShape(QtWidgets.QFrame.NoFrame)
+        scroll_area.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
+        scroll_area.setVerticalScrollBarPolicy(QtCore.Qt.ScrollBarAsNeeded)
 
         # Content widget inside scroll area
         content_widget = QtWidgets.QWidget()
@@ -17358,10 +17561,12 @@ class CustomNodeGraph(NodeGraph):
         icon_label.setAlignment(QtCore.Qt.AlignTop)
         content_layout.addWidget(icon_label)
 
-        # Message text
+        # Message text — align top so long messages start from the top instead
+        # of being vertically centered in the scroll viewport.
         text_label = QtWidgets.QLabel(message)
         text_label.setWordWrap(True)
         text_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse)
+        text_label.setAlignment(QtCore.Qt.AlignTop | QtCore.Qt.AlignLeft)
         content_layout.addWidget(text_label, 1)
 
         scroll_area.setWidget(content_widget)
@@ -17512,7 +17717,17 @@ class CustomNodeGraph(NodeGraph):
             impratio_val = self.default_mjcf_option_impratio
             timestep_val = self.default_mjcf_option_timestep
             iterations_val = self.default_mjcf_option_iterations
-            f.write(f'  <option timestep="{timestep_val:g}" iterations="{iterations_val}" cone="elliptic" impratio="{impratio_val:g}" />\n\n')
+            integrator_val = getattr(
+                self, "default_mjcf_option_integrator",
+                DEFAULT_MJCF_OPTION_INTEGRATOR,
+            )
+            if integrator_val not in MJCF_INTEGRATOR_CHOICES:
+                integrator_val = DEFAULT_MJCF_OPTION_INTEGRATOR
+            f.write(
+                f'  <option timestep="{timestep_val:g}" iterations="{iterations_val}" '
+                f'cone="elliptic" impratio="{impratio_val:g}" '
+                f'integrator="{integrator_val}" />\n\n'
+            )
 
             # <default> main class default
             jdamp = self.default_mjcf_joint_damping
