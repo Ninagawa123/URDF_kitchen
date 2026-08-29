@@ -78,7 +78,22 @@ from urdf_kitchen_Importer import (
     simplify_mesh_to_threshold,
     open_mjcf_for_write,
     MJCF_XML_DECLARATION,
+    xml_escape_attr,
+    xml_escape_text,
+    xml_safe_comment,
+    format_float_xml,
+    format_float_list_xml,
 )
+
+# Short aliases used by the many f.write() lines that emit MJCF/URDF so the
+# in-line templates stay readable. See urdf_kitchen_Importer.py for the
+# rationale — user-typed names must be XML-escaped, floats must be
+# locale-independent, and comments must not contain '--'.
+_xa = xml_escape_attr
+_xt = xml_escape_text
+_xc = xml_safe_comment
+_xf = format_float_xml
+_xfl = format_float_list_xml
 
 # M4 Mac (Apple Silicon) compatibility
 import platform
@@ -2560,7 +2575,7 @@ class InspectorWindow(QtWidgets.QWidget):
         # Accept RGB (3 elements) or RGBA (4 elements)
         num_values = min(len(color_values), len(self.color_inputs))
         for i in range(num_values):
-            self.color_inputs[i].setText(f"{color_values[i]:.3f}")
+            self.color_inputs[i].setText(f"{_xf(color_values[i])}")
 
         # Set Alpha=1.0 for RGB
         if len(color_values) == 3 and len(self.color_inputs) >= 4:
@@ -3767,14 +3782,14 @@ class InspectorWindow(QtWidgets.QWidget):
                 color = list(color) + [1.0]
             hex_color = '#{:02X}{:02X}{:02X}'.format(
                 int(color[0] * 255), int(color[1] * 255), int(color[2] * 255))
-            rgba_str = f"{color[0]:.6f} {color[1]:.6f} {color[2]:.6f} {color[3]:.6f}"
+            rgba_str = f"{_xf(color[0])} {_xf(color[1])} {_xf(color[2])} {_xf(color[3])}"
 
             # Center of Mass / Inertial Origin
             inertial_origin = getattr(node, 'inertial_origin', {'xyz': [0, 0, 0], 'rpy': [0, 0, 0]})
             com_xyz = inertial_origin.get('xyz', [0, 0, 0])
             com_rpy = inertial_origin.get('rpy', [0, 0, 0])
-            com_str = f"{com_xyz[0]:.6f} {com_xyz[1]:.6f} {com_xyz[2]:.6f}"
-            rpy_str = f"{com_rpy[0]:.6f} {com_rpy[1]:.6f} {com_rpy[2]:.6f}"
+            com_str = f"{_xf(com_xyz[0])} {_xf(com_xyz[1])} {_xf(com_xyz[2])}"
+            rpy_str = f"{_xf(com_rpy[0])} {_xf(com_rpy[1])} {_xf(com_rpy[2])}"
 
             # Mass / Volume
             mass_val = format_float_no_exp(getattr(node, 'mass_value', 0.0))
@@ -3817,13 +3832,13 @@ class InspectorWindow(QtWidgets.QWidget):
             # --- Compose XML string ---
             xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <urdf_part>
-    <material name="{hex_color}">
+    <material name="{_xa(hex_color)}">
         <color rgba="{rgba_str}" />
     </material>
-    <link name="{node_name}">
+    <link name="{_xa(node_name)}">
         <visual>
             <origin xyz="{com_str}" rpy="{rpy_str}"/>
-            <material name="{hex_color}" />
+            <material name="{_xa(hex_color)}" />
         </visual>
         <inertial>
             <origin xyz="{com_str}" rpy="{rpy_str}"/>
@@ -3844,9 +3859,9 @@ class InspectorWindow(QtWidgets.QWidget):
                     pt_name = pt.get('name', f'point{i+1}')
                     pt_type = pt.get('type', 'fixed')
                     xml_content += f"""
-    <point name="{pt_name}" type="{pt_type}">
-        <point_xyz>{xyz[0]:.6f} {xyz[1]:.6f} {xyz[2]:.6f}</point_xyz>
-        <point_angle>{angle[0]:.6f} {angle[1]:.6f} {angle[2]:.6f}</point_angle>
+    <point name="{_xa(pt_name)}" type="{pt_type}">
+        <point_xyz>{_xf(xyz[0])} {_xf(xyz[1])} {_xf(xyz[2])}</point_xyz>
+        <point_angle>{_xf(angle[0])} {_xf(angle[1])} {_xf(angle[2])}</point_angle>
     </point>"""
 
             # Joint element
@@ -3875,7 +3890,7 @@ class InspectorWindow(QtWidgets.QWidget):
                             stl_basename = os.path.splitext(os.path.basename(stl_file))[0]
                             collider_xml_name = f"{stl_basename}_collider.xml"
                             xml_content += f"""
-    <collider type="primitive" file="{collider_xml_name}" />"""
+    <collider type="primitive" file="{_xa(collider_xml_name)}" />"""
                         break
                     elif c_type == 'mesh' and collider.get('mesh'):
                         mesh_path = collider['mesh']
@@ -3885,7 +3900,7 @@ class InspectorWindow(QtWidgets.QWidget):
                         except ValueError:
                             rel_path = os.path.basename(mesh_path)
                         xml_content += f"""
-    <collider type="mesh" file="{rel_path}" />"""
+    <collider type="mesh" file="{_xa(rel_path)}" />"""
                         break
 
             xml_content += """
@@ -4379,7 +4394,7 @@ class InspectorWindow(QtWidgets.QWidget):
             coord_pair.addWidget(coord_label)
 
             # Input field
-            coord_input = QtWidgets.QLineEdit(f"{value:.6f}")
+            coord_input = QtWidgets.QLineEdit(f"{_xf(value)}")
             coord_input.setFixedWidth(70)
             coord_input.setFixedHeight(20)
             coord_input.setStyleSheet("QLineEdit { padding-left: 2px; padding-top: 0px; padding-bottom: 0px; }")
@@ -4417,7 +4432,7 @@ class InspectorWindow(QtWidgets.QWidget):
             angle_pair.addWidget(angle_label_item)
 
             # Input field
-            angle_input = QtWidgets.QLineEdit(f"{value:.2f}")
+            angle_input = QtWidgets.QLineEdit(f"{_xf(value)}")
             angle_input.setFixedWidth(45)
             angle_input.setFixedHeight(20)
             angle_input.setStyleSheet("QLineEdit { padding-left: 2px; padding-top: 0px; padding-bottom: 0px; }")
@@ -4508,7 +4523,7 @@ class InspectorWindow(QtWidgets.QWidget):
             # Apply color to STL model
             self.apply_color_to_stl()
 
-            print(f"Applied original mesh color to node '{self.current_node.name()}': RGBA({rgba_values[0]:.3f}, {rgba_values[1]:.3f}, {rgba_values[2]:.3f}, {rgba_values[3]:.3f})")
+            print(f"Applied original mesh color to node '{self.current_node.name()}': RGBA({_xf(rgba_values[0])}, {_xf(rgba_values[1])}, {_xf(rgba_values[2])}, {_xf(rgba_values[3])})")
         except Exception as e:
             print(f"Error applying original mesh color: {str(e)}")
             import traceback
@@ -4535,11 +4550,11 @@ class InspectorWindow(QtWidgets.QWidget):
                     # Set Alpha
                     if len(rgba_values) >= 4:
                         actor.GetProperty().SetOpacity(rgba_values[3])
-                        print(f"Applied color: RGBA({rgba_values[0]:.3f}, {rgba_values[1]:.3f}, "
-                              f"{rgba_values[2]:.3f}, {rgba_values[3]:.3f})")
+                        print(f"Applied color: RGBA({_xf(rgba_values[0])}, {_xf(rgba_values[1])}, "
+                              f"{_xf(rgba_values[2])}, {_xf(rgba_values[3])})")
                     else:
                         actor.GetProperty().SetOpacity(1.0)
-                        print(f"Applied color: RGB({rgba_values[0]:.3f}, {rgba_values[1]:.3f}, {rgba_values[2]:.3f})")
+                        print(f"Applied color: RGB({_xf(rgba_values[0])}, {_xf(rgba_values[1])}, {_xf(rgba_values[2])})")
                     self.stl_viewer.render_to_image()
         except ValueError as e:
             print(f"Error: Invalid color value - {str(e)}")
@@ -5045,14 +5060,14 @@ class InspectorWindow(QtWidgets.QWidget):
             if frictionloss_text:
                 self.current_node.joint_frictionloss = float(frictionloss_text)
 
-            print(f"Joint limits set: lower={math.degrees(self.current_node.joint_lower):.2f}° ({self.current_node.joint_lower:.5f} rad), upper={math.degrees(self.current_node.joint_upper):.2f}° ({self.current_node.joint_upper:.5f} rad), effort={self.current_node.joint_effort}, velocity={self.current_node.joint_velocity}, damping={self.current_node.joint_damping}, kp={self.current_node.joint_stiffness}, kv={self.current_node.joint_kv}, margin={self.current_node.joint_margin}, armature={self.current_node.joint_armature}, frictionloss={self.current_node.joint_frictionloss}")
+            print(f"Joint limits set: lower={math.degrees(self.current_node.joint_lower):.2f}° ({_xf(self.current_node.joint_lower)} rad), upper={math.degrees(self.current_node.joint_upper):.2f}° ({_xf(self.current_node.joint_upper)} rad), effort={self.current_node.joint_effort}, velocity={self.current_node.joint_velocity}, damping={self.current_node.joint_damping}, kp={self.current_node.joint_stiffness}, kv={self.current_node.joint_kv}, margin={self.current_node.joint_margin}, armature={self.current_node.joint_armature}, frictionloss={self.current_node.joint_frictionloss}")
 
             QtWidgets.QMessageBox.information(
                 self,
                 "Joint Limits Set",
                 f"Joint limits have been set successfully.\n\n"
-                f"Lower: {math.degrees(self.current_node.joint_lower):.2f}° ({self.current_node.joint_lower:.5f} rad)\n"
-                f"Upper: {math.degrees(self.current_node.joint_upper):.2f}° ({self.current_node.joint_upper:.5f} rad)\n"
+                f"Lower: {math.degrees(self.current_node.joint_lower):.2f}° ({_xf(self.current_node.joint_lower)} rad)\n"
+                f"Upper: {math.degrees(self.current_node.joint_upper):.2f}° ({_xf(self.current_node.joint_upper)} rad)\n"
                 f"Effort: {self.current_node.joint_effort}\n"
                 f"Velocity: {self.current_node.joint_velocity}\n"
                 f"Damping: {self.current_node.joint_damping}\n"
@@ -5167,7 +5182,7 @@ class InspectorWindow(QtWidgets.QWidget):
             print(f"Mesh loaded successfully")
             print(f"  Vertices: {len(mesh.vertices)}")
             print(f"  Faces: {len(mesh.faces)}")
-            print(f"  Volume: {mesh.volume:.6f}")
+            print(f"  Volume: {_xf(mesh.volume)}")
             print(f"  Is watertight: {mesh.is_watertight}")
 
             # Mesh
@@ -5252,8 +5267,8 @@ class InspectorWindow(QtWidgets.QWidget):
             #     self,
             #     "COM Calculated",
             #     f"Center of Mass successfully calculated!\n\n"
-            #     f"Center of mass: [{center_of_mass[0]:.6f}, {center_of_mass[1]:.6f}, {center_of_mass[2]:.6f}]\n"
-            #     f"Volume: {mesh.volume:.6f} m³\n"
+            #     f"Center of mass: [{_xf(center_of_mass[0])}, {_xf(center_of_mass[1])}, {_xf(center_of_mass[2])}]\n"
+            #     f"Volume: {_xf(mesh.volume)} m³\n"
             #     f"Watertight: {'Yes' if mesh.is_watertight else 'No'}"
             #     f"{repair_msg}\n\n"
             #     f"The Inertial Origin has been updated with the calculated COM."
@@ -5517,7 +5532,7 @@ class SettingsDialog(QtWidgets.QDialog):
         joint_layout.addWidget(QtWidgets.QLabel("Angle Range:"), row, 0)
         self.angle_range_rad_input = QtWidgets.QLineEdit()
         self.angle_range_rad_input.setValidator(QDoubleValidator(0.0, 10.0, 4))
-        self.angle_range_rad_input.setText(f"{self.graph.default_angle_range:.4f}")
+        self.angle_range_rad_input.setText(f"{_xf(self.graph.default_angle_range)}")
         self.angle_range_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
             self.angle_range_rad_input, self.angle_range_deg_input))
         joint_layout.addWidget(self.angle_range_rad_input, row, 1)
@@ -5536,7 +5551,7 @@ class SettingsDialog(QtWidgets.QDialog):
         joint_layout.addWidget(QtWidgets.QLabel("Margin:"), row, 0)
         self.margin_rad_input = QtWidgets.QLineEdit()
         self.margin_rad_input.setValidator(QDoubleValidator(0.0, 10.0, 4))
-        self.margin_rad_input.setText(f"{self.graph.default_margin:.4f}")
+        self.margin_rad_input.setText(f"{_xf(self.graph.default_margin)}")
         self.margin_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
             self.margin_rad_input, self.margin_deg_input))
         joint_layout.addWidget(self.margin_rad_input, row, 1)
@@ -5555,7 +5570,7 @@ class SettingsDialog(QtWidgets.QDialog):
         joint_layout.addWidget(QtWidgets.QLabel("Armature:"), row, 0)
         self.armature_input = QtWidgets.QLineEdit()
         self.armature_input.setValidator(QDoubleValidator(0.0, 100.0, 4))
-        self.armature_input.setText(f"{self.graph.default_armature:.4f}")
+        self.armature_input.setText(f"{_xf(self.graph.default_armature)}")
         joint_layout.addWidget(self.armature_input, row, 1)
         joint_layout.addWidget(QtWidgets.QLabel("kg*m²"), row, 2)
         row += 1
@@ -5564,7 +5579,7 @@ class SettingsDialog(QtWidgets.QDialog):
         joint_layout.addWidget(QtWidgets.QLabel("Frictionloss:"), row, 0)
         self.frictionloss_input = QtWidgets.QLineEdit()
         self.frictionloss_input.setValidator(QDoubleValidator(0.0, 100.0, 4))
-        self.frictionloss_input.setText(f"{self.graph.default_frictionloss:.4f}")
+        self.frictionloss_input.setText(f"{_xf(self.graph.default_frictionloss)}")
         joint_layout.addWidget(self.frictionloss_input, row, 1)
         joint_layout.addWidget(QtWidgets.QLabel("N*m"), row, 2)
         row += 1
@@ -5573,7 +5588,7 @@ class SettingsDialog(QtWidgets.QDialog):
         joint_layout.addWidget(QtWidgets.QLabel("Damping:"), row, 0)
         self.joint_damping_input = QtWidgets.QLineEdit()
         self.joint_damping_input.setValidator(QDoubleValidator(0.0, 100000.0, 4))
-        self.joint_damping_input.setText(f"{self.graph.default_joint_damping:.4f}")
+        self.joint_damping_input.setText(f"{_xf(self.graph.default_joint_damping)}")
         joint_layout.addWidget(self.joint_damping_input, row, 1)
         joint_layout.addWidget(QtWidgets.QLabel("N*m*s/rad"), row, 2)
         row += 1
@@ -5604,14 +5619,14 @@ class SettingsDialog(QtWidgets.QDialog):
         act_layout.addWidget(QtWidgets.QLabel("Effort(forcerange):"), row, 0)
         self.effort_input = QtWidgets.QLineEdit()
         self.effort_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
-        self.effort_input.setText(f"{self.graph.default_joint_effort:.3f}")
+        self.effort_input.setText(f"{_xf(self.graph.default_joint_effort)}")
         self.effort_input.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
         act_layout.addWidget(self.effort_input, row, 1)
         act_layout.addWidget(QtWidgets.QLabel("N*m"), row, 2)
         act_layout.addWidget(QtWidgets.QLabel("Max:"), row, 3)
         self.max_effort_input = QtWidgets.QLineEdit()
         self.max_effort_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
-        self.max_effort_input.setText(f"{self.graph.default_max_effort:.3f}")
+        self.max_effort_input.setText(f"{_xf(self.graph.default_max_effort)}")
         act_layout.addWidget(self.max_effort_input, row, 4)
         act_layout.addWidget(QtWidgets.QLabel("N*m"), row, 5)
         row += 1
@@ -5620,7 +5635,7 @@ class SettingsDialog(QtWidgets.QDialog):
         act_layout.addWidget(QtWidgets.QLabel("Velocity:"), row, 0, 2, 1)
         self.velocity_rad_input = QtWidgets.QLineEdit()
         self.velocity_rad_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
-        self.velocity_rad_input.setText(f"{self.graph.default_joint_velocity:.4f}")
+        self.velocity_rad_input.setText(f"{_xf(self.graph.default_joint_velocity)}")
         self.velocity_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
             self.velocity_rad_input, self.velocity_deg_input))
         act_layout.addWidget(self.velocity_rad_input, row, 1)
@@ -5628,7 +5643,7 @@ class SettingsDialog(QtWidgets.QDialog):
         act_layout.addWidget(QtWidgets.QLabel("Max:"), row, 3)
         self.max_velocity_rad_input = QtWidgets.QLineEdit()
         self.max_velocity_rad_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
-        self.max_velocity_rad_input.setText(f"{self.graph.default_max_velocity:.4f}")
+        self.max_velocity_rad_input.setText(f"{_xf(self.graph.default_max_velocity)}")
         self.max_velocity_rad_input.returnPressed.connect(lambda: self._convert_rad_to_deg(
             self.max_velocity_rad_input, self.max_velocity_deg_input))
         act_layout.addWidget(self.max_velocity_rad_input, row, 4)
@@ -5656,7 +5671,7 @@ class SettingsDialog(QtWidgets.QDialog):
         act_layout.addWidget(QtWidgets.QLabel("Kp(Proportional Gain):"), row, 0)
         self.stiffness_kp_input = QtWidgets.QLineEdit()
         self.stiffness_kp_input.setValidator(QDoubleValidator(0.0, 10000.0, 3))
-        self.stiffness_kp_input.setText(f"{self.graph.default_stiffness_kp:.3f}")
+        self.stiffness_kp_input.setText(f"{_xf(self.graph.default_stiffness_kp)}")
         act_layout.addWidget(self.stiffness_kp_input, row, 1)
         act_layout.addWidget(QtWidgets.QLabel("N*m/rad"), row, 2)
         row += 1
@@ -5665,7 +5680,7 @@ class SettingsDialog(QtWidgets.QDialog):
         act_layout.addWidget(QtWidgets.QLabel("Kv(Velocity Gain,Kd):"), row, 0)
         self.damping_kv_input = QtWidgets.QLineEdit()
         self.damping_kv_input.setValidator(QDoubleValidator(0.0, 1000.0, 3))
-        self.damping_kv_input.setText(f"{self.graph.default_damping_kv:.3f}")
+        self.damping_kv_input.setText(f"{_xf(self.graph.default_damping_kv)}")
         act_layout.addWidget(self.damping_kv_input, row, 1)
         act_layout.addWidget(QtWidgets.QLabel("N*m*s/rad"), row, 2)
         row += 1
@@ -5674,7 +5689,7 @@ class SettingsDialog(QtWidgets.QDialog):
         act_layout.addWidget(QtWidgets.QLabel("Timeconst:"), row, 0)
         self.timeconst_input = QtWidgets.QLineEdit()
         self.timeconst_input.setValidator(QDoubleValidator(0.0, 100.0, 4))
-        self.timeconst_input.setText(f"{self.graph.default_timeconst:.4f}")
+        self.timeconst_input.setText(f"{_xf(self.graph.default_timeconst)}")
         act_layout.addWidget(self.timeconst_input, row, 1)
         act_layout.addWidget(QtWidgets.QLabel("sec"), row, 2)
         row += 1
@@ -5789,7 +5804,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.base_link_height_input = QtWidgets.QLineEdit()
         self.base_link_height_input.setFixedWidth(100)
         self.base_link_height_input.setValidator(QDoubleValidator(0.0, 10.0, 3))
-        self.base_link_height_input.setText(f"{self.graph.default_base_link_height:.4f}")
+        self.base_link_height_input.setText(f"{_xf(self.graph.default_base_link_height)}")
         mjcf_layout.addWidget(self.base_link_height_input, row, 1)
         mjcf_layout.addWidget(QtWidgets.QLabel("m"), row, 2)
         row += 1
@@ -5803,7 +5818,7 @@ class SettingsDialog(QtWidgets.QDialog):
         self.mjcf_timestep_input = QtWidgets.QLineEdit()
         self.mjcf_timestep_input.setFixedWidth(60)
         self.mjcf_timestep_input.setValidator(QDoubleValidator(0.0001, 1.0, 6))
-        self.mjcf_timestep_input.setText(f"{self.graph.default_mjcf_option_timestep:g}")
+        self.mjcf_timestep_input.setText(f"{_xf(self.graph.default_mjcf_option_timestep)}")
         sim_row_layout.addWidget(self.mjcf_timestep_input)
         sim_row_layout.addWidget(QtWidgets.QLabel("s"))
 
@@ -6073,7 +6088,7 @@ class SettingsDialog(QtWidgets.QDialog):
         deg_input.setValidator(QDoubleValidator(0.0, 180.0, 4))
         deg_input.setFixedWidth(70)
         deg_val = float(preset.get("backlash_deg", preset.get("backlash_mm", 0.0)))
-        deg_input.setText(f"{deg_val:.4f}")
+        deg_input.setText(f"{_xf(deg_val)}")
         self._backlash_grid.addWidget(deg_input, row, 2)
         deg_unit = QtWidgets.QLabel("±deg")
         self._backlash_grid.addWidget(deg_unit, row, 3)
@@ -6344,9 +6359,9 @@ class SettingsDialog(QtWidgets.QDialog):
             rad_value = float(rad_input.text())
             # 4
             rad_value = round(rad_value, 4)
-            rad_input.setText(f"{rad_value:.4f}")
+            rad_input.setText(f"{_xf(rad_value)}")
             deg_value = math.degrees(rad_value)
-            deg_input.setText(f"{deg_value:.3f}")
+            deg_input.setText(f"{_xf(deg_value)}")
         except ValueError:
             pass
 
@@ -6358,7 +6373,7 @@ class SettingsDialog(QtWidgets.QDialog):
             rad_value = math.radians(deg_value)
             # 4
             rad_value = round(rad_value, 4)
-            rad_input.setText(f"{rad_value:.4f}")
+            rad_input.setText(f"{_xf(rad_value)}")
         except ValueError:
             pass
 
@@ -6527,7 +6542,7 @@ class SettingsDialog(QtWidgets.QDialog):
                 self,
                 "Joint Settings Applied",
                 f"Applied joint settings to {updated_count} nodes:\n\n"
-                f"Margin: {margin_rad:.4f} rad\n"
+                f"Margin: {_xf(margin_rad)} rad\n"
                 f"Armature: {armature} kg*m²\n"
                 f"Frictionloss: {frictionloss} N*m\n"
                 f"Damping: {joint_damping} N*m*s/rad"
@@ -6579,8 +6594,8 @@ class SettingsDialog(QtWidgets.QDialog):
                 f"Applied actuator settings to {updated_count} nodes:\n\n"
                 f"Effort: {effort} N*m\n"
                 f"Max Effort: {max_effort} N*m\n"
-                f"Velocity: {velocity_rad:.4f} rad/s\n"
-                f"Max Velocity: {max_velocity_rad:.4f} rad/s\n"
+                f"Velocity: {_xf(velocity_rad)} rad/s\n"
+                f"Max Velocity: {_xf(max_velocity_rad)} rad/s\n"
                 f"Kp(Proportional Gain): {stiffness_kp} N*m/rad\n"
                 f"Kv(Velocity Gain,Kd): {damping_kv} N*m*s/rad"
             )
@@ -7944,7 +7959,7 @@ class STLViewerWidget(QtWidgets.QWidget):
         )
 
         self.render_to_image()
-        print(f"Camera reset to Front view (ParallelScale: {parallel_scale:.3f})")
+        print(f"Camera reset to Front view (ParallelScale: {_xf(parallel_scale)})")
 
     def reset_camera_side(self):
         """Side view(text)- textdisplay"""
@@ -7965,7 +7980,7 @@ class STLViewerWidget(QtWidgets.QWidget):
         )
 
         self.render_to_image()
-        print(f"Camera reset to Side view (ParallelScale: {parallel_scale:.3f})")
+        print(f"Camera reset to Side view (ParallelScale: {_xf(parallel_scale)})")
 
     def reset_camera_top(self):
         """Top view(text)- textdisplay"""
@@ -7986,7 +8001,7 @@ class STLViewerWidget(QtWidgets.QWidget):
         )
 
         self.render_to_image()
-        print(f"Camera reset to Top view (ParallelScale: {parallel_scale:.3f})")
+        print(f"Camera reset to Top view (ParallelScale: {_xf(parallel_scale)})")
 
     def reset_camera(self):
         """textーtextset(Front viewtext)"""
@@ -8931,7 +8946,7 @@ class STLViewerWidget(QtWidgets.QWidget):
             print(f"PolyData: {poly_data.GetNumberOfPoints()} points, {poly_data.GetNumberOfCells()} cells")
 
             if extracted_color:
-                print(f"Color extracted from file: RGB({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f})")
+                print(f"Color extracted from file: RGB({_xf(extracted_color[0])}, {_xf(extracted_color[1])}, {_xf(extracted_color[2])})")
 
             # Convert RGBA to RGB for Assembler (Assembler uses RGB format)
             if extracted_color and len(extracted_color) >= 3:
@@ -9003,7 +9018,7 @@ class STLViewerWidget(QtWidgets.QWidget):
             if extracted_color is not None:
                 # Mesh
                 node.mesh_original_color = extracted_color.copy()
-                print(f"Stored mesh original color for node '{node.name()}': RGB({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f})")
+                print(f"Stored mesh original color for node '{node.name()}': RGB({_xf(extracted_color[0])}, {_xf(extracted_color[1])}, {_xf(extracted_color[2])})")
             else:
                 # Set color None None
                 if not hasattr(node, 'mesh_original_color'):
@@ -9020,7 +9035,7 @@ class STLViewerWidget(QtWidgets.QWidget):
                 # Apply BaseLinkNode if BaseLinkNode
                 if extracted_color is not None:
                     node.node_color = extracted_color
-                    print(f"Applied color from .dae file to node '{node.name()}': RGB({extracted_color[0]:.3f}, {extracted_color[1]:.3f}, {extracted_color[2]:.3f})")
+                    print(f"Applied color from .dae file to node '{node.name()}': RGB({_xf(extracted_color[0])}, {_xf(extracted_color[1])}, {_xf(extracted_color[2])})")
                 elif not hasattr(node, 'node_color') or node.node_color is None:
                     node.node_color = DEFAULT_COLOR_WHITE.copy()
 
@@ -9181,7 +9196,7 @@ class STLViewerWidget(QtWidgets.QWidget):
                 QTimer.singleShot(200, lambda: self.show_progress(False))
 
             # Add TODO
-            print(f"Loaded: {node.stl_file} ({file_size_mb:.2f} MB)")
+            print(f"Loaded: {node.stl_file} ({_xf(file_size_mb)} MB)")
 
     def apply_color_to_node(self, node):
         """nodetextSTLmodeltext(RGBAtext)"""
@@ -10044,7 +10059,7 @@ class CustomNodeGraph(NodeGraph):
                     # Position
                     if abs(snapped_x - current_x) > 0.1 or abs(snapped_y - current_y) > 0.1:
                         node.set_pos(snapped_x, snapped_y)
-                        print(f"Snapped node '{node.name()}' to grid: ({current_x:.1f}, {current_y:.1f}) -> ({snapped_x}, {snapped_y})")
+                        print(f"Snapped node '{node.name()}' to grid: ({_xf(current_x)}, {_xf(current_y)}) -> ({snapped_x}, {snapped_y})")
 
             # If
             print("Calling original release handler")
@@ -10694,10 +10709,10 @@ class CustomNodeGraph(NodeGraph):
                 if not is_valid:
                     invalid_nodes.append(node)
                     print(f"  ✗ {node.name()}: Inertia triangle inequality violated")
-                    print(f"    Ixx={ixx:.6f}, Iyy={iyy:.6f}, Izz={izz:.6f}")
-                    print(f"    Ixx+Iyy={ixx+iyy:.6f} >= Izz={izz:.6f}: {ixx+iyy >= izz - tolerance}")
-                    print(f"    Iyy+Izz={iyy+izz:.6f} >= Ixx={ixx:.6f}: {iyy+izz >= ixx - tolerance}")
-                    print(f"    Izz+Ixx={izz+ixx:.6f} >= Iyy={iyy:.6f}: {izz+ixx >= iyy - tolerance}")
+                    print(f"    Ixx={_xf(ixx)}, Iyy={_xf(iyy)}, Izz={_xf(izz)}")
+                    print(f"    Ixx+Iyy={ixx+iyy:.6f} >= Izz={_xf(izz)}: {ixx+iyy >= izz - tolerance}")
+                    print(f"    Iyy+Izz={iyy+izz:.6f} >= Ixx={_xf(ixx)}: {iyy+izz >= ixx - tolerance}")
+                    print(f"    Izz+Ixx={izz+ixx:.6f} >= Iyy={_xf(iyy)}: {izz+ixx >= iyy - tolerance}")
                 else:
                     valid_nodes.append(node)
                     
@@ -11367,7 +11382,7 @@ class CustomNodeGraph(NodeGraph):
                 return i
         if len(self.backlash_presets) >= MAX_BACKLASH_PRESETS:
             return None
-        new_name = name if name else f"{deg_val:g}"
+        new_name = name if name else f"{_xf(deg_val)}"
         existing_names = {str(p.get('name', '')) for p in self.backlash_presets}
         if new_name in existing_names:
             suffix = 1
@@ -11684,7 +11699,7 @@ class CustomNodeGraph(NodeGraph):
             with open(urdf_file, 'w', encoding='utf-8') as f:
                 # Name
                 f.write('<?xml version="1.0"?>\n')
-                f.write(f'<robot name="{clean_name}">\n\n')
+                f.write(f'<robot name="{_xa(clean_name)}">\n\n')
 
                 # Todo
                 materials = {}
@@ -11702,8 +11717,8 @@ class CustomNodeGraph(NodeGraph):
                 # Export material
                 f.write('<!-- material color setting -->\n')
                 for hex_color, rgb in materials.items():
-                    f.write(f'<material name="{hex_color}">\n')
-                    f.write(f'  <color rgba="{rgb[0]:.3f} {rgb[1]:.3f} {rgb[2]:.3f} 1.0"/>\n')
+                    f.write(f'<material name="{_xa(hex_color)}">\n')
+                    f.write(f'  <color rgba="{_xf(rgb[0])} {_xf(rgb[1])} {_xf(rgb[2])} 1.0"/>\n')
                     f.write('</material>\n')
                 f.write('\n')
 
@@ -11909,7 +11924,7 @@ class CustomNodeGraph(NodeGraph):
                         int(rgb[1] * 255),
                         int(rgb[2] * 255)
                     )
-                    file.write(f'      <material name="{hex_color}"/>\n')
+                    file.write(f'      <material name="{_xa(hex_color)}"/>\n')
 
                 file.write('    </visual>\n')
 
@@ -15220,9 +15235,9 @@ class CustomNodeGraph(NodeGraph):
                 (target_pos[2] - current_pos[2])**2
             )
 
-            print(f"  Current child position: [{current_pos[0]:.6f}, {current_pos[1]:.6f}, {current_pos[2]:.6f}]")
-            print(f"  Target child position:  [{target_pos[0]:.6f}, {target_pos[1]:.6f}, {target_pos[2]:.6f}]")
-            print(f"  Distance: {distance:.6f} meters")
+            print(f"  Current child position: [{_xf(current_pos[0])}, {_xf(current_pos[1])}, {_xf(current_pos[2])}]")
+            print(f"  Target child position:  [{_xf(target_pos[0])}, {_xf(target_pos[1])}, {_xf(target_pos[2])}]")
+            print(f"  Distance: {_xf(distance)} meters")
 
             # Move
             # Compute correction target @ inv current :
@@ -15532,7 +15547,7 @@ class CustomNodeGraph(NodeGraph):
                             original_xyz = r_node.inertial_origin['xyz']
                             mirrored_xyz = mirror_center_of_mass_left_right(original_xyz)
                             r_node.inertial_origin['xyz'] = mirrored_xyz
-                            print(f"  ✓ Mirrored COM: Y={mirrored_xyz[1]:.6f} (original: {original_xyz[1]:.6f})")
+                            print(f"  ✓ Mirrored COM: Y={_xf(mirrored_xyz[1])} (original: {_xf(original_xyz[1])})")
                         if 'rpy' not in r_node.inertial_origin and 'rpy' in l_node.inertial_origin:
                             r_node.inertial_origin['rpy'] = l_node.inertial_origin['rpy'].copy()
                 
@@ -15584,7 +15599,7 @@ class CustomNodeGraph(NodeGraph):
                             original_xyz = r_node.inertial_origin['xyz']
                             mirrored_xyz = mirror_center_of_mass_left_right(original_xyz)
                             r_node.inertial_origin['xyz'] = mirrored_xyz
-                            print(f"  ✓ Mirrored COM: Y={mirrored_xyz[1]:.6f} (original: {original_xyz[1]:.6f})")
+                            print(f"  ✓ Mirrored COM: Y={_xf(mirrored_xyz[1])} (original: {_xf(original_xyz[1])})")
                         if 'rpy' not in r_node.inertial_origin and 'rpy' in l_node.inertial_origin:
                             r_node.inertial_origin['rpy'] = l_node.inertial_origin['rpy'].copy()
                 if hasattr(l_node, 'node_color'):
@@ -15649,7 +15664,7 @@ class CustomNodeGraph(NodeGraph):
                         # Example: lower=-10, upper=190 -> lower=-190, upper=10
                         r_node.joint_lower = -l_node.joint_upper
                         r_node.joint_upper = -l_node.joint_lower
-                        print(f"  Swapped and negated joint limits for {['Roll', 'Pitch', 'Yaw'][rotation_axis]} axis: {l_node.joint_lower:.3f},{l_node.joint_upper:.3f} -> {r_node.joint_lower:.3f},{r_node.joint_upper:.3f}")
+                        print(f"  Swapped and negated joint limits for {['Roll', 'Pitch', 'Yaw'][rotation_axis]} axis: {_xf(l_node.joint_lower)},{_xf(l_node.joint_upper)} -> {_xf(r_node.joint_lower)},{_xf(r_node.joint_upper)}")
                     else:  # Pitch or other
                         r_node.joint_lower = l_node.joint_lower
                         r_node.joint_upper = l_node.joint_upper
@@ -15985,7 +16000,7 @@ class CustomNodeGraph(NodeGraph):
                                         abs(r_z - l_z) < 1e-6 and 
                                         abs(r_y + l_y) < 1e-6):
                                         target_point_idx = point_idx
-                                        print(f"    Found matching point at index {point_idx}: xyz=({r_x:.6f}, {r_y:.6f}, {r_z:.6f}) (l_ point: ({l_x:.6f}, {l_y:.6f}, {l_z:.6f}))")
+                                        print(f"    Found matching point at index {point_idx}: xyz=({_xf(r_x)}, {_xf(r_y)}, {_xf(r_z)}) (l_ point: ({_xf(l_x)}, {_xf(l_y)}, {_xf(l_z)}))")
                                         break
                                 
                                 if target_point_idx is not None:
@@ -16015,7 +16030,7 @@ class CustomNodeGraph(NodeGraph):
                                     else:
                                         print(f"    Warning: Parent node {r_parent_name} has no output port at index {target_point_idx}")
                                 else:
-                                    print(f"    No matching point found (x,z same, y negated) for l_ point ({l_x:.6f}, {l_y:.6f}, {l_z:.6f})")
+                                    print(f"    No matching point found (x,z same, y negated) for l_ point ({_xf(l_x)}, {_xf(l_y)}, {_xf(l_z)})")
                             else:
                                 print(f"    Warning: Parent node {r_parent_name} has no points or l_ point info not available")
                         else:
@@ -16038,7 +16053,7 @@ class CustomNodeGraph(NodeGraph):
                                     abs(p_z - l_z) < 1e-6 and 
                                     abs(p_y + l_y) < 1e-6):
                                     target_point_idx = point_idx
-                                    print(f"    Found matching point at index {point_idx}: xyz=({p_x:.6f}, {p_y:.6f}, {p_z:.6f}) (l_ point: ({l_x:.6f}, {l_y:.6f}, {l_z:.6f}))")
+                                    print(f"    Found matching point at index {point_idx}: xyz=({_xf(p_x)}, {_xf(p_y)}, {_xf(p_z)}) (l_ point: ({_xf(l_x)}, {_xf(l_y)}, {_xf(l_z)}))")
                                     break
                             
                             if target_point_idx is not None:
@@ -16066,7 +16081,7 @@ class CustomNodeGraph(NodeGraph):
                                 else:
                                     print(f"    Warning: Parent node {l_parent_node.name()} has no output port at index {target_point_idx}")
                             else:
-                                print(f"    No matching point found (x,z same, y negated) for l_ point ({l_x:.6f}, {l_y:.6f}, {l_z:.6f})")
+                                print(f"    No matching point found (x,z same, y negated) for l_ point ({_xf(l_x)}, {_xf(l_y)}, {_xf(l_z)})")
                         else:
                             print(f"    Warning: Parent node {l_parent_node.name()} has no points or l_ point info not available")
                     else:
@@ -16095,7 +16110,7 @@ class CustomNodeGraph(NodeGraph):
                     l_min_y = min(l_min_y, y)
                     l_max_y = max(l_max_y, y)
 
-                print(f"  l_ bounding box: X({l_min_x:.1f}, {l_max_x:.1f}), Y({l_min_y:.1f}, {l_max_y:.1f})")
+                print(f"  l_ bounding box: X({_xf(l_min_x)}, {_xf(l_max_x)}), Y({_xf(l_min_y)}, {_xf(l_max_y)})")
 
                 # Compute existing r_
                 all_min_x = float('inf')
@@ -16119,7 +16134,7 @@ class CustomNodeGraph(NodeGraph):
                 r_base_x = all_max_x + 300
                 r_base_y = l_min_y  # l_Y
 
-                print(f"  r_ base position: ({r_base_x:.1f}, {r_base_y:.1f})")
+                print(f"  r_ base position: ({_xf(r_base_x)}, {_xf(r_base_y)})")
 
                 # R_ l_
                 for l_node, r_node in l_to_r_mapping.items():
@@ -16131,7 +16146,7 @@ class CustomNodeGraph(NodeGraph):
                     new_x = r_base_x + rel_x
                     new_y = r_base_y + rel_y
                     r_node.set_pos(new_x, new_y)
-                    print(f"  Repositioned {r_node.name()} to ({new_x:.1f}, {new_y:.1f}) (offset: {rel_x:.1f}, {rel_y:.1f})")
+                    print(f"  Repositioned {r_node.name()} to ({_xf(new_x)}, {_xf(new_y)}) (offset: {_xf(rel_x)}, {_xf(rel_y)})")
 
             # Position
             self.recalculate_all_positions()
@@ -16258,11 +16273,11 @@ class CustomNodeGraph(NodeGraph):
             # URDF has no `armature` on <joint>; only damping+friction go into <dynamics>.
             # Callers that need armature should read it from the paired MJCF.
             # 1. Backlash joint: parent_link -> backlash_link (carries original port origin)
-            file.write(f'  <joint name="{backlash_joint_name}" type="revolute">\n')
+            file.write(f'  <joint name="{_xa(backlash_joint_name)}" type="revolute">\n')
             file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
             file.write(f'    <axis xyz="{axis_vec[0]} {axis_vec[1]} {axis_vec[2]}"/>\n')
-            file.write(f'    <parent link="{parent_link}"/>\n')
-            file.write(f'    <child link="{backlash_link}"/>\n')
+            file.write(f'    <parent link="{_xa(parent_link)}"/>\n')
+            file.write(f'    <child link="{_xa(backlash_link)}"/>\n')
             file.write(f'    <limit lower="{-backlash_rad}" upper="{backlash_rad}" effort="0" velocity="0"/>\n')
             file.write(f'    <dynamics damping="{damping}" friction="{frictionloss}"/>\n')
             file.write('  </joint>\n\n')
@@ -16270,7 +16285,7 @@ class CustomNodeGraph(NodeGraph):
             # 2. Backlash dummy link (small but numerically stable inertial)
             body_mass_str = format_float_no_exp(BACKLASH_BODY_MASS)
             body_inertia_str = format_float_no_exp(BACKLASH_BODY_DIAGINERTIA)
-            file.write(f'  <link name="{backlash_link}">\n')
+            file.write(f'  <link name="{_xa(backlash_link)}">\n')
             file.write('    <inertial>\n')
             file.write('      <origin xyz="0 0 0" rpy="0 0 0"/>\n')
             file.write(f'      <mass value="{body_mass_str}"/>\n')
@@ -16292,11 +16307,11 @@ class CustomNodeGraph(NodeGraph):
                 lower -= body_offset
                 upper -= body_offset
 
-            file.write(f'  <joint name="{original_joint_name}" type="revolute">\n')
+            file.write(f'  <joint name="{_xa(original_joint_name)}" type="revolute">\n')
             file.write(f'    <origin xyz="0 0 0" rpy="0 0 0"/>\n')
             file.write(f'    <axis xyz="{axis_vec[0]} {axis_vec[1]} {axis_vec[2]}"/>\n')
-            file.write(f'    <parent link="{backlash_link}"/>\n')
-            file.write(f'    <child link="{child_link}"/>\n')
+            file.write(f'    <parent link="{_xa(backlash_link)}"/>\n')
+            file.write(f'    <child link="{_xa(child_link)}"/>\n')
             file.write(f'    <limit lower="{lower}" upper="{upper}" effort="{effort}" velocity="{velocity}"/>\n')
             ch_damping = getattr(child_node, 'joint_damping', 0.0)
             ch_friction = getattr(child_node, 'joint_frictionloss', 0.0)
@@ -16305,7 +16320,7 @@ class CustomNodeGraph(NodeGraph):
 
             kp = getattr(child_node, 'joint_stiffness', 0.0)
             if kp > 0:
-                file.write(f'  <gazebo reference="{original_joint_name}">\n')
+                file.write(f'  <gazebo reference="{_xa(original_joint_name)}">\n')
                 file.write(f'    <implicitSpringDamper>true</implicitSpringDamper>\n')
                 file.write(f'    <springStiffness>{format_float_no_exp(kp)}</springStiffness>\n')
                 file.write(f'    <springReference>0.0</springReference>\n')
@@ -16349,10 +16364,10 @@ class CustomNodeGraph(NodeGraph):
             if hasattr(child_node, 'rotation_axis'):
                 rot_axis = child_node.rotation_axis
                 if rot_axis == 3:  # Fixed
-                    file.write(f'  <joint name="{joint_name}" type="fixed">\n')
+                    file.write(f'  <joint name="{_xa(joint_name)}" type="fixed">\n')
                     file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
-                    file.write(f'    <parent link="{parent_link}"/>\n')
-                    file.write(f'    <child link="{child_link}"/>\n')
+                    file.write(f'    <parent link="{_xa(parent_link)}"/>\n')
+                    file.write(f'    <child link="{_xa(child_link)}"/>\n')
                     file.write('  </joint>\n')
                 # 旧 rot_axis == 4 (Free/ball) は廃止。is_free_joint = True で
                 # 表現され、URDF export では下の分岐 (rot_axis 0/1/2 = revolute)
@@ -16362,11 +16377,11 @@ class CustomNodeGraph(NodeGraph):
                     # Default to X axis (use slide_axis if available)
                     slide_axis_id = getattr(child_node, 'slide_axis', 0)
                     axis = [1, 0, 0] if slide_axis_id == 0 else ([0, 1, 0] if slide_axis_id == 1 else [0, 0, 1])
-                    file.write(f'  <joint name="{joint_name}" type="prismatic">\n')
+                    file.write(f'  <joint name="{_xa(joint_name)}" type="prismatic">\n')
                     file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
                     file.write(f'    <axis xyz="{axis[0]} {axis[1]} {axis[2]}"/>\n')
-                    file.write(f'    <parent link="{parent_link}"/>\n')
-                    file.write(f'    <child link="{child_link}"/>\n')
+                    file.write(f'    <parent link="{_xa(parent_link)}"/>\n')
+                    file.write(f'    <child link="{_xa(child_link)}"/>\n')
                     # prismatic uses limits in meters
                     lower = getattr(child_node, 'slide_lower', -0.05)
                     upper = getattr(child_node, 'slide_upper', 0.05)
@@ -16379,7 +16394,7 @@ class CustomNodeGraph(NodeGraph):
                     file.write('  </joint>\n')
                 else:
                     # revolute (0=X, 1=Y, 2=Z)
-                    file.write(f'  <joint name="{joint_name}" type="revolute">\n')
+                    file.write(f'  <joint name="{_xa(joint_name)}" type="revolute">\n')
                     axis = [0, 0, 0]
                     if rot_axis == 0:    # X-axis
                         axis = [1, 0, 0]
@@ -16390,8 +16405,8 @@ class CustomNodeGraph(NodeGraph):
 
                     file.write(f'    <origin xyz="{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}" rpy="{origin_rpy[0]} {origin_rpy[1]} {origin_rpy[2]}"/>\n')
                     file.write(f'    <axis xyz="{axis[0]} {axis[1]} {axis[2]}"/>\n')
-                    file.write(f'    <parent link="{parent_link}"/>\n')
-                    file.write(f'    <child link="{child_link}"/>\n')
+                    file.write(f'    <parent link="{_xa(parent_link)}"/>\n')
+                    file.write(f'    <child link="{_xa(child_link)}"/>\n')
 
                     # Get Joint Joint limit
                     lower = getattr(child_node, 'joint_lower', -3.14159)
@@ -16422,7 +16437,7 @@ class CustomNodeGraph(NodeGraph):
                     # Gazebo extension: springStiffness (Kp) + implicitSpringDamper
                     kp = getattr(child_node, 'joint_stiffness', 0.0)
                     if kp > 0:
-                        file.write(f'  <gazebo reference="{joint_name}">\n')
+                        file.write(f'  <gazebo reference="{_xa(joint_name)}">\n')
                         file.write(f'    <implicitSpringDamper>true</implicitSpringDamper>\n')
                         file.write(f'    <springStiffness>{format_float_no_exp(kp)}</springStiffness>\n')
                         file.write(f'    <springReference>0.0</springReference>\n')
@@ -16593,7 +16608,7 @@ class CustomNodeGraph(NodeGraph):
     def _write_link(self, file, node, materials, mesh_format=".stl"):
         """text"""
         try:
-            file.write(f'  <link name="{self._export_link_name(node.name())}">\n')
+            file.write(f'  <link name="{_xa(self._export_link_name(node.name()))}">\n')
 
             # Todo
             if hasattr(node, 'mass_value') and hasattr(node, 'inertia'):
@@ -16644,7 +16659,7 @@ class CustomNodeGraph(NodeGraph):
                             int(rgb[1] * 255),
                             int(rgb[2] * 255)
                         )
-                        file.write(f'      <material name="{hex_color}"/>\n')
+                        file.write(f'      <material name="{_xa(hex_color)}"/>\n')
 
                     file.write('    </visual>\n')
 
@@ -16679,7 +16694,7 @@ class CustomNodeGraph(NodeGraph):
                                             int(dec_node.node_color[1] * 255),
                                             int(dec_node.node_color[2] * 255)
                                         )
-                                        file.write(f'      <material name="{dec_color}"/>\n')
+                                        file.write(f'      <material name="{_xa(dec_color)}"/>\n')
                                     file.write('    </visual>\n')
 
                     # Todo
@@ -16698,7 +16713,7 @@ class CustomNodeGraph(NodeGraph):
     def _write_link_unity(self, file, node, materials, unity_dir_name):
         """Unitytext"""
         try:
-            file.write(f'  <link name="{node.name()}">\n')
+            file.write(f'  <link name="{_xa(node.name())}">\n')
 
             # Todo
             if hasattr(node, 'mass_value') and hasattr(node, 'inertia'):
@@ -16739,7 +16754,7 @@ class CustomNodeGraph(NodeGraph):
                             int(rgb[1] * 255),
                             int(rgb[2] * 255)
                         )
-                        file.write(f'      <material name="{hex_color}"/>\n')
+                        file.write(f'      <material name="{_xa(hex_color)}"/>\n')
                     file.write('    </visual>\n')
 
                     # Add TODO
@@ -16770,7 +16785,7 @@ class CustomNodeGraph(NodeGraph):
                                             int(dec_node.node_color[1] * 255),
                                             int(dec_node.node_color[2] * 255)
                                         )
-                                        file.write(f'      <material name="{dec_color}"/>\n')
+                                        file.write(f'      <material name="{_xa(dec_color)}"/>\n')
                                     file.write('    </visual>\n')
 
                     # Path unity
@@ -16844,7 +16859,7 @@ class CustomNodeGraph(NodeGraph):
             with open(urdf_file, 'w', encoding='utf-8') as f:
                 # Todo
                 f.write('<?xml version="1.0"?>\n')
-                f.write(f'<robot name="{robot_name}">\n\n')
+                f.write(f'<robot name="{_xa(robot_name)}">\n\n')
 
                 # Todo
                 materials = {}
@@ -16862,8 +16877,8 @@ class CustomNodeGraph(NodeGraph):
                 # Export material
                 f.write('<!-- material color setting -->\n')
                 for hex_color, rgb in materials.items():
-                    f.write(f'<material name="{hex_color}">\n')
-                    f.write(f'  <color rgba="{rgb[0]:.3f} {rgb[1]:.3f} {rgb[2]:.3f} 1.0"/>\n')
+                    f.write(f'<material name="{_xa(hex_color)}">\n')
+                    f.write(f'  <color rgba="{_xf(rgb[0])} {_xf(rgb[1])} {_xf(rgb[2])} 1.0"/>\n')
                     f.write('</material>\n')
                 f.write('\n')
 
@@ -16987,7 +17002,7 @@ class CustomNodeGraph(NodeGraph):
             default_height = getattr(self, 'default_base_link_height', DEFAULT_BASE_LINK_HEIGHT)
             if hasattr(self, 'graph') and hasattr(self.graph, 'default_base_link_height'):
                 default_height = self.graph.default_base_link_height
-            height_input.setText(f"{default_height:.4f}")
+            height_input.setText(f"{_xf(default_height)}")
             # Todo
             height_input.setValidator(QDoubleValidator(0.0, 100.0, 6))
             layout.addWidget(height_input)
@@ -17724,8 +17739,8 @@ class CustomNodeGraph(NodeGraph):
             if integrator_val not in MJCF_INTEGRATOR_CHOICES:
                 integrator_val = DEFAULT_MJCF_OPTION_INTEGRATOR
             f.write(
-                f'  <option timestep="{timestep_val:g}" iterations="{iterations_val}" '
-                f'cone="elliptic" impratio="{impratio_val:g}" '
+                f'  <option timestep="{_xf(timestep_val)}" iterations="{iterations_val}" '
+                f'cone="elliptic" impratio="{_xf(impratio_val)}" '
                 f'integrator="{integrator_val}" />\n\n'
             )
 
@@ -17739,9 +17754,9 @@ class CustomNodeGraph(NodeGraph):
             gcondim = self.default_mjcf_geom_condim
             f.write('  <default>\n')
             f.write('    <!-- textset -->\n')
-            f.write(f'    <joint damping="{jdamp:g}" armature="{armature_val:g}" frictionloss="{floss:g}"/>\n')
-            f.write(f'    <position inheritrange="1" timeconst="{timeconst_val:g}"/>\n')
-            f.write(f'    <geom friction="{gfriction:g}" margin="{gmargin:g}" condim="{gcondim}"/>\n')
+            f.write(f'    <joint damping="{_xf(jdamp)}" armature="{_xf(armature_val)}" frictionloss="{_xf(floss)}"/>\n')
+            f.write(f'    <position inheritrange="1" timeconst="{_xf(timeconst_val)}"/>\n')
+            f.write(f'    <geom friction="{_xf(gfriction)}" margin="{_xf(gmargin)}" condim="{gcondim}"/>\n')
             
             # Default class
             f.write('    <!-- textーtext：group=0 -->\n')
@@ -17811,10 +17826,10 @@ class CustomNodeGraph(NodeGraph):
                         # 1 1 1 scale
                         if mesh_scale != [1.0, 1.0, 1.0]:
                             scale_str = f"{mesh_scale[0]} {mesh_scale[1]} {mesh_scale[2]}"
-                            f.write(f'    <mesh name="{unique_mesh_name}" scale="{scale_str}" file="{mesh_filename}" />\n')
+                            f.write(f'    <mesh name="{_xa(unique_mesh_name)}" scale="{scale_str}" file="{_xa(mesh_filename)}" />\n')
                             print(f"    ✓ Added scale attribute: {scale_str}")
                         else:
-                            f.write(f'    <mesh name="{unique_mesh_name}" file="{mesh_filename}" />\n')
+                            f.write(f'    <mesh name="{_xa(unique_mesh_name)}" file="{_xa(mesh_filename)}" />\n')
                 
                 # Add collider_file_to_name
                 if hasattr(node, '_collider_mesh_name'):
@@ -17843,7 +17858,7 @@ class CustomNodeGraph(NodeGraph):
                             collider_file_to_name[collider_filename] = unique_collider_name
                             node._collider_mesh_name = unique_collider_name
                         
-                        f.write(f'    <mesh name="{unique_collider_name}" file="{collider_filename}" />\n')
+                        f.write(f'    <mesh name="{_xa(unique_collider_name)}" file="{_xa(collider_filename)}" />\n')
             
             # Update mesh_names mesh_file_to_name node mesh
             for node in self.all_nodes():
@@ -17899,7 +17914,7 @@ class CustomNodeGraph(NodeGraph):
                             ctrlrange = "-3.14159 3.14159"
 
                         # Gear 1 1 1:1 (ctrlrange removed - using inheritrange from default)
-                        f.write(f'    <position name="{actuator_name}" joint="{joint_name}" gear="1" kp="{kp_str}" kv="{kv_str}" forcerange="{forcerange}" forcelimited="true"/>\n')
+                        f.write(f'    <position name="{_xa(actuator_name)}" joint="{_xa(joint_name)}" gear="1" kp="{kp_str}" kv="{kv_str}" forcerange="{forcerange}" forcelimited="true"/>\n')
                     f.write('  </actuator>\n\n')
 
             # sensor
@@ -18117,7 +18132,7 @@ class CustomNodeGraph(NodeGraph):
             # Compute z
             if z_min != float('inf') and z_max != float('-inf'):
                 z_height = z_max - z_min
-                print(f"Model z-axis height: {z_height:.6f} m (min: {z_min:.6f}, max: {z_max:.6f})")
+                print(f"Model z-axis height: {_xf(z_height)} m (min: {_xf(z_min)}, max: {_xf(z_max)})")
                 return z_height
             else:
                 print("Warning: Could not calculate model z-height, using default 0.5 m")
@@ -18156,19 +18171,19 @@ class CustomNodeGraph(NodeGraph):
                     camera_center_z = DEFAULT_BASE_LINK_HEIGHT
             else:
                 camera_center_z = base_link_height
-            print(f"Setting camera center to z={camera_center_z:.6f} m (using base_link_height)")
+            print(f"Setting camera center to z={_xf(camera_center_z)} m (using base_link_height)")
 
             # Basename robot
-            f.write(f'  <include file="{robot_file_basename}"/>\n\n')
+            f.write(f'  <include file="{_xa(robot_file_basename)}"/>\n\n')
 
             # Base_link world
             # Note base_link note: body
             if fix_base_to_ground:
                 f.write('  <equality>\n')
-                f.write(f'    <weld name="fix_base_to_ground" body1="{root_body_name}" body2="world"/>\n')
+                f.write(f'    <weld name="fix_base_to_ground" body1="{_xa(root_body_name)}" body2="world"/>\n')
                 f.write('  </equality>\n\n')
 
-            f.write(f'  <statistic center="0 0 {camera_center_z:.6f}" extent="{max(0.8, model_z_height * 1.2 if model_z_height else 0.8):.6f}"/>\n\n')
+            f.write(f'  <statistic center="0 0 {_xf(camera_center_z)}" extent="{max(0.8, model_z_height * 1.2 if model_z_height else 0.8):.6f}"/>\n\n')
             f.write('  <visual>\n')
             f.write('    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>\n')
             f.write('    <rgba haze="0.15 0.25 0.35 1"/>\n')
@@ -18199,9 +18214,9 @@ class CustomNodeGraph(NodeGraph):
             f.write(MJCF_XML_DECLARATION)
             f.write('<mujoco>\n')
             f.write('  <default>\n')
-            f.write(f'    <joint damping="{jdamp:g}" armature="{armature_val:g}" />\n')
-            f.write(f'    <geom contype="1" conaffinity="1" condim="{gcondim}" friction="{gfriction:g} 0.1 0.1" />\n')
-            f.write(f'    <position inheritrange="1" timeconst="{timeconst_val:g}"/>\n')
+            f.write(f'    <joint damping="{_xf(jdamp)}" armature="{_xf(armature_val)}" />\n')
+            f.write(f'    <geom contype="1" conaffinity="1" condim="{gcondim}" friction="{_xf(gfriction)} 0.1 0.1" />\n')
+            f.write(f'    <position inheritrange="1" timeconst="{_xf(timeconst_val)}"/>\n')
             f.write('  </default>\n')
             f.write('</mujoco>\n')
         print(f"Created defaults file: {file_path}")
@@ -18249,7 +18264,7 @@ class CustomNodeGraph(NodeGraph):
                 kv_str = format_float_no_exp(damping)
                 forcerange = f"-{format_float_no_exp(effort)} {format_float_no_exp(effort)}"
 
-                f.write(f'    <position name="{motor_name}" joint="{joint_name}" gear="1" kp="{kp_str}" kv="{kv_str}" forcerange="{forcerange}" forcelimited="true" />\n')
+                f.write(f'    <position name="{_xa(motor_name)}" joint="{_xa(joint_name)}" gear="1" kp="{kp_str}" kv="{kv_str}" forcerange="{forcerange}" forcelimited="true" />\n')
 
             f.write('  </actuator>\n')
             f.write('</mujoco>\n')
@@ -18380,8 +18395,8 @@ class CustomNodeGraph(NodeGraph):
             # 4 節リンクの節が外れるのを防ぐ。
             anchor_str = f"{anchor1[0]} {anchor1[1]} {anchor1[2]}"
             file.write(
-                f'    <connect name="{name}" body1="{body1}" body2="{body2}" '
-                f'anchor="{anchor_str}" '
+                f'    <connect name="{_xa(name)}" body1="{_xa(body1)}" body2="{_xa(body2)}" '
+                f'anchor="{_xa(anchor_str)}" '
                 f'solref="{DEFAULT_MJCF_CONNECT_SOLREF}" '
                 f'solimp="{DEFAULT_MJCF_CONNECT_SOLIMP}"/>\n'
             )
@@ -18404,8 +18419,8 @@ class CustomNodeGraph(NodeGraph):
                 # 適用して「鉄骨」相当の剛性に統一。
                 anchor_str = f"{origin_xyz[0]} {origin_xyz[1]} {origin_xyz[2]}"
                 file.write(
-                    f'    <connect body1="{parent_sanitized}" body2="{child_sanitized}" '
-                    f'anchor="{anchor_str}" '
+                    f'    <connect body1="{_xa(parent_sanitized)}" body2="{_xa(child_sanitized)}" '
+                    f'anchor="{_xa(anchor_str)}" '
                     f'solref="{DEFAULT_MJCF_CONNECT_SOLREF}" '
                     f'solimp="{DEFAULT_MJCF_CONNECT_SOLIMP}"/>\n'
                 )
@@ -18467,9 +18482,9 @@ class CustomNodeGraph(NodeGraph):
                     # 1 1 1 scale
                     if mesh_scale != [1.0, 1.0, 1.0]:
                         scale_str = f"{mesh_scale[0]} {mesh_scale[1]} {mesh_scale[2]}"
-                        f.write(f'    <mesh name="{mesh_name}" scale="{scale_str}" file="{mesh_filename}" />\n')
+                        f.write(f'    <mesh name="{_xa(mesh_name)}" scale="{scale_str}" file="{_xa(mesh_filename)}" />\n')
                     else:
-                        f.write(f'    <mesh name="{mesh_name}" file="{mesh_filename}" />\n')
+                        f.write(f'    <mesh name="{_xa(mesh_name)}" file="{_xa(mesh_filename)}" />\n')
 
             f.write('  </asset>\n')
             f.write('</mujoco>\n')
@@ -18756,7 +18771,7 @@ class CustomNodeGraph(NodeGraph):
         else:
             print(f"[MJCF_EXPORT_DEBUG] Node '{node.name()}' has NO visual_origin")
 
-        geom_line = f'{indent_str}  <geom class="visual" type="mesh" mesh="{mesh_name}"{pos_attr}{quat_attr} rgba="{color_str}" group="1"/>\n'
+        geom_line = f'{indent_str}  <geom class="visual" type="mesh" mesh="{_xa(mesh_name)}"{pos_attr}{quat_attr} rgba="{color_str}" group="1"/>\n'
         print(f"  → Final geom line: {geom_line.strip()}")
         file.write(geom_line)
         
@@ -18874,27 +18889,27 @@ class CustomNodeGraph(NodeGraph):
                         # Visual visual mesh
                         # Visual mesh mesh _mesh_name asset
                         if collider_mesh_name == mesh_name:
-                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
+                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{_xa(collider_mesh_name)}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
                         else:
                             # Visual mesh
-                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
+                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{_xa(mesh_name)}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
                     else:
                         # Node _collider_mesh_name : node._collider_mesh_name
                         if hasattr(node, '_collider_mesh_name') and node._collider_mesh_name:
                             collider_mesh_name = node._collider_mesh_name
                             # Visual visual mesh
                             if collider_mesh_name == mesh_name:
-                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{collider_mesh_name}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
+                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{_xa(collider_mesh_name)}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
                             else:
                                 # Visual mesh
-                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
+                                file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{_xa(mesh_name)}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
                         else:
                             # Collider _mesh_name visual mesh
                             # Asset mesh
-                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
+                            file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{_xa(mesh_name)}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
                 else:
                     # Default: visual and collision use same mesh
-                    file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{mesh_name}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
+                    file.write(f'{indent_str}  <geom class="collision" type="mesh" mesh="{_xa(mesh_name)}" pos="{collider_pos_str}"{collider_quat_attr} group="3"/>\n')
 
     def _calculate_model_lowest_point(self, base_node, visited_nodes=None):
         """modeltext(textztransforms)text
@@ -19022,7 +19037,7 @@ class CustomNodeGraph(NodeGraph):
         self._imu_site_names.add(site_name)
         self._imu_sites.append(site_name)
         file.write(
-            f'{indent_str}  <site name="{site_name}" '
+            f'{indent_str}  <site name="{_xa(site_name)}" '
             f'pos="{xyz[0]} {xyz[1]} {xyz[2]}" '
             f'euler="{angle[0]} {angle[1]} {angle[2]}" '
             f'size="0.01" group="4"/>\n'
@@ -19053,7 +19068,7 @@ class CustomNodeGraph(NodeGraph):
         self._camera_node_names.add(cam_name)
         self._camera_nodes.append(cam_name)
         file.write(
-            f'{indent_str}  <camera name="{cam_name}" '
+            f'{indent_str}  <camera name="{_xa(cam_name)}" '
             f'pos="{xyz[0]} {xyz[1]} {xyz[2]}" '
             f'euler="{angle[0]} {angle[1]} {angle[2]}" '
             f'fovy="45"/>\n'
@@ -19129,11 +19144,11 @@ class CustomNodeGraph(NodeGraph):
                 # Fix base to ground model 0 fix base ground: z
                 min_z = self._calculate_model_lowest_point(node, visited_nodes.copy())
                 z_pos = max(0, -min_z)  # z=0
-                print(f"Fix Base to Ground: model lowest point = {min_z:.6f}, base z_pos = {z_pos:.6f}")
+                print(f"Fix Base to Ground: model lowest point = {_xf(min_z)}, base z_pos = {_xf(z_pos)}")
             else:
                 # : base_link_height
                 z_pos = getattr(self, 'base_link_height', getattr(self, 'default_base_link_height', DEFAULT_BASE_LINK_HEIGHT))
-            file.write(f'{indent_str}<body name="{unique_name}" pos="0 0 {z_pos}">\n')
+            file.write(f'{indent_str}<body name="{_xa(unique_name)}" pos="0 0 {z_pos}">\n')
 
             # Freejoint base_link
             # Fix_base_to_ground true if <freejoint> true freejoint
@@ -19262,7 +19277,7 @@ class CustomNodeGraph(NodeGraph):
                                     pos_str = f"{xyz[0]} {xyz[1]} {xyz[2]}"
 
                             # Massless decoration <geom class visual > massless decoration geom
-                            file.write(f'{indent_str}  <geom class="visual" type="mesh" mesh="{dec_mesh_name}" rgba="{dec_color_str}" pos="{pos_str}" group="2"/>\n')
+                            file.write(f'{indent_str}  <geom class="visual" type="mesh" mesh="{_xa(dec_mesh_name)}" rgba="{dec_color_str}" pos="{pos_str}" group="2"/>\n')
                         continue
 
                     # Hide mesh check skip hide mesh
@@ -19331,7 +19346,7 @@ class CustomNodeGraph(NodeGraph):
                 quat_str = f"{format_float_no_exp(q_base[0])} {format_float_no_exp(q_base[1])} {format_float_no_exp(q_base[2])} {format_float_no_exp(q_base[3])}"
                 orientation_attr = f' quat="{quat_str}"'
 
-        file.write(f'{indent_str}<body name="{unique_name}"{pos_attr}{orientation_attr}>\n')
+        file.write(f'{indent_str}<body name="{_xa(unique_name)}"{pos_attr}{orientation_attr}>\n')
 
         # Joint output
         # Body pos parent offset joint pos 0 0 0 origin
@@ -19357,7 +19372,7 @@ class CustomNodeGraph(NodeGraph):
             
             # Remove range limited margin armature frictionloss damping stiffness ref output velocity MJCF MJCF
             joint_attrs = f'{joint_info["range"]}{joint_info["limited"]}{joint_info["margin"]}{joint_info["armature"]}{joint_info["frictionloss"]}{joint_info["damping"]}{joint_info["stiffness"]}{joint_info["ref"]}'
-            file.write(f'{indent_str}  <joint name="{unique_joint_name}" type="{joint_info["type"]}" pos="0 0 0" axis="{joint_info["axis"]}"{joint_attrs} />\n')
+            file.write(f'{indent_str}  <joint name="{_xa(unique_joint_name)}" type="{joint_info["type"]}" pos="0 0 0" axis="{joint_info["axis"]}"{joint_attrs} />\n')
             is_moving_body = True  # jointbodymoving body
 
         # Todo
@@ -19556,7 +19571,7 @@ class CustomNodeGraph(NodeGraph):
                 max_inertia = np.max(np.abs(np.diag(I_body)))
                 if mass > 0 and max_inertia / mass > 10.0:  # （: mass=0.03, inertia=0.01）
                     print(f"  ⚠ WARNING: Suspiciously large inertia for {node_name}")
-                    print(f"     mass={mass:.6f}, max_inertia={max_inertia:.6e}, ratio={max_inertia/mass:.2f}")
+                    print(f"     mass={_xf(mass)}, max_inertia={max_inertia:.6e}, ratio={max_inertia/mass:.2f}")
                 
                 # Format for MJCF fullinertia (preferred over diaginertia)
                 fullinertia_str = self._format_inertia_for_mjcf(I_body)
@@ -19617,7 +19632,7 @@ class CustomNodeGraph(NodeGraph):
                                 pos_str = f"{xyz[0]} {xyz[1]} {xyz[2]}"
 
                         # Massless decoration <geom class visual > massless decoration geom
-                        file.write(f'{indent_str}  <geom class="visual" type="mesh" mesh="{dec_mesh_name}" rgba="{dec_color_str}" pos="{pos_str}"/>\n')
+                        file.write(f'{indent_str}  <geom class="visual" type="mesh" mesh="{_xa(dec_mesh_name)}" rgba="{dec_color_str}" pos="{pos_str}"/>\n')
                     continue
 
                 # Hide mesh check skip hide mesh
@@ -19695,7 +19710,7 @@ class CustomNodeGraph(NodeGraph):
                     )
                     quat_attr = f' quat="{quat_str}"'
 
-            file.write(f'{indent_str}<body name="{unique_backlash_body_name}" pos="{pos_str}"{quat_attr}>\n')
+            file.write(f'{indent_str}<body name="{_xa(unique_backlash_body_name)}" pos="{pos_str}"{quat_attr}>\n')
             body_mass_str = format_float_no_exp(BACKLASH_BODY_MASS)
             body_diag_str = format_float_no_exp(BACKLASH_BODY_DIAGINERTIA)
             file.write(
@@ -19719,7 +19734,7 @@ class CustomNodeGraph(NodeGraph):
             if armature_val > 0.0:
                 joint_extra += f' armature="{format_float_no_exp(armature_val)}"'
             file.write(
-                f'{indent_str}  <joint name="{unique_backlash_joint_name}" type="hinge" '
+                f'{indent_str}  <joint name="{_xa(unique_backlash_joint_name)}" type="hinge" '
                 f'pos="0 0 0" axis="{axis_vec[0]} {axis_vec[1]} {axis_vec[2]}" '
                 f'range="{format_float_no_exp(-backlash_rad)} {format_float_no_exp(backlash_rad)}" '
                 f'limited="true" damping="{format_float_no_exp(damping)}"{joint_extra}/>\n'
@@ -19898,7 +19913,7 @@ class CustomNodeGraph(NodeGraph):
                 else:
                     # Swap if lower > upper
                     lower, upper = upper, lower
-                    print(f"  Warning: Joint '{joint_name}' has lower >= upper, swapped to [{lower:.6f}, {upper:.6f}]")
+                    print(f"  Warning: Joint '{joint_name}' has lower >= upper, swapped to [{_xf(lower)}, {_xf(upper)}]")
             # Output as radians (already in radians)
             range_str = f' range="{format_float_no_exp(lower)} {format_float_no_exp(upper)}"'
         else:
@@ -20023,7 +20038,7 @@ class CustomNodeGraph(NodeGraph):
         """
         try:
             print("\nCalculating inertia tensor for mirrored model...")
-            print(f"Mass: {mass:.6f}")
+            print(f"Mass: {_xf(mass)}")
             print(f"Center of Mass (before mirroring): {center_of_mass}")
 
             # Y
