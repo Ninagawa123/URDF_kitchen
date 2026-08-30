@@ -7513,6 +7513,35 @@ def import_mjcf(graph):
                         break
             print(f"\n  Connected {connected_count} out of {len(unconnected_nodes)} unconnected nodes")
 
+            # Mark the "free / branch" side of each closed loop.
+            # For every <equality connect body1="X" body2="Y"/>, body2 is the
+            # passive side of the loop: the Inspector should show its Free
+            # checkbox ON. The Roll/Pitch/Yaw checkbox comes from the body's
+            # own <joint axis="..."/> (already applied above); if the body has
+            # no <joint> at all we fall back to rotation_axis=3 (Fixed) so a
+            # ball-style closure has all axis checkboxes off.
+            if closed_loop_joints:
+                print("\n=== Marking closed-loop free (body2) nodes ===")
+                for cl in closed_loop_joints:
+                    b2 = cl.get('child')  # body2 in MJCF <connect>
+                    node = nodes.get(b2)
+                    if node is None:
+                        print(f"  [FreeMark] body2 '{b2}' node not found — skipping")
+                        continue
+                    b2_data = bodies_data.get(b2, {}) or {}
+                    had_joint = b2_data.get('rotation_axis') is not None
+                    node.is_free_joint = True
+                    if not had_joint:
+                        # Ball / connect-only closure with no local joint.
+                        node.rotation_axis = 3  # Fixed → Roll/Pitch/Yaw off
+                    axis_names = ['X (Roll)', 'Y (Pitch)', 'Z (Yaw)',
+                                  'Fixed', 'Free (legacy)', 'Slide']
+                    axis_label = (axis_names[node.rotation_axis]
+                                  if 0 <= getattr(node, 'rotation_axis', 0) < len(axis_names)
+                                  else str(node.rotation_axis))
+                    print(f"  [FreeMark] {b2}: is_free_joint=True, "
+                          f"rotation_axis={node.rotation_axis} ({axis_label})")
+
             # Create and connect CoincidentNodes (from MJCF equality section)
             # CoincidentNode connects two bodies with a constraint (no parent-child relationship)
             print("\n=== Creating CoincidentNodes from MJCF equality section ===")
@@ -7914,8 +7943,132 @@ def open_mjcf_for_write(file_path):
     Wraps builtin open() to guarantee UTF-8 regardless of the platform default
     codec. Callers should also write MJCF_XML_DECLARATION as the first line so
     the resulting file self-describes its encoding.
+
+    Uses newline='\\n' so writes never emit CRLF on Windows — some strict
+    XML parsers and downstream tools trip on mixed line endings in MJCF/URDF
+    output.
     """
-    return open(file_path, 'w', encoding='utf-8')
+    return open(file_path, 'w', encoding='utf-8', newline='\n')
+
+
+# ---------------------------------------------------------------------------
+# XML output sanitizers
+# ---------------------------------------------------------------------------
+# These helpers exist because kitchen used to emit MJCF/URDF that other tools
+# refused to load — the root causes were:
+#   1. User-typed link/joint/mesh names interpolated raw into attributes,
+#      so an unescaped & / < / > / quote / control byte silently corrupted
+#      the file.
+#   2. XML comments containing "--" (illegal per the XML spec) or trailing
+#      "-" before "-->" (also illegal).
+#   3. Python's :g / str(float) can emit exponent notation like "1e-05"
+#      which many MJCF/URDF consumers accept, but combined with locale
+#      surprises (comma decimals) it can slip in as invalid tokens.
+# Every string that ends up inside an attribute value, an element text
+# node, or an XML comment MUST go through the appropriate helper below.
+
+# Characters that XML 1.0 forbids anywhere in a document (except a handful
+# that are also disallowed inside attribute values). We strip these outright
+# rather than try to escape them; if a user's link name has a NUL byte the
+# right thing to do is drop the byte, not corrupt the file.
+_XML_INVALID_CHARS_RE = None
+_XML_INVALID_ATTR_CHARS_RE = None
+
+
+def _compile_invalid_char_res():
+    global _XML_INVALID_CHARS_RE, _XML_INVALID_ATTR_CHARS_RE
+    if _XML_INVALID_CHARS_RE is None:
+        import re
+        # XML 1.0 legal chars: #x9 | #xA | #xD | [#x20-#xD7FF] | ...
+        _XML_INVALID_CHARS_RE = re.compile(
+            r'[^\x09\x0A\x0D\x20-퟿-�]')
+        # Inside attribute values also strip TAB / LF / CR so line-based
+        # tools don't get confused by embedded newlines in a name field.
+        _XML_INVALID_ATTR_CHARS_RE = re.compile(
+            r'[^\x20-퟿-�]')
+
+
+def _strip_invalid_chars(text, attr=False):
+    _compile_invalid_char_res()
+    pattern = _XML_INVALID_ATTR_CHARS_RE if attr else _XML_INVALID_CHARS_RE
+    return pattern.sub('', text)
+
+
+def xml_escape_text(value):
+    """Escape a string for use inside an XML element text node.
+
+    Handles & < > and strips XML-illegal control characters.
+    """
+    if value is None:
+        return ''
+    s = str(value)
+    s = _strip_invalid_chars(s, attr=False)
+    return (s.replace('&', '&amp;')
+             .replace('<', '&lt;')
+             .replace('>', '&gt;'))
+
+
+def xml_escape_attr(value):
+    """Escape a string for use as an XML attribute value.
+
+    The result is the *inner* text only — callers still add the surrounding
+    quotes. Handles & < > " ' and strips XML-illegal / whitespace-hostile
+    characters that would break tools that parse attributes line-by-line.
+    """
+    if value is None:
+        return ''
+    s = str(value)
+    s = _strip_invalid_chars(s, attr=True)
+    return (s.replace('&', '&amp;')
+             .replace('<', '&lt;')
+             .replace('>', '&gt;')
+             .replace('"', '&quot;')
+             .replace("'", '&apos;'))
+
+
+def xml_safe_comment(text):
+    """Return `text` safe to use inside an XML comment (<!-- ... -->).
+
+    XML forbids '--' inside a comment and forbids the comment ending with
+    '-'. Also drops XML-illegal control characters. Non-ASCII (e.g. Japanese)
+    is preserved — UTF-8 files carry it fine.
+    """
+    if text is None:
+        return ''
+    s = _strip_invalid_chars(str(text), attr=False)
+    # Break up any '--' sequence.
+    while '--' in s:
+        s = s.replace('--', '- -')
+    # Comment must not end with '-'.
+    if s.endswith('-'):
+        s += ' '
+    return s
+
+
+def format_float_xml(value, precision=6):
+    """Format a float for MJCF/URDF output.
+
+    - Locale-independent (always uses '.' as decimal separator).
+    - Avoids scientific notation for typical robotics scales.
+    - Trims trailing zeros so files stay diff-friendly.
+    - Falls back to str() for non-numeric input (e.g. int stays int-like).
+    """
+    try:
+        v = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if v == 0.0:
+        return '0'
+    # Use fixed-point with high precision, then trim.
+    s = ('%.*f' % (precision, v)).rstrip('0').rstrip('.')
+    if s in ('', '-'):
+        return '0'
+    return s
+
+
+def format_float_list_xml(values, precision=6, sep=' '):
+    """Format an iterable of floats as a space-separated MJCF/URDF value."""
+    return sep.join(format_float_xml(v, precision) for v in values)
 
 
 def convert_mesh_filename(original_filename, target_format):
