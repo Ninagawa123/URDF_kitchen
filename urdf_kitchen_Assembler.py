@@ -146,17 +146,24 @@ MJCF_INTEGRATOR_CHOICES = ("Euler", "implicit", "implicitfast", "RK4")
 # 全ての <connect> (CoincidentNode + ClosedLoopJointNode ball) に共通適用。
 DEFAULT_MJCF_CONNECT_SOLREF = "0.005 1"
 DEFAULT_MJCF_CONNECT_SOLIMP = "0.99 0.999 0.001"
-# Free ヒンジ / ball joint の受動関節に付与する下限値。
-# 「ほぼ摩擦なしのボールベアリング」相当:
-#   - damping はソルバ安定化に必要な最小限だけ残す (完全 0 だと数値発散しやすい)
-#   - armature は非常に軽い反射慣性
-#   - frictionloss (Coulomb) は 0 = 静止摩擦なし
-# 実際の書き出しは max(ノード値, 下記) なので、ユーザがより大きい値を
-# 明示していればそちらが尊重される。ball joint は元々 3 属性が空だったので
-# この最低値がそのまま適用される。
-FREE_JOINT_GREASE_DAMPING = 0.02        # N·m·s/rad (light viscous)
-FREE_JOINT_GREASE_ARMATURE = 0.001      # kg·m^2 (very low reflected inertia)
-FREE_JOINT_GREASE_FRICTIONLOSS = 0.0    # N·m (frictionless Coulomb)
+# Free チェックが ON の全ての受動関節 (Free+X/Y/Z hinge, Free+Slide, Ball
+# closure) に MJCF 出力時に「強制上書き」で適用する標準値。
+# 想定ターゲット: 全長 20cm 〜 1m の小〜中型ロボット。
+# 物理的モチーフ: グリス潤滑した精密ボールベアリング 1 個ぶんの内部摩擦。
+# 安全側 (発振抑制側) を優先するが、動きの重さは最小限。
+# ・stiffness = 0     … バネなし (Free の必須要件。100 だと関節ロック)
+# ・damping = 0.005    … ソルバ安定化用の微小粘性 (グリスの粘度相当)
+# ・frictionloss = 0.001 … シール摺動 + ブレイクアウェイ相当の Coulomb 摩擦
+# ・armature = 0.0001  … 反射慣性 (ゼロだと数値発散しやすいので下駄)
+# NOTE: これは「下限」ではなく **強制上書き** です。Inspector で個別に
+# 設定した joint_stiffness / damping / frictionloss / armature の値は
+# Free が ON の関節では無視されます (Free = 受動関節としての物理的一貫性を
+# 保証するため)。より重い値が欲しい場合は Free を OFF にして通常ヒンジ
+# として書き出してください。
+FREE_JOINT_GREASE_STIFFNESS = 0.0       # N·m/rad  (spring MUST be off for Free)
+FREE_JOINT_GREASE_DAMPING = 0.005       # N·m·s/rad (light viscous, bearing+grease)
+FREE_JOINT_GREASE_FRICTIONLOSS = 0.001  # N·m (small Coulomb, seal drag)
+FREE_JOINT_GREASE_ARMATURE = 0.0001     # kg·m^2 (tiny reflected inertia, solver stability)
 DEFAULT_MJCF_MESH_SIMPLIFY_THRESHOLD = 50000  # Face count threshold for mesh simplification warning
 DEFAULT_MJCF_MESH_MAX_FACES = 100000000  # Max face count for mesh export (100M; was 1M, increased for large CAD meshes)
 DEFAULT_NODE_GRID_ENABLED = True  # Enable/disable node grid snapping
@@ -19852,16 +19859,10 @@ class CustomNodeGraph(NodeGraph):
         motor_name = f"{joint_name}_motor"
 
         # Ball joint has no range limit (uses quaternion representation).
-        # Free + Fixed/Slide 経由の ball closure は、ノード側で damping/armature/
-        # frictionloss が明示されていないことが多いのでソフトグリス下限値を
-        # 保証する (max 合成)。これがないと球関節が重力で暴れて閉ループが破綻する。
+        # Ball は必ず Free 系 (Fixed+Free or Slide+Free 由来) なので、Inspector 値
+        # に関わらず FREE_JOINT_GREASE_* を強制上書きで適用する。stiffness は
+        # ball では書き出さない (バネ付きball は MuJoCo で挙動不定になりやすい)。
         if joint_type == "ball":
-            _damp = max(float(getattr(child_node, 'joint_damping', 0.0) or 0.0),
-                        FREE_JOINT_GREASE_DAMPING)
-            _arm = max(float(getattr(child_node, 'joint_armature', 0.0) or 0.0),
-                       FREE_JOINT_GREASE_ARMATURE)
-            _fl = max(float(getattr(child_node, 'joint_frictionloss', 0.0) or 0.0),
-                      FREE_JOINT_GREASE_FRICTIONLOSS)
             return {
                 'name': joint_name,
                 'type': joint_type,
@@ -19871,9 +19872,9 @@ class CustomNodeGraph(NodeGraph):
                 'range': "",
                 'limited': "",
                 'margin': "",
-                'armature': f' armature="{format_float_no_exp(_arm)}"',
-                'frictionloss': f' frictionloss="{format_float_no_exp(_fl)}"',
-                'damping': f' damping="{format_float_no_exp(_damp)}"',
+                'armature': f' armature="{format_float_no_exp(FREE_JOINT_GREASE_ARMATURE)}"',
+                'frictionloss': f' frictionloss="{format_float_no_exp(FREE_JOINT_GREASE_FRICTIONLOSS)}"',
+                'damping': f' damping="{format_float_no_exp(FREE_JOINT_GREASE_DAMPING)}"',
                 'stiffness': "",
                 'ref': "",
                 'motor_name': motor_name,
@@ -19930,18 +19931,22 @@ class CustomNodeGraph(NodeGraph):
         if hasattr(child_node, 'joint_margin'):
             margin_str = f' margin="{format_float_no_exp(child_node.joint_margin)}"'
 
-        # is_free_joint (hinge closure) の受動関節にはソフトグリス下限を保証する。
-        # 通常の hinge (is_free_joint=False) はノード値そのまま。
-        _armature_val = float(getattr(child_node, 'joint_armature', 0.0) or 0.0) \
-            if hasattr(child_node, 'joint_armature') else None
-        _frictionloss_val = float(getattr(child_node, 'joint_frictionloss', 0.0) or 0.0) \
-            if hasattr(child_node, 'joint_frictionloss') else None
-        _damping_val = float(getattr(child_node, 'joint_damping', 0.0) or 0.0) \
-            if hasattr(child_node, 'joint_damping') else None
+        # Free (X/Y/Z hinge + Free チェック、Slide + Free チェック) の受動関節
+        # は FREE_JOINT_GREASE_* を **強制上書き** で適用する。Inspector の
+        # joint_stiffness / joint_damping / joint_frictionloss / joint_armature は
+        # Free 関節ではすべて無視される (受動関節としての物理的一貫性のため)。
+        # 通常の hinge / slide (is_free_joint=False) はノード値をそのまま出す。
         if is_free_joint:
-            _armature_val = max(_armature_val or 0.0, FREE_JOINT_GREASE_ARMATURE)
-            _frictionloss_val = max(_frictionloss_val or 0.0, FREE_JOINT_GREASE_FRICTIONLOSS)
-            _damping_val = max(_damping_val or 0.0, FREE_JOINT_GREASE_DAMPING)
+            _armature_val = FREE_JOINT_GREASE_ARMATURE
+            _frictionloss_val = FREE_JOINT_GREASE_FRICTIONLOSS
+            _damping_val = FREE_JOINT_GREASE_DAMPING
+        else:
+            _armature_val = float(getattr(child_node, 'joint_armature', 0.0) or 0.0) \
+                if hasattr(child_node, 'joint_armature') else None
+            _frictionloss_val = float(getattr(child_node, 'joint_frictionloss', 0.0) or 0.0) \
+                if hasattr(child_node, 'joint_frictionloss') else None
+            _damping_val = float(getattr(child_node, 'joint_damping', 0.0) or 0.0) \
+                if hasattr(child_node, 'joint_damping') else None
 
         # Armature armature value armature:
         armature_str = ""
@@ -19958,15 +19963,14 @@ class CustomNodeGraph(NodeGraph):
         if _damping_val is not None:
             damping_str = f' damping="{format_float_no_exp(_damping_val)}"'
 
-        # Stiffness / Kp -> 通常は actuator の kp として出す (joint 属性には出さない)。
-        # ただし is_free_joint=True (Free 系の受動関節) は actuator が suppress
-        # されるので、代わりに <joint stiffness="..."> をパッシブスプリングとして
-        # 出す。ノード値が 0 なら省略 (バネなし = 自由スライダー/ヒンジ/ボール)。
+        # Stiffness / Kp:
+        #   ・通常 hinge/slide (is_free_joint=False) は <joint> には出さず、
+        #     actuator の kp として出力される。
+        #   ・Free 関節 (is_free_joint=True) は必ず stiffness=0 (= 属性省略)。
+        #     Free = 「バネなしで自由回転する受動関節」なので stiffness > 0 は
+        #     関節を 0 に引き戻してしまいロックの原因になる (実測で発生済み)。
         stiffness_str = ""
-        if is_free_joint:
-            _stiff_val = float(getattr(child_node, 'joint_stiffness', 0.0) or 0.0)
-            if _stiff_val > 0.0:
-                stiffness_str = f' stiffness="{format_float_no_exp(_stiff_val)}"'
+        # is_free_joint の場合は上書きで 0 とする = 何も書かない (省略 = デフォルト 0)
         
         # body_angle is baked into the body's quat (not output as joint ref).
         # MuJoCo: actual_rotation = qpos - ref, so using ref here would invert
