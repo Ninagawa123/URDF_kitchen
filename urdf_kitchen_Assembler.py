@@ -11113,6 +11113,10 @@ class CustomNodeGraph(NodeGraph):
         self._canonical_link_map: dict[str, str] = {}
         self._canonical_joint_map_urdf: dict[tuple[str, str], str] = {}
         self._canonical_joint_map_mjcf: dict[tuple[str, str], str] = {}
+        # Actuator-first reservation tables (populated by
+        # _prepare_joint_name_reservation right before writing MJCF/URDF).
+        self._reserved_joint_names: dict[tuple[str, str], str] = {}
+        self._reserved_urdf_joint_names: dict[tuple[str, str], str] = {}
 
     @staticmethod
     def _bridge_best_target(result) -> str | None:
@@ -11446,6 +11450,13 @@ class CustomNodeGraph(NodeGraph):
     def _export_urdf_joint_name(self, parent_node, child_node) -> str:
         parent_name = parent_node.name()
         child_name = child_node.name()
+        # Reservation table takes priority: this is how the actuator-first
+        # canonical rule is enforced across colliding URDF joint names.
+        reserved = getattr(self, '_reserved_urdf_joint_names', None)
+        if reserved:
+            hit = reserved.get((parent_name, child_name))
+            if hit:
+                return hit
         if self._is_imu_or_camera_node(parent_node) or self._is_imu_or_camera_node(child_node):
             return f"{parent_name}_to_{child_name}"
         if not getattr(self, "_use_canonical_export_names", False):
@@ -11733,6 +11744,10 @@ class CustomNodeGraph(NodeGraph):
                 visited_nodes = set()
                 base_node = self.get_node_by_name('base_link')
                 if base_node:
+                    # Actuator-first joint-name reservation so that when
+                    # canonical names collide the driving joint wins the
+                    # unsuffixed spelling.
+                    self._prepare_joint_name_reservation(base_node)
                     self._write_tree_structure(f, base_node, None, visited_nodes, materials, selected_format)
 
                 f.write('</robot>\n')
@@ -17879,6 +17894,10 @@ class CustomNodeGraph(NodeGraph):
             # worldbody
             f.write('  <worldbody>\n')
             if base_node:
+                # Pre-compute joint name reservations so the actuator-driving
+                # joint of each collision group gets the canonical spelling
+                # (Free/passive joints get "_1", "_2", ...).
+                self._prepare_joint_name_reservation(base_node)
                 visited_nodes = set()
                 used_body_names = set()  # Set to ensure unique body names
                 used_joint_names = set()  # joint
@@ -19082,6 +19101,176 @@ class CustomNodeGraph(NodeGraph):
         )
         return cam_name
 
+    # ------------------------------------------------------------------
+    # Canonical / Free-aware joint name reservation
+    # ------------------------------------------------------------------
+    # Historically `_write_mjcf_body` handled joint-name collisions in raw
+    # tree-traversal order: whichever body was written first got the
+    # canonical name, later collisions received "_1", "_2", ... suffixes.
+    # This landed the actuator on a suffixed name (e.g. `r_knee_yp_1`)
+    # whenever the tree traversal reached a Free/passive joint first —
+    # which then broke the LME → Meridim → MuJoCo Studio wiring because
+    # downstream code expects the actuator on the canonical name.
+    #
+    # The reservation pass below computes joint names ONCE up-front so
+    # that within any group of joints sharing the same base name,
+    # is_free_joint=False (actuator-driving) wins the canonical spelling
+    # and Free joints get "_1", "_2", ... in tree order. Multiple
+    # actuators fall back to tree order among themselves.
+
+    def _compute_joint_base_name(self, parent_node, child_node) -> str:
+        """Return the pre-collision base name a joint would get in MJCF.
+
+        Mirrors the naming logic at the top of `_get_joint_info` without
+        the side effects (no created_joints appending, no attribute
+        formatting). Returns "" if this edge does not emit a <joint>
+        (i.e. Fixed).
+        """
+        if isinstance(child_node, CoincidentNode):
+            return ""
+        rot_axis = getattr(child_node, 'rotation_axis', 0)
+        is_free = bool(getattr(child_node, 'is_free_joint', False))
+
+        # Fixed axis with Free OFF → no <joint> emitted.
+        if rot_axis == 3 and not is_free:
+            return ""
+
+        # Determine axis suffix (same table as _get_joint_info).
+        if is_free and rot_axis == 3:
+            axis_suffix = "_ball"
+        elif rot_axis == 0:
+            axis_suffix = "_roll"
+        elif rot_axis == 1:
+            axis_suffix = "_pitch"
+        elif rot_axis == 2:
+            axis_suffix = "_yaw"
+        elif rot_axis == 5:
+            axis_suffix = "_slide"
+        else:
+            axis_suffix = "_roll"
+
+        child_sanitized = self._sanitize_name(self._export_link_name(child_node.name()))
+        raw_name = f"{child_sanitized}{axis_suffix}"
+        # Apply canonical-name mapping if enabled (mirrors _get_joint_info).
+        return self._export_mjcf_joint_name(parent_node, child_node, raw_name)
+
+    def _traverse_joint_edges(self, base_node) -> list:
+        """BFS the export tree from `base_node`, returning ordered edges.
+
+        Each entry is a tuple (parent_node, child_node, port_index).
+        Uses the same edge collection as `_write_mjcf_body` so the pre-pass
+        sees joints in the same order the writer will.
+        """
+        from collections import deque
+        edges = []
+        visited: set[str] = set()
+        queue = deque()
+        queue.append(base_node)
+        visited.add(base_node.name() if hasattr(base_node, 'name') else str(base_node))
+        while queue:
+            node = queue.popleft()
+            output_ports = node.output_ports() if hasattr(node, 'output_ports') else []
+            for port_index, out_port in enumerate(output_ports):
+                for in_port in out_port.connected_ports():
+                    child = in_port.node()
+                    if isinstance(child, CoincidentNode):
+                        continue
+                    cname = child.name() if hasattr(child, 'name') else str(child)
+                    if cname in visited:
+                        continue
+                    visited.add(cname)
+                    edges.append((node, child, port_index))
+                    queue.append(child)
+        return edges
+
+    def _resolve_name_groups(self, name_by_edge: dict) -> dict:
+        """Given {(parent, child, is_free): base_name}, return the same keys
+        mapped to a de-collided name where the first actuator per base wins
+        the canonical spelling.
+        """
+        groups: dict[str, list] = {}
+        for (pname, cname, is_free), base in name_by_edge.items():
+            groups.setdefault(base, []).append((pname, cname, is_free))
+        reservation: dict[tuple[str, str], str] = {}
+        for base, members in groups.items():
+            actuators = [m for m in members if not m[2]]
+            frees = [m for m in members if m[2]]
+            ordered = actuators + frees
+            for idx, (pname, cname, _is_free) in enumerate(ordered):
+                reservation[(pname, cname)] = base if idx == 0 else f"{base}_{idx}"
+        return reservation, groups
+
+    def _prepare_joint_name_reservation(self, base_node) -> None:
+        """Populate reservation dicts for both MJCF and URDF export.
+
+        Rule (per collision group = joints sharing the same base name):
+          - The first is_free_joint=False (actuator) in tree order gets
+            the canonical (unsuffixed) base name.
+          - Remaining actuators, then Free joints, receive "_1", "_2", ...
+            in tree order.
+          - If the group has NO actuator, the first Free (tree order) gets
+            the canonical name — preserves prior behaviour when nothing
+            needs actuator preference.
+
+        Two dicts are stored:
+          - `self._reserved_joint_names` for MJCF (consulted by _write_mjcf_body)
+          - `self._reserved_urdf_joint_names` for URDF (consulted by
+            _export_urdf_joint_name)
+        Both keyed by (parent_name, child_name).
+        """
+        edges = self._traverse_joint_edges(base_node)
+
+        # --- MJCF pass ---
+        mjcf_names: dict = {}
+        for parent, child, _port in edges:
+            base = self._compute_joint_base_name(parent, child)
+            if not base:
+                continue
+            is_free = bool(getattr(child, 'is_free_joint', False))
+            mjcf_names[(parent.name(), child.name(), is_free)] = base
+        mjcf_res, mjcf_groups = self._resolve_name_groups(mjcf_names)
+        self._reserved_joint_names = mjcf_res
+
+        # --- URDF pass (same rule, different base name source) ---
+        urdf_names: dict = {}
+        for parent, child, _port in edges:
+            # Skip Fixed-only edges? URDF still emits <joint type="fixed"> so
+            # we DO need to reserve names for them. Use the canonical URDF
+            # name if available, else fallback to parent_to_child.
+            urdf_base = self._export_urdf_joint_name(parent, child)
+            if not urdf_base:
+                continue
+            is_free = bool(getattr(child, 'is_free_joint', False))
+            urdf_names[(parent.name(), child.name(), is_free)] = urdf_base
+        urdf_res, urdf_groups = self._resolve_name_groups(urdf_names)
+        self._reserved_urdf_joint_names = urdf_res
+
+        # Diagnostics (only for actually-colliding groups).
+        for label, groups, res in (
+                ('MJCF', mjcf_groups, mjcf_res),
+                ('URDF', urdf_groups, urdf_res)):
+            colliding = {b: m for b, m in groups.items() if len(m) > 1}
+            if not colliding:
+                continue
+            print(f'[joint-name-reservation:{label}] '
+                  f'{len(colliding)} collision group(s) resolved')
+            for base, members in colliding.items():
+                for pname, cname, is_free in members:
+                    final = res[(pname, cname)]
+                    role = 'Free' if is_free else 'ACTUATOR'
+                    marker = '  ← canonical' if final == base else ''
+                    print(f'  [{role:8s}] {pname} → {cname}: {final}{marker}')
+
+    def _lookup_reserved_joint_name(self, parent_node, child_node) -> str:
+        """Return the pre-reserved final name, or "" if none is set."""
+        table = getattr(self, '_reserved_joint_names', None)
+        if not table:
+            return ""
+        try:
+            return table.get((parent_node.name(), child_node.name()), "")
+        except Exception:
+            return ""
+
     def _write_mjcf_body(self, file, node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent=2, joint_info=None, fix_base_to_ground=False, used_body_names=None, used_joint_names=None, is_root=False, rename_to_base_link=False):
         """MJCF bodytext
 
@@ -19361,15 +19550,31 @@ class CustomNodeGraph(NodeGraph):
         if joint_info and joint_info.get('type') != 'fixed':
             # Add joint
             original_joint_name = joint_info["name"]
-            unique_joint_name = original_joint_name
-            counter = 1
-            while unique_joint_name in used_joint_names:
-                unique_joint_name = f"{original_joint_name}_{counter}"
-                counter += 1
+
+            # Consult the reservation table first: is_free_joint=False (actuator)
+            # gets the canonical name and Free joints receive "_1", "_2", ...
+            # regardless of tree traversal order. Falls back to legacy
+            # first-come-first-served if the pre-pass wasn't run.
+            parent_for_lookup = joint_info.get('_parent_node_ref')
+            child_for_lookup = joint_info.get('_child_node_ref')
+            reserved = ""
+            if parent_for_lookup is not None and child_for_lookup is not None:
+                reserved = self._lookup_reserved_joint_name(
+                    parent_for_lookup, child_for_lookup)
+            if reserved:
+                unique_joint_name = reserved
+            else:
+                unique_joint_name = original_joint_name
+                counter = 1
+                while unique_joint_name in used_joint_names:
+                    unique_joint_name = f"{original_joint_name}_{counter}"
+                    counter += 1
             used_joint_names.add(unique_joint_name)
-            
+
             if unique_joint_name != original_joint_name:
-                print(f"  ⚠ Joint name '{original_joint_name}' already exists, renamed to '{unique_joint_name}'")
+                print(f"  ⚠ Joint name '{original_joint_name}' renamed to "
+                      f"'{unique_joint_name}' "
+                      f"(reservation={'yes' if reserved else 'no'})")
                 joint_info["name"] = unique_joint_name
                 # Sync the created_joints entry appended in _get_joint_info with the unique name
                 if (created_joints and
@@ -19830,6 +20035,10 @@ class CustomNodeGraph(NodeGraph):
                 'type': joint_type,
                 'pos': f"{joint_xyz[0]} {joint_xyz[1]} {joint_xyz[2]}",
                 'rpy': joint_rpy,
+                # Node refs so `_write_mjcf_body` can look up the pre-computed
+                # canonical/free-aware name from the reservation table.
+                '_parent_node_ref': parent_node,
+                '_child_node_ref': child_node,
             }
 
         # Generate joint name with axis suffix (roll/pitch/yaw based on rotation_axis)
@@ -19878,6 +20087,8 @@ class CustomNodeGraph(NodeGraph):
                 'stiffness': "",
                 'ref': "",
                 'motor_name': motor_name,
+                '_parent_node_ref': parent_node,
+                '_child_node_ref': child_node,
             }
 
         # Min angle deg max angle deg min angle max angle rad
@@ -20032,7 +20243,9 @@ class CustomNodeGraph(NodeGraph):
             'frictionloss': frictionloss_str,
             'damping': damping_str,
             'stiffness': stiffness_str,
-            'ref': ref_str
+            'ref': ref_str,
+            '_parent_node_ref': parent_node,
+            '_child_node_ref': child_node,
         }
 
     def calculate_inertia_tensor_for_mirrored(self, poly_data, mass, center_of_mass):
