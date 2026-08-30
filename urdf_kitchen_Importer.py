@@ -7513,6 +7513,35 @@ def import_mjcf(graph):
                         break
             print(f"\n  Connected {connected_count} out of {len(unconnected_nodes)} unconnected nodes")
 
+            # Mark the "free / branch" side of each closed loop.
+            # For every <equality connect body1="X" body2="Y"/>, body2 is the
+            # passive side of the loop: the Inspector should show its Free
+            # checkbox ON. The Roll/Pitch/Yaw checkbox comes from the body's
+            # own <joint axis="..."/> (already applied above); if the body has
+            # no <joint> at all we fall back to rotation_axis=3 (Fixed) so a
+            # ball-style closure has all axis checkboxes off.
+            if closed_loop_joints:
+                print("\n=== Marking closed-loop free (body2) nodes ===")
+                for cl in closed_loop_joints:
+                    b2 = cl.get('child')  # body2 in MJCF <connect>
+                    node = nodes.get(b2)
+                    if node is None:
+                        print(f"  [FreeMark] body2 '{b2}' node not found — skipping")
+                        continue
+                    b2_data = bodies_data.get(b2, {}) or {}
+                    had_joint = b2_data.get('rotation_axis') is not None
+                    node.is_free_joint = True
+                    if not had_joint:
+                        # Ball / connect-only closure with no local joint.
+                        node.rotation_axis = 3  # Fixed → Roll/Pitch/Yaw off
+                    axis_names = ['X (Roll)', 'Y (Pitch)', 'Z (Yaw)',
+                                  'Fixed', 'Free (legacy)', 'Slide']
+                    axis_label = (axis_names[node.rotation_axis]
+                                  if 0 <= getattr(node, 'rotation_axis', 0) < len(axis_names)
+                                  else str(node.rotation_axis))
+                    print(f"  [FreeMark] {b2}: is_free_joint=True, "
+                          f"rotation_axis={node.rotation_axis} ({axis_label})")
+
             # Create and connect CoincidentNodes (from MJCF equality section)
             # CoincidentNode connects two bodies with a constraint (no parent-child relationship)
             print("\n=== Creating CoincidentNodes from MJCF equality section ===")
