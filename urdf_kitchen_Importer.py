@@ -3458,6 +3458,18 @@ class MJCFParser:
                 if self.verbose:
                     print(f"{'  ' * level}    Joint '{joint_name}' is slide (prismatic) -> rotation_axis=5 (Slide)")
 
+            # For MJCF ball (3-DOF spherical) and free (6-DOF) joints, the
+            # Inspector representation is rotation_axis=3 (Fixed radio) with
+            # the Free checkbox on. Assembler's MJCF export emits exactly
+            # <joint type="ball"> for the Fixed+Free case, so this keeps the
+            # round-trip (import → export → import) stable.
+            elif joint_type in ('ball', 'free'):
+                body_data['rotation_axis'] = 3        # Fixed axis
+                body_data['is_free_joint'] = True     # Free checkbox
+                if self.verbose:
+                    print(f"{'  ' * level}    Joint '{joint_name}' is {joint_type} "
+                          f"-> rotation_axis=3 (Fixed) + is_free_joint=True")
+
             # Get joint class (for default class lookup)
             joint_class = joint_elem.get('class', body_childclass)
             
@@ -3520,6 +3532,11 @@ class MJCFParser:
                 if self.verbose:
                     axis_names = ['X', 'Y', 'Z']
                     print(f"{'  ' * level}    Joint '{joint_name}' slide_axis={body_data['slide_axis']} ({axis_names[body_data['slide_axis']]})")
+            elif joint_type in ('ball', 'free'):
+                # Ball / free joints have no single rotation axis — keep
+                # rotation_axis=3 (Fixed radio) that was set above so the
+                # Free checkbox alone represents the 3/6-DOF semantics.
+                pass
             else:
                 # Find the axis with the largest absolute value in LOCAL coordinate system
                 abs_axis = [abs(v) for v in axis_local]
@@ -6776,6 +6793,15 @@ def import_mjcf(graph):
                 else:
                     # Default to X axis (for backward compatibility)
                     node.rotation_axis = 0
+
+                # Propagate MJCF ball/free semantics onto the Free checkbox.
+                # (The parser flags body_data['is_free_joint'] when it sees
+                # <joint type="ball"> or <joint type="free">; the equality
+                # <connect> loop later also sets this on body2 nodes.)
+                if body_data.get('is_free_joint'):
+                    node.is_free_joint = True
+                    print(f"  ✓ Set is_free_joint=True for node '{body_name}' "
+                          f"(from ball/free joint type)")
 
                 # Assign mesh file (with debug output)
                 if body_data['stl_file']:

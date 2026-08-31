@@ -146,17 +146,24 @@ MJCF_INTEGRATOR_CHOICES = ("Euler", "implicit", "implicitfast", "RK4")
 # 全ての <connect> (CoincidentNode + ClosedLoopJointNode ball) に共通適用。
 DEFAULT_MJCF_CONNECT_SOLREF = "0.005 1"
 DEFAULT_MJCF_CONNECT_SOLIMP = "0.99 0.999 0.001"
-# Free ヒンジ / ball joint の受動関節に付与する下限値。
-# 「ほぼ摩擦なしのボールベアリング」相当:
-#   - damping はソルバ安定化に必要な最小限だけ残す (完全 0 だと数値発散しやすい)
-#   - armature は非常に軽い反射慣性
-#   - frictionloss (Coulomb) は 0 = 静止摩擦なし
-# 実際の書き出しは max(ノード値, 下記) なので、ユーザがより大きい値を
-# 明示していればそちらが尊重される。ball joint は元々 3 属性が空だったので
-# この最低値がそのまま適用される。
-FREE_JOINT_GREASE_DAMPING = 0.02        # N·m·s/rad (light viscous)
-FREE_JOINT_GREASE_ARMATURE = 0.001      # kg·m^2 (very low reflected inertia)
-FREE_JOINT_GREASE_FRICTIONLOSS = 0.0    # N·m (frictionless Coulomb)
+# Free チェックが ON の全ての受動関節 (Free+X/Y/Z hinge, Free+Slide, Ball
+# closure) に MJCF 出力時に「強制上書き」で適用する標準値。
+# 想定ターゲット: 全長 20cm 〜 1m の小〜中型ロボット。
+# 物理的モチーフ: グリス潤滑した精密ボールベアリング 1 個ぶんの内部摩擦。
+# 安全側 (発振抑制側) を優先するが、動きの重さは最小限。
+# ・stiffness = 0     … バネなし (Free の必須要件。100 だと関節ロック)
+# ・damping = 0.005    … ソルバ安定化用の微小粘性 (グリスの粘度相当)
+# ・frictionloss = 0.001 … シール摺動 + ブレイクアウェイ相当の Coulomb 摩擦
+# ・armature = 0.0001  … 反射慣性 (ゼロだと数値発散しやすいので下駄)
+# NOTE: これは「下限」ではなく **強制上書き** です。Inspector で個別に
+# 設定した joint_stiffness / damping / frictionloss / armature の値は
+# Free が ON の関節では無視されます (Free = 受動関節としての物理的一貫性を
+# 保証するため)。より重い値が欲しい場合は Free を OFF にして通常ヒンジ
+# として書き出してください。
+FREE_JOINT_GREASE_STIFFNESS = 0.0       # N·m/rad  (spring MUST be off for Free)
+FREE_JOINT_GREASE_DAMPING = 0.005       # N·m·s/rad (light viscous, bearing+grease)
+FREE_JOINT_GREASE_FRICTIONLOSS = 0.001  # N·m (small Coulomb, seal drag)
+FREE_JOINT_GREASE_ARMATURE = 0.0001     # kg·m^2 (tiny reflected inertia, solver stability)
 DEFAULT_MJCF_MESH_SIMPLIFY_THRESHOLD = 50000  # Face count threshold for mesh simplification warning
 DEFAULT_MJCF_MESH_MAX_FACES = 100000000  # Max face count for mesh export (100M; was 1M, increased for large CAD meshes)
 DEFAULT_NODE_GRID_ENABLED = True  # Enable/disable node grid snapping
@@ -11106,6 +11113,10 @@ class CustomNodeGraph(NodeGraph):
         self._canonical_link_map: dict[str, str] = {}
         self._canonical_joint_map_urdf: dict[tuple[str, str], str] = {}
         self._canonical_joint_map_mjcf: dict[tuple[str, str], str] = {}
+        # Actuator-first reservation tables (populated by
+        # _prepare_joint_name_reservation right before writing MJCF/URDF).
+        self._reserved_joint_names: dict[tuple[str, str], str] = {}
+        self._reserved_urdf_joint_names: dict[tuple[str, str], str] = {}
 
     @staticmethod
     def _bridge_best_target(result) -> str | None:
@@ -11439,6 +11450,13 @@ class CustomNodeGraph(NodeGraph):
     def _export_urdf_joint_name(self, parent_node, child_node) -> str:
         parent_name = parent_node.name()
         child_name = child_node.name()
+        # Reservation table takes priority: this is how the actuator-first
+        # canonical rule is enforced across colliding URDF joint names.
+        reserved = getattr(self, '_reserved_urdf_joint_names', None)
+        if reserved:
+            hit = reserved.get((parent_name, child_name))
+            if hit:
+                return hit
         if self._is_imu_or_camera_node(parent_node) or self._is_imu_or_camera_node(child_node):
             return f"{parent_name}_to_{child_name}"
         if not getattr(self, "_use_canonical_export_names", False):
@@ -11726,6 +11744,10 @@ class CustomNodeGraph(NodeGraph):
                 visited_nodes = set()
                 base_node = self.get_node_by_name('base_link')
                 if base_node:
+                    # Actuator-first joint-name reservation so that when
+                    # canonical names collide the driving joint wins the
+                    # unsuffixed spelling.
+                    self._prepare_joint_name_reservation(base_node)
                     self._write_tree_structure(f, base_node, None, visited_nodes, materials, selected_format)
 
                 f.write('</robot>\n')
@@ -17872,6 +17894,10 @@ class CustomNodeGraph(NodeGraph):
             # worldbody
             f.write('  <worldbody>\n')
             if base_node:
+                # Pre-compute joint name reservations so the actuator-driving
+                # joint of each collision group gets the canonical spelling
+                # (Free/passive joints get "_1", "_2", ...).
+                self._prepare_joint_name_reservation(base_node)
                 visited_nodes = set()
                 used_body_names = set()  # Set to ensure unique body names
                 used_joint_names = set()  # joint
@@ -19075,6 +19101,176 @@ class CustomNodeGraph(NodeGraph):
         )
         return cam_name
 
+    # ------------------------------------------------------------------
+    # Canonical / Free-aware joint name reservation
+    # ------------------------------------------------------------------
+    # Historically `_write_mjcf_body` handled joint-name collisions in raw
+    # tree-traversal order: whichever body was written first got the
+    # canonical name, later collisions received "_1", "_2", ... suffixes.
+    # This landed the actuator on a suffixed name (e.g. `r_knee_yp_1`)
+    # whenever the tree traversal reached a Free/passive joint first —
+    # which then broke the LME → Meridim → MuJoCo Studio wiring because
+    # downstream code expects the actuator on the canonical name.
+    #
+    # The reservation pass below computes joint names ONCE up-front so
+    # that within any group of joints sharing the same base name,
+    # is_free_joint=False (actuator-driving) wins the canonical spelling
+    # and Free joints get "_1", "_2", ... in tree order. Multiple
+    # actuators fall back to tree order among themselves.
+
+    def _compute_joint_base_name(self, parent_node, child_node) -> str:
+        """Return the pre-collision base name a joint would get in MJCF.
+
+        Mirrors the naming logic at the top of `_get_joint_info` without
+        the side effects (no created_joints appending, no attribute
+        formatting). Returns "" if this edge does not emit a <joint>
+        (i.e. Fixed).
+        """
+        if isinstance(child_node, CoincidentNode):
+            return ""
+        rot_axis = getattr(child_node, 'rotation_axis', 0)
+        is_free = bool(getattr(child_node, 'is_free_joint', False))
+
+        # Fixed axis with Free OFF → no <joint> emitted.
+        if rot_axis == 3 and not is_free:
+            return ""
+
+        # Determine axis suffix (same table as _get_joint_info).
+        if is_free and rot_axis == 3:
+            axis_suffix = "_ball"
+        elif rot_axis == 0:
+            axis_suffix = "_roll"
+        elif rot_axis == 1:
+            axis_suffix = "_pitch"
+        elif rot_axis == 2:
+            axis_suffix = "_yaw"
+        elif rot_axis == 5:
+            axis_suffix = "_slide"
+        else:
+            axis_suffix = "_roll"
+
+        child_sanitized = self._sanitize_name(self._export_link_name(child_node.name()))
+        raw_name = f"{child_sanitized}{axis_suffix}"
+        # Apply canonical-name mapping if enabled (mirrors _get_joint_info).
+        return self._export_mjcf_joint_name(parent_node, child_node, raw_name)
+
+    def _traverse_joint_edges(self, base_node) -> list:
+        """BFS the export tree from `base_node`, returning ordered edges.
+
+        Each entry is a tuple (parent_node, child_node, port_index).
+        Uses the same edge collection as `_write_mjcf_body` so the pre-pass
+        sees joints in the same order the writer will.
+        """
+        from collections import deque
+        edges = []
+        visited: set[str] = set()
+        queue = deque()
+        queue.append(base_node)
+        visited.add(base_node.name() if hasattr(base_node, 'name') else str(base_node))
+        while queue:
+            node = queue.popleft()
+            output_ports = node.output_ports() if hasattr(node, 'output_ports') else []
+            for port_index, out_port in enumerate(output_ports):
+                for in_port in out_port.connected_ports():
+                    child = in_port.node()
+                    if isinstance(child, CoincidentNode):
+                        continue
+                    cname = child.name() if hasattr(child, 'name') else str(child)
+                    if cname in visited:
+                        continue
+                    visited.add(cname)
+                    edges.append((node, child, port_index))
+                    queue.append(child)
+        return edges
+
+    def _resolve_name_groups(self, name_by_edge: dict) -> dict:
+        """Given {(parent, child, is_free): base_name}, return the same keys
+        mapped to a de-collided name where the first actuator per base wins
+        the canonical spelling.
+        """
+        groups: dict[str, list] = {}
+        for (pname, cname, is_free), base in name_by_edge.items():
+            groups.setdefault(base, []).append((pname, cname, is_free))
+        reservation: dict[tuple[str, str], str] = {}
+        for base, members in groups.items():
+            actuators = [m for m in members if not m[2]]
+            frees = [m for m in members if m[2]]
+            ordered = actuators + frees
+            for idx, (pname, cname, _is_free) in enumerate(ordered):
+                reservation[(pname, cname)] = base if idx == 0 else f"{base}_{idx}"
+        return reservation, groups
+
+    def _prepare_joint_name_reservation(self, base_node) -> None:
+        """Populate reservation dicts for both MJCF and URDF export.
+
+        Rule (per collision group = joints sharing the same base name):
+          - The first is_free_joint=False (actuator) in tree order gets
+            the canonical (unsuffixed) base name.
+          - Remaining actuators, then Free joints, receive "_1", "_2", ...
+            in tree order.
+          - If the group has NO actuator, the first Free (tree order) gets
+            the canonical name — preserves prior behaviour when nothing
+            needs actuator preference.
+
+        Two dicts are stored:
+          - `self._reserved_joint_names` for MJCF (consulted by _write_mjcf_body)
+          - `self._reserved_urdf_joint_names` for URDF (consulted by
+            _export_urdf_joint_name)
+        Both keyed by (parent_name, child_name).
+        """
+        edges = self._traverse_joint_edges(base_node)
+
+        # --- MJCF pass ---
+        mjcf_names: dict = {}
+        for parent, child, _port in edges:
+            base = self._compute_joint_base_name(parent, child)
+            if not base:
+                continue
+            is_free = bool(getattr(child, 'is_free_joint', False))
+            mjcf_names[(parent.name(), child.name(), is_free)] = base
+        mjcf_res, mjcf_groups = self._resolve_name_groups(mjcf_names)
+        self._reserved_joint_names = mjcf_res
+
+        # --- URDF pass (same rule, different base name source) ---
+        urdf_names: dict = {}
+        for parent, child, _port in edges:
+            # Skip Fixed-only edges? URDF still emits <joint type="fixed"> so
+            # we DO need to reserve names for them. Use the canonical URDF
+            # name if available, else fallback to parent_to_child.
+            urdf_base = self._export_urdf_joint_name(parent, child)
+            if not urdf_base:
+                continue
+            is_free = bool(getattr(child, 'is_free_joint', False))
+            urdf_names[(parent.name(), child.name(), is_free)] = urdf_base
+        urdf_res, urdf_groups = self._resolve_name_groups(urdf_names)
+        self._reserved_urdf_joint_names = urdf_res
+
+        # Diagnostics (only for actually-colliding groups).
+        for label, groups, res in (
+                ('MJCF', mjcf_groups, mjcf_res),
+                ('URDF', urdf_groups, urdf_res)):
+            colliding = {b: m for b, m in groups.items() if len(m) > 1}
+            if not colliding:
+                continue
+            print(f'[joint-name-reservation:{label}] '
+                  f'{len(colliding)} collision group(s) resolved')
+            for base, members in colliding.items():
+                for pname, cname, is_free in members:
+                    final = res[(pname, cname)]
+                    role = 'Free' if is_free else 'ACTUATOR'
+                    marker = '  ← canonical' if final == base else ''
+                    print(f'  [{role:8s}] {pname} → {cname}: {final}{marker}')
+
+    def _lookup_reserved_joint_name(self, parent_node, child_node) -> str:
+        """Return the pre-reserved final name, or "" if none is set."""
+        table = getattr(self, '_reserved_joint_names', None)
+        if not table:
+            return ""
+        try:
+            return table.get((parent_node.name(), child_node.name()), "")
+        except Exception:
+            return ""
+
     def _write_mjcf_body(self, file, node, visited_nodes, mesh_names, node_to_mesh, created_joints, indent=2, joint_info=None, fix_base_to_ground=False, used_body_names=None, used_joint_names=None, is_root=False, rename_to_base_link=False):
         """MJCF bodytext
 
@@ -19354,15 +19550,31 @@ class CustomNodeGraph(NodeGraph):
         if joint_info and joint_info.get('type') != 'fixed':
             # Add joint
             original_joint_name = joint_info["name"]
-            unique_joint_name = original_joint_name
-            counter = 1
-            while unique_joint_name in used_joint_names:
-                unique_joint_name = f"{original_joint_name}_{counter}"
-                counter += 1
+
+            # Consult the reservation table first: is_free_joint=False (actuator)
+            # gets the canonical name and Free joints receive "_1", "_2", ...
+            # regardless of tree traversal order. Falls back to legacy
+            # first-come-first-served if the pre-pass wasn't run.
+            parent_for_lookup = joint_info.get('_parent_node_ref')
+            child_for_lookup = joint_info.get('_child_node_ref')
+            reserved = ""
+            if parent_for_lookup is not None and child_for_lookup is not None:
+                reserved = self._lookup_reserved_joint_name(
+                    parent_for_lookup, child_for_lookup)
+            if reserved:
+                unique_joint_name = reserved
+            else:
+                unique_joint_name = original_joint_name
+                counter = 1
+                while unique_joint_name in used_joint_names:
+                    unique_joint_name = f"{original_joint_name}_{counter}"
+                    counter += 1
             used_joint_names.add(unique_joint_name)
-            
+
             if unique_joint_name != original_joint_name:
-                print(f"  ⚠ Joint name '{original_joint_name}' already exists, renamed to '{unique_joint_name}'")
+                print(f"  ⚠ Joint name '{original_joint_name}' renamed to "
+                      f"'{unique_joint_name}' "
+                      f"(reservation={'yes' if reserved else 'no'})")
                 joint_info["name"] = unique_joint_name
                 # Sync the created_joints entry appended in _get_joint_info with the unique name
                 if (created_joints and
@@ -19823,6 +20035,10 @@ class CustomNodeGraph(NodeGraph):
                 'type': joint_type,
                 'pos': f"{joint_xyz[0]} {joint_xyz[1]} {joint_xyz[2]}",
                 'rpy': joint_rpy,
+                # Node refs so `_write_mjcf_body` can look up the pre-computed
+                # canonical/free-aware name from the reservation table.
+                '_parent_node_ref': parent_node,
+                '_child_node_ref': child_node,
             }
 
         # Generate joint name with axis suffix (roll/pitch/yaw based on rotation_axis)
@@ -19852,16 +20068,10 @@ class CustomNodeGraph(NodeGraph):
         motor_name = f"{joint_name}_motor"
 
         # Ball joint has no range limit (uses quaternion representation).
-        # Free + Fixed/Slide 経由の ball closure は、ノード側で damping/armature/
-        # frictionloss が明示されていないことが多いのでソフトグリス下限値を
-        # 保証する (max 合成)。これがないと球関節が重力で暴れて閉ループが破綻する。
+        # Ball は必ず Free 系 (Fixed+Free or Slide+Free 由来) なので、Inspector 値
+        # に関わらず FREE_JOINT_GREASE_* を強制上書きで適用する。stiffness は
+        # ball では書き出さない (バネ付きball は MuJoCo で挙動不定になりやすい)。
         if joint_type == "ball":
-            _damp = max(float(getattr(child_node, 'joint_damping', 0.0) or 0.0),
-                        FREE_JOINT_GREASE_DAMPING)
-            _arm = max(float(getattr(child_node, 'joint_armature', 0.0) or 0.0),
-                       FREE_JOINT_GREASE_ARMATURE)
-            _fl = max(float(getattr(child_node, 'joint_frictionloss', 0.0) or 0.0),
-                      FREE_JOINT_GREASE_FRICTIONLOSS)
             return {
                 'name': joint_name,
                 'type': joint_type,
@@ -19871,12 +20081,14 @@ class CustomNodeGraph(NodeGraph):
                 'range': "",
                 'limited': "",
                 'margin': "",
-                'armature': f' armature="{format_float_no_exp(_arm)}"',
-                'frictionloss': f' frictionloss="{format_float_no_exp(_fl)}"',
-                'damping': f' damping="{format_float_no_exp(_damp)}"',
+                'armature': f' armature="{format_float_no_exp(FREE_JOINT_GREASE_ARMATURE)}"',
+                'frictionloss': f' frictionloss="{format_float_no_exp(FREE_JOINT_GREASE_FRICTIONLOSS)}"',
+                'damping': f' damping="{format_float_no_exp(FREE_JOINT_GREASE_DAMPING)}"',
                 'stiffness': "",
                 'ref': "",
                 'motor_name': motor_name,
+                '_parent_node_ref': parent_node,
+                '_child_node_ref': child_node,
             }
 
         # Min angle deg max angle deg min angle max angle rad
@@ -19930,18 +20142,22 @@ class CustomNodeGraph(NodeGraph):
         if hasattr(child_node, 'joint_margin'):
             margin_str = f' margin="{format_float_no_exp(child_node.joint_margin)}"'
 
-        # is_free_joint (hinge closure) の受動関節にはソフトグリス下限を保証する。
-        # 通常の hinge (is_free_joint=False) はノード値そのまま。
-        _armature_val = float(getattr(child_node, 'joint_armature', 0.0) or 0.0) \
-            if hasattr(child_node, 'joint_armature') else None
-        _frictionloss_val = float(getattr(child_node, 'joint_frictionloss', 0.0) or 0.0) \
-            if hasattr(child_node, 'joint_frictionloss') else None
-        _damping_val = float(getattr(child_node, 'joint_damping', 0.0) or 0.0) \
-            if hasattr(child_node, 'joint_damping') else None
+        # Free (X/Y/Z hinge + Free チェック、Slide + Free チェック) の受動関節
+        # は FREE_JOINT_GREASE_* を **強制上書き** で適用する。Inspector の
+        # joint_stiffness / joint_damping / joint_frictionloss / joint_armature は
+        # Free 関節ではすべて無視される (受動関節としての物理的一貫性のため)。
+        # 通常の hinge / slide (is_free_joint=False) はノード値をそのまま出す。
         if is_free_joint:
-            _armature_val = max(_armature_val or 0.0, FREE_JOINT_GREASE_ARMATURE)
-            _frictionloss_val = max(_frictionloss_val or 0.0, FREE_JOINT_GREASE_FRICTIONLOSS)
-            _damping_val = max(_damping_val or 0.0, FREE_JOINT_GREASE_DAMPING)
+            _armature_val = FREE_JOINT_GREASE_ARMATURE
+            _frictionloss_val = FREE_JOINT_GREASE_FRICTIONLOSS
+            _damping_val = FREE_JOINT_GREASE_DAMPING
+        else:
+            _armature_val = float(getattr(child_node, 'joint_armature', 0.0) or 0.0) \
+                if hasattr(child_node, 'joint_armature') else None
+            _frictionloss_val = float(getattr(child_node, 'joint_frictionloss', 0.0) or 0.0) \
+                if hasattr(child_node, 'joint_frictionloss') else None
+            _damping_val = float(getattr(child_node, 'joint_damping', 0.0) or 0.0) \
+                if hasattr(child_node, 'joint_damping') else None
 
         # Armature armature value armature:
         armature_str = ""
@@ -19958,15 +20174,14 @@ class CustomNodeGraph(NodeGraph):
         if _damping_val is not None:
             damping_str = f' damping="{format_float_no_exp(_damping_val)}"'
 
-        # Stiffness / Kp -> 通常は actuator の kp として出す (joint 属性には出さない)。
-        # ただし is_free_joint=True (Free 系の受動関節) は actuator が suppress
-        # されるので、代わりに <joint stiffness="..."> をパッシブスプリングとして
-        # 出す。ノード値が 0 なら省略 (バネなし = 自由スライダー/ヒンジ/ボール)。
+        # Stiffness / Kp:
+        #   ・通常 hinge/slide (is_free_joint=False) は <joint> には出さず、
+        #     actuator の kp として出力される。
+        #   ・Free 関節 (is_free_joint=True) は必ず stiffness=0 (= 属性省略)。
+        #     Free = 「バネなしで自由回転する受動関節」なので stiffness > 0 は
+        #     関節を 0 に引き戻してしまいロックの原因になる (実測で発生済み)。
         stiffness_str = ""
-        if is_free_joint:
-            _stiff_val = float(getattr(child_node, 'joint_stiffness', 0.0) or 0.0)
-            if _stiff_val > 0.0:
-                stiffness_str = f' stiffness="{format_float_no_exp(_stiff_val)}"'
+        # is_free_joint の場合は上書きで 0 とする = 何も書かない (省略 = デフォルト 0)
         
         # body_angle is baked into the body's quat (not output as joint ref).
         # MuJoCo: actual_rotation = qpos - ref, so using ref here would invert
@@ -20028,7 +20243,9 @@ class CustomNodeGraph(NodeGraph):
             'frictionloss': frictionloss_str,
             'damping': damping_str,
             'stiffness': stiffness_str,
-            'ref': ref_str
+            'ref': ref_str,
+            '_parent_node_ref': parent_node,
+            '_child_node_ref': child_node,
         }
 
     def calculate_inertia_tensor_for_mirrored(self, poly_data, mass, center_of_mass):
