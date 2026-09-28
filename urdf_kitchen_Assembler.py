@@ -13188,6 +13188,9 @@ class CustomNodeGraph(NodeGraph):
                 node.cumulative_coords = []
                 node.output_count = 0
                 
+                # Map saved port names to new ones (filtering empty points shifts port numbers)
+                port_remap = {}
+
                 # Point
                 import re
                 for point_index, point_elem in enumerate(points, 1):
@@ -13232,6 +13235,9 @@ class CustomNodeGraph(NodeGraph):
                     # Todo
                     if is_connected or not is_empty_point:
                         node.points.append(point)
+                        new_port_name = f'out_{len(node.points)}'
+                        if new_port_name != port_name:
+                            port_remap[port_name] = new_port_name
                     else:
                         print(f"Filtered out empty point '{point_name}' from node '{node.name()}' (not connected, port: {port_name})")
                 
@@ -13262,6 +13268,11 @@ class CustomNodeGraph(NodeGraph):
                         node.points = node.points[:actual_port_count]
                     # Update output_count
                     node.output_count = actual_port_count
+
+                # Keep the remap so load_project can restore connections saved with the old port names
+                node._load_port_remap = port_remap
+                if port_remap:
+                    print(f"Port remap for node '{node.name()}': {port_remap}")
             
             # Base_link if existing base_link
             if node_name == 'base_link' and existing_base_link:
@@ -14124,12 +14135,18 @@ class CustomNodeGraph(NodeGraph):
                 to_node = nodes_dict.get(conn.find("to_node").text)
                 
                 if from_node and to_node:
-                    from_port = from_node.get_output(conn.find("from_port").text)
+                    from_port_name = conn.find("from_port").text
+                    # Follow port renumbering caused by empty point filtering
+                    from_port_name = getattr(from_node, '_load_port_remap', {}).get(from_port_name, from_port_name)
+                    from_port = from_node.get_output(from_port_name)
                     to_port = to_node.get_input(conn.find("to_port").text)
                     
                     if from_port and to_port:
                         self.connect_ports(from_port, to_port)
                         connection_count += 1
+                    else:
+                        print(f"Warning: Failed to restore connection {from_node.name()}.{from_port_name} -> "
+                              f"{to_node.name()}.{conn.find('to_port').text} (port not found)")
 
             # Update position view
             print("\nRecalculating positions...")

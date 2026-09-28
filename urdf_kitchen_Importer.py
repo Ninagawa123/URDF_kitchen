@@ -7187,6 +7187,15 @@ def import_mjcf(graph):
                             graph.mjcf_timeconst = actuator_params['timeconst']
                             print(f"  Set graph.mjcf_timeconst: {graph.mjcf_timeconst}")
 
+                # Hinge/slide joints without an <actuator> in the source MJCF are passive:
+                # mark them Free so no actuator is emitted on re-export.
+                # (Only rotation_axis 0/1/2/5; Free + Fixed(3) would turn into a ball joint.)
+                if (joint_data['type'] != 'fixed'
+                        and getattr(child_node, 'rotation_axis', None) in (0, 1, 2, 5)
+                        and not (joint_name and joint_name in actuators_data)):
+                    child_node.is_free_joint = True
+                    print(f"  Set is_free_joint: True (no actuator for joint '{joint_name}')")
+
                 # Set stiffness
                 if 'stiffness' in joint_data:
                     child_node.joint_stiffness = joint_data['stiffness']
@@ -7548,6 +7557,9 @@ def import_mjcf(graph):
             # ball-style closure has all axis checkboxes off.
             if closed_loop_joints:
                 print("\n=== Marking closed-loop free (body2) nodes ===")
+                # Bodies whose joint is driven by an <actuator> in the source MJCF
+                actuated_bodies = {jd.get('child') for jd in joints_data
+                                   if jd.get('name') and jd.get('name') in actuators_data}
                 for cl in closed_loop_joints:
                     b2 = cl.get('child')  # body2 in MJCF <connect>
                     node = nodes.get(b2)
@@ -7556,6 +7568,10 @@ def import_mjcf(graph):
                         continue
                     b2_data = bodies_data.get(b2, {}) or {}
                     had_joint = b2_data.get('rotation_axis') is not None
+                    # Keep actuated joints driven (Free would drop their actuator on re-export)
+                    if had_joint and b2 in actuated_bodies:
+                        print(f"  [FreeMark] {b2}: has actuator — keep driven (not Free)")
+                        continue
                     node.is_free_joint = True
                     if not had_joint:
                         # Ball / connect-only closure with no local joint.
