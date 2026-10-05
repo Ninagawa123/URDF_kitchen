@@ -184,7 +184,11 @@ def split_parent_child(name: str) -> tuple[str, str] | None:
 # policy
 # ===========================================================================
 
-PRESERVED_LINK_NAMES = frozenset({"base_link", "c_base_link"})
+PRESERVED_LINK_NAMES = frozenset({
+    "base_link",
+    "c_base_link",
+    "base_footprint",   # ROS convention: Z=0 ground-projection frame (vehicles)
+})
 
 
 def is_preserved_link(name: str) -> bool:
@@ -388,6 +392,7 @@ class Morphology(str, Enum):
     HUMANOID = "humanoid"
     QUADRUPED = "quadruped"
     AVIAN = "avian"
+    ARTHROPOD = "arthropod"
     GENERIC_VERTEBRATE = "generic_vertebrate"
     GENERIC_ROBOT = "generic_robot"
 
@@ -478,6 +483,8 @@ _MORPHOLOGY_ALIASES = {
     "humanoid": Morphology.HUMANOID,
     "quadruped": Morphology.QUADRUPED,
     "avian": Morphology.AVIAN,
+    "arthropod": Morphology.ARTHROPOD,
+    "myriapod": Morphology.ARTHROPOD,
     "generic_vertebrate": Morphology.GENERIC_VERTEBRATE,
     "generic vertebrate": Morphology.GENERIC_VERTEBRATE,
     "generic_robot": Morphology.GENERIC_ROBOT,
