@@ -159,7 +159,7 @@ claudeを起動して会話。です。
 # Tutorial  
   
 チュートリアルは下記のファイルにまとめています。  
-https://github.com/Ninagawa123/URDF_kitchen/blob/beta2/Tutorial_JP.md  
+https://github.com/Ninagawa123/URDF_kitchen/blob/main/Tutorial_JP.md
   
 Qiita記事もあります。  
 
